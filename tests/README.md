@@ -1,0 +1,67 @@
+# Tests
+
+This project uses lightweight GDScript tests for card abilities, UI behavior, and no-UI gameplay simulation.
+
+## Run Everything
+
+From the project root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tests\run_all.ps1
+```
+
+## Run in Godot
+
+1. Open `res://tests/TestCardAbilities.gd`.
+2. Attach it to an empty Node in a temporary scene and run that scene.
+3. Check the output panel for pass/fail lines.
+
+The test script calls `get_tree().quit(exit_code)`:
+- `0` means all tests passed
+- `1` means one or more tests failed
+
+## No-UI Match Simulation
+
+Use `res://tests/SimulateGameNoUI.gd` to run deterministic headless-style gameplay smoke tests without any battle UI scene.
+
+1. Open `res://tests/SimulateGameNoUI.gd`.
+2. Attach it to an empty Node in a temporary scene and run that scene.
+3. Check the output panel for turn-by-turn HP logs, final winner lines, and the completed-match summary.
+
+This simulation validates that turn flow, market purchases, card effects, and combat resolution can run end-to-end without UI node dependencies. It exits non-zero if a deterministic seed fails to produce a winner or leaves invalid gameplay state.
+
+## Parsed Ability Validation
+
+Use `res://tests/TestParsedAbilities.gd` to validate advanced Hero Realms parsing and runtime behavior.
+
+1. Open `res://tests/TestParsedAbilities.gd`.
+2. Attach it to an empty Node in a temporary scene and run that scene.
+3. Check the output panel for pass/fail lines.
+
+Optional CLI run:
+
+```bash
+"/c/Users/devinsGamingPC/Downloads/Godot_v4.5.1-stable_win64.exe/Godot_v4.5.1-stable_win64_console.exe" --headless --path . --scene res://tests/TestParsedAbilitiesRunner.tscn
+```
+
+## Player Choice Validation
+
+Use `res://tests/TestPlayerChoices.gd` to validate popup-choice request and resolution behavior for manual discard, sacrifice, and effect-branch choices.
+
+```bash
+"/c/Users/devinsGamingPC/Downloads/Godot_v4.5.1-stable_win64.exe/Godot_v4.5.1-stable_win64_console.exe" --headless --path . --scene res://tests/TestPlayerChoicesRunner.tscn
+```
+
+## Card Art Validation
+
+Use `res://tests/TestCardArt.gd` to validate that key card art paths resolve and raw image files can be loaded headlessly.
+
+```bash
+"/c/Users/devinsGamingPC/Downloads/Godot_v4.5.1-stable_win64.exe/Godot_v4.5.1-stable_win64_console.exe" --headless --path . --scene res://tests/TestCardArtRunner.tscn
+```
+
+Optional CLI run (headless):
+
+```bash
+"/c/Users/devinsGamingPC/Downloads/Godot_v4.5.1-stable_win64.exe/Godot_v4.5.1-stable_win64_console.exe" --headless --path . --scene res://tests/NoUISimRunner.tscn
+```

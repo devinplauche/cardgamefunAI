@@ -1,0 +1,167 @@
+Base Set	1	Arkus, Imperial Dragon	"{Expend}: {Gain 5 combat} Draw a card.
+<hr>
+{Imperial Ally}: {Gain 6 health}"	Champion ◆ Dragon	Imperial	8	6 Guard		Market Deck		Johnny Morrow
+Base Set	1	Close Ranks	"{Gain 5 combat}
++{2 combat} for each champion you have in play.
+<hr>
+{Imperial Ally}: {Gain 6 health}"	Action	Imperial	3			Market Deck		Apsara
+Base Set	1	Command	"{Gain 2 gold} {Gain 3 combat} {Gain 4 health}
+Draw a card."	Action	Imperial	5			Market Deck		Antonis Papantoniou
+Base Set	1	Darian, War Mage	{Expend}: {Gain 3 combat} <i>or</i> {Gain 4 health}	Champion ◆ Human Mage	Imperial	4	5		Market Deck		Hannes Radke
+Base Set	1	Domination	"{Gain 6 combat} {Gain 6 health}
+Draw a card.
+<hr>
+{Imperial Ally}: Prepare a champion."	Action	Imperial	7			Market Deck		Antonis Papantoniou
+Base Set	1	Cristov, the Just	"{Expend}: {Gain 2 combat} {Gain 3 health}
+<hr>
+{Imperial Ally}: Draw a card."	Champion ◆ Human Paladin	Imperial	5	5 Guard		Market Deck		Ina Wong
+Base Set	1	Kraka, High Priest	"{Expend}: {Gain 2 health}
+Draw a card.
+<hr>
+{Imperial Ally}: Gain {2 health} for each champion you have in play."	Champion ◆ Human Priest	Imperial	6	6		Market Deck		Richard Hanuschek
+Base Set	2	Man-at-Arms	{Expend}: {Gain 2 combat} +{1 combat} for each other guard you have in play.	Champion ◆ Human Warrior	Imperial	3	4 Guard		Market Deck	This card was printed with new artwork in the second edition, as shown.	Richard Hanuschek
+Base Set	1	Master Weyan	{Expend}: {Gain 3 combat} +{1 combat} for each other champion you have in play.	Champion ◆ Human Monk	Imperial	4	4 Guard		Market Deck		Simon Aan
+Base Set	1	Rally the Troops	"{Gain 5 combat} {Gain 5 health}
+<hr>
+{Imperial Ally}: Prepare a champion."	Action	Imperial	4			Market Deck		Johnny Morrow
+Base Set	3	Recruit	"{Gain 2 gold} {Gain 3 health}
++{1 health} for each champion you have in play.
+<hr>
+{Imperial Ally}: {Gain 1 gold}"	Action	Imperial	2			Market Deck		Johnny Morrow
+Base Set	2	Tithe Priest	"{Expend}: {Gain 1 gold}
+<i>or</i>
+Gain {1 health} for each champion you have in play."	Champion ◆ Human Priest	Imperial	2	3		Market Deck		Trevor Smith
+Base Set	3	Taxation	"{Gain 2 gold}
+<hr>
+{Imperial Ally}: {Gain 6 health}"	Action	Imperial	1			Market Deck		Dylan Stafford
+Base Set	1	Word of Power	"Draw two cards.
+<hr>
+{Imperial Ally}: {Gain 5 health}
+<hr>
+{Sacrifice}: {Gain 5 combat}"	Action ◆ Spell	Imperial	6			Market Deck		Johnny Morrow
+Base Set	1	Borg, Ogre Mercenary	{Expend}: {Gain 4 combat}	Champion ◆ Ogre Warrior	Guild	6	6 Guard		Market Deck		L. Sean
+Base Set	3	Bribe	"{Gain 3 gold}
+<hr>
+{Guild Ally}: Put the next action you acquire this turn on top of your deck."	Action	Guild	3			Market Deck		Souveraine
+Base Set	1	Death Threat	"{Gain 1 combat}
+Draw a card.
+<hr>
+{Guild Ally}: Stun target champion."	Action ◆ Assassin	Guild	3			Market Deck		L. Sean
+Base Set	1	Deception	"{Gain 2 gold}
+Draw a card.
+<hr>
+{Guild Ally}: Put the next card you acquire this turn into your hand."	Action	Guild	5			Market Deck		Souveraine
+Base Set	1	Fire Bomb	"{Gain 8 combat}
+Stun target champion. Draw a card.
+<hr>
+{Sacrifice}: {Gain 5 combat}"	Action	Guild	8			Market Deck		Johnny Morrow
+Base Set	1	Hit Job	"{Gain 7 combat}
+<hr>
+{Guild Ally}: Stun target champion."	Action ◆ Assassin	Guild	4			Market Deck		Richard Hanuschek
+Base Set	2	Intimidation	"{Gain 5 combat}
+<hr>
+{Guild Ally}: {Gain 2 gold}"	Action ◆ Rogue	Guild	2			Market Deck		Johnny Morrow
+Base Set	1	Myros, Guild Mage	"{Expend}: {Gain 3 gold}
+<hr>
+{Guild Ally}: {Gain 4 combat}"	Champion ◆ Human Mage	Guild	5	3 Guard		Market Deck		Simon Aan
+Base Set	1	Parov, the Enforcer	"{Expend}: {Gain 3 combat}
+<hr>
+{Guild Ally}: Draw a card."	Champion ◆ Human Rogue	Guild	5	5 Guard		Market Deck		Gialer Liew
+Base Set	3	Profit	"{Gain 2 gold}
+<hr>
+{Guild Ally}: {Gain 4 combat}"	Action	Guild	1			Market Deck		L. Sean
+Base Set	1	Rake, Master Assassin	{Expend}: {Gain 4 combat} You may stun target champion.	Champion ◆ Human Assassin	Guild	7	7		Market Deck		Ina Wong
+Base Set	1	Rasmus, the Smuggler	"{Expend}: {Gain 2 gold}
+<hr>
+{Guild Ally}: Put the next card you acquire this turn on top of your deck."	Champion ◆ Human Rogue	Guild	4	5		Market Deck		Simon Aan
+Base Set	1	Smash and Grab	"{Gain 6 combat}
+You may put a card from your discard pile on top of your deck."	Action ◆ Rogue	Guild	6			Market Deck		L. Sean
+Base Set	2	Street Thug	{Expend}: {Gain 1 gold} <i>or</i> {Gain 2 combat}	Champion ◆ Human Rogue	Guild	3	4		Market Deck		Dylan Safford
+Base Set	2	Cult Priest	"{Expend}: {Gain 1 gold} <i>or</i> {Gain 1 combat}
+<hr>
+{Necros Ally}: {Gain 4 combat}"	Champion ◆ Human	Necros	3	4		Market Deck		Antonis Papantoniou
+Base Set	1	Dark Energy	"{Gain 7 combat}
+<hr>
+{Necros Ally}: Draw a card."	Action ◆ Spell	Necros	4			Market Deck		Souveraine
+Base Set	1	Dark Reward	"{Gain 3 gold}
+You may sacrifice a card in your hand or discard pile.
+<hr>
+{Necros Ally}: {Gain 6 combat}"	Action	Necros	5			Market Deck		Trevor Smith
+Base Set	2	Death Cultist	{Expend}: {Gain 2 combat}	Champion ◆ Human	Necros	2	3 Guard		Market Deck		Johnny Morrow
+Base Set	3	Death Touch	"{Gain 2 combat}
+You may sacrifice a card in your hand or discard pile.
+<hr>
+{Necros Ally}: {Gain 2 combat}"	Action ◆ Curse	Necros	1			Market Deck		Antonis Papantoniou
+Base Set	1	Rayla, Endweaver	"{Expend}: {Gain 3 combat}
+<hr>
+{Necros Ally}: Draw a card."	Champion ◆ Human Mage	Necros	4	4		Market Deck	This card was printed with new artwork in the second edition, as shown.	Dimas Pamungkas
+Base Set	3	Influence	"{Gain 3 gold}
+<hr>
+{Sacrifice}: {Gain 3 combat}"	Action	Necros	2			Market Deck		Dimas Pamungkas
+Base Set	1	Krythos, Master Vampire	"{Expend}: {Gain 3 combat}
+You may sacrifice a card in your hand or discard pile.
+If you do, gain an additional {3 combat}."	Champion ◆ Vampire	Necros	7	6		Market Deck		Apsara
+Base Set	1	Life Drain	"{Gain 8 combat}
+You may sacrifice a card in your hand or discard pile.
+<hr>
+{Necros Ally}: Draw a card."	Action ◆ Curse	Necros	6			Market Deck		Antonis Papantoniou
+Base Set	1	Lys, the Unseen	"{Expend}: {Gain 2 combat}
+You may sacrifice a card in your hand or discard pile.
+If you do, gain an additional {2 combat}."	Champion ◆ Vampire	Necros	6	5 Guard		Market Deck		L. Sean
+Base Set	2	The Rot	"{Gain 4 combat}
+You may sacrifice a card in your hand or discard pile.
+<hr>
+{Necros Ally}: {Gain 3 combat}"	Action ◆ Curse	Necros	3			Market Deck		Antonis Papantoniou
+Base Set	1	Tyrannor, the Devourer	"{Expend}: {Gain 4 combat}
+You may sacrifice up to two cards in your hand and/or discard pile.
+<hr>
+{Necros Ally}: Draw a card."	Champion ◆ Demon	Necros	8	6 Guard		Market Deck		Bramasta Aji
+Base Set	1	Varrick, the Necromancer	"{Expend}: Take a champion from your discard pile and put it on top of your deck.
+<hr>
+{Necros Ally}: Draw a card."	Champion ◆ Human Necromancer	Necros	5	3		Market Deck		Ina Wong
+Base Set	1	Broelyn, Loreweaver	"{Expend}: {Gain 2 gold}
+<hr>
+{Wild Ally}: Target opponent discards a card."	Champion ◆ Elf Mage	Wild	4	6		Market Deck	This card was printed with new artwork in the second edition, as shown.	Odysseas Stamoglou
+Base Set	1	Cron, the Berserker	"{Expend}: {Gain 5 combat}
+<hr>
+{Wild Ally}: Draw a card."	Champion ◆ Human Warrior	Wild	6	6		Market Deck		Johnny Morrow
+Base Set	1	Dire Wolf	"{Expend}: {Gain 3 combat}
+<hr>
+{Wild Ally}: {Gain 4 combat}"	Champion ◆ Giant Wolf	Wild	5	5 Guard		Market Deck		Antonis Papantoniou
+Base Set	2	Elven Curse	"{Gain 6 combat}
+Target opponent discards a card.
+<hr>
+{Wild Ally}: {Gain 3 combat}"	Action ◆ Elf Curse	Wild	3			Market Deck		David Nash
+Base Set	3	Elven Gift	"{Gain 2 gold}
+You may draw a card. If you do, discard a card.
+<hr>
+{Wild Ally}: {Gain 4 combat}"	Action ◆ Elf	Wild	2			Market Deck		Johnny Morrow
+Base Set	1	Grak, Storm Giant	"{Expend}: {Gain 6 combat}
+You may draw a card. If you do, discard a card.
+<hr>
+{Wild Ally}: Draw a card, then discard a card."	Champion ◆ Giant	Wild	8	7 Guard		Market Deck		Gialer Liew
+Base Set	1	Nature's Bounty	"{Gain 4 gold}
+<hr>
+{Wild Ally}: Target opponent discards a card.
+<hr>
+{Sacrifice}: {Gain 4 combat}"	Action	Wild	4			Market Deck		Souveraine
+Base Set	2	Orc Grunt	"{Expend}: {Gain 2 combat}
+<hr>
+{Wild Ally}: Draw a card."	Champion ◆ Orc	Wild	3	3 Guard		Market Deck		Antonis Papantoniou
+Base Set	1	Rampage	"{Gain 6 combat}
+You may draw up to two cards, then discard that many cards."	Action ◆ Orc	Wild	6			Market Deck		Antonis Papantoniou
+Base Set	1	Torgen Rocksplitter	"{Expend}: {Gain 4 combat}
+Target opponent discards a card."	Champion ◆ Troll Warrior	Wild	7	7 Guard		Market Deck		L. Sean
+Base Set	3	Spark	"{Gain 3 combat}
+Target opponent discards a card.
+<hr>
+{Wild Ally}: {Gain 2 combat}"	Action ◆ Spell	Wild	1			Market Deck		Michael J. Williams
+Base Set	1	Wolf Form	"{Gain 8 combat}
+Target opponent discards a card.
+<hr>
+{Sacrifice}: Target opponent discards a card."	Action ◆ Wolf	Wild	5			Market Deck		Bramasta Aji
+Base Set	2	Wolf Shaman	"{Expend}: {Gain 2 combat}
++{1 combat} for each other {Wild} card you have in play."	Champion ◆ Human Priest	Wild	2	4		Market Deck		Bramasta Aji
+Base Set	16	Fire Gem	"{Gain 2 gold}
+<hr>
+{Sacrifice}: {Gain 3 combat}"	Item ◆ Currency ◆ Gem		2			Fire Gems		Bramasta Aji

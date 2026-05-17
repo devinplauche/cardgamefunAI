@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="360" viewBox="0 0 256 360">
+  <defs>
+    <radialGradient id="g" cx="50%" cy="45%" r="60%">
+      <stop offset="0%" stop-color="#ffd7a6"/>
+      <stop offset="60%" stop-color="#ff7d2f"/>
+      <stop offset="100%" stop-color="#8f1d08"/>
+    </radialGradient>
+  </defs>
+  <rect width="256" height="360" fill="#251e1b"/>
+  <ellipse cx="128" cy="180" rx="84" ry="112" fill="url(#g)" stroke="#ffd6a2" stroke-width="8"/>
+  <text x="128" y="322" text-anchor="middle" fill="#ffe0bd" font-size="24" font-family="Verdana">Fire Gem</text>
+</svg>

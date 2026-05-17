@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="360" viewBox="0 0 256 360">
+  <rect width="256" height="360" fill="#1f2328"/>
+  <polygon points="128,36 146,176 110,176" fill="#ced8e2"/>
+  <rect x="120" y="176" width="16" height="96" fill="#9ea9b6"/>
+  <rect x="84" y="206" width="88" height="14" fill="#8f6832"/>
+  <rect x="114" y="272" width="28" height="44" fill="#6f4f27"/>
+  <text x="128" y="338" text-anchor="middle" fill="#dce5ee" font-size="24" font-family="Verdana">Sword</text>
+</svg>

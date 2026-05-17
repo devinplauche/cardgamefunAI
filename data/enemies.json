@@ -1,0 +1,18 @@
+{
+  "slime": {
+    "name": "Slime",
+    "hp": 30,
+    "behavior_pattern": [
+      {
+        "action": "attack",
+        "value": 5,
+        "intent_text": "Attack for 5"
+      },
+      {
+        "action": "block",
+        "value": 5,
+        "intent_text": "Gain 5 Block"
+      }
+    ]
+  }
+}

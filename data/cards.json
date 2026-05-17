@@ -1,0 +1,71 @@
+{
+  "gold_coin": {
+	"name": "Gold",
+	"cost": 0,
+	"type": "Currency",
+	"image_path": "res://cards/images/BAS-EN-097-gold.jpg",
+	"description": "Gain 1 Gold.",
+	"effects": [
+	  {
+		"id": "gain_gold",
+		"value": 1
+	  }
+	]
+  },
+  "ruby": {
+	"name": "Ruby",
+	"cost": 0,
+	"type": "Currency",
+	"image_path": "res://cards/images/BAS-EN-133-ruby.jpg",
+	"description": "Gain 2 Gold.",
+	"effects": [
+	  {
+		"id": "gain_gold",
+		"value": 2
+	  }
+	]
+  },
+  "dagger": {
+	"name": "Dagger",
+	"cost": 0,
+	"type": "Attack",
+	"image_path": "res://cards/images/BAS-EN-129-dagger.jpg",
+	"description": "Gain 1 Combat.",
+	"effects": [
+	  {
+		"id": "gain_combat",
+		"value": 1
+	  }
+	]
+  },
+  "sword": {
+	"name": "Sword",
+	"cost": 0,
+	"type": "Attack",
+	"image_path": "res://cards/images/BAS-EN-125-shortsword.jpg",
+	"description": "Gain 2 Combat.",
+	"effects": [
+	  {
+		"id": "gain_combat",
+		"value": 2
+	  }
+	]
+	},
+	"fire_gem": {
+	"name": "Fire Gem",
+	"cost": 0,
+	"type": "Item",
+	"image_path": "res://cards/images/BAS-EN-081-fire-gem.jpg",
+	"description": "Gain 2 Gold. Optional: Sacrifice to gain 3 Combat.",
+	"effects": [
+	  {
+		"id": "gain_gold",
+		"value": 2
+	  },
+	  {
+		"id": "sacrifice_combat_offer",
+		"value": 3
+	  }
+	]
+  }
+}

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="360" viewBox="0 0 256 360">
+  <rect width="256" height="360" fill="#2b2a24"/>
+  <circle cx="128" cy="180" r="92" fill="#d8b34a" stroke="#f3dc8c" stroke-width="10"/>
+  <text x="128" y="188" text-anchor="middle" fill="#fff7dc" font-size="34" font-family="Verdana">1</text>
+  <text x="128" y="246" text-anchor="middle" fill="#f7e9bc" font-size="24" font-family="Verdana">Gold</text>
+</svg>

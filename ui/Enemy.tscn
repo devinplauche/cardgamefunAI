@@ -1,0 +1,59 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/Enemy.gd" id="1"]
+
+[sub_resource type="StyleBoxFlat" id="1"]
+bg_color = Color(0.27451, 0.423529, 0.337255, 1)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(0.113725, 0.184314, 0.141176, 1)
+corner_radius_top_left = 14
+corner_radius_top_right = 14
+corner_radius_bottom_right = 14
+corner_radius_bottom_left = 14
+
+[node name="Enemy" type="PanelContainer"]
+custom_minimum_size = Vector2(260, 220)
+offset_right = 260.0
+offset_bottom = 220.0
+script = ExtResource("1")
+theme_override_styles/panel = SubResource("1")
+
+[node name="Margin" type="MarginContainer" parent="."]
+layout_mode = 2
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 14
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 14
+
+[node name="Content" type="VBoxContainer" parent="Margin"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="NameLabel" type="Label" parent="Margin/Content"]
+layout_mode = 2
+text = "Slime"
+horizontal_alignment = 1
+
+[node name="HpBar" type="ProgressBar" parent="Margin/Content"]
+layout_mode = 2
+max_value = 30.0
+value = 30.0
+show_percentage = false
+
+[node name="HpLabel" type="Label" parent="Margin/Content"]
+layout_mode = 2
+text = "HP: 30 / 30    Block: 0"
+horizontal_alignment = 1
+
+[node name="IntentLabel" type="Label" parent="Margin/Content"]
+layout_mode = 2
+text = "Intent: Attack for 5"
+horizontal_alignment = 1
+
+[node name="StatusLabel" type="Label" parent="Margin/Content"]
+layout_mode = 2
+text = "Statuses: None"
+horizontal_alignment = 1

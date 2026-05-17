@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="360" viewBox="0 0 256 360">
+  <rect width="256" height="360" fill="#271f22"/>
+  <polygon points="128,78 198,142 172,256 84,256 58,142" fill="#b2143d" stroke="#f3a1b9" stroke-width="8"/>
+  <text x="128" y="306" text-anchor="middle" fill="#ffdbe5" font-size="26" font-family="Verdana">Ruby</text>
+</svg>
