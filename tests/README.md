@@ -74,6 +74,8 @@ Results include win / loss / draw counts and a final win-rate ranking.
 | **Aggro** | Highest damage card | Offer with most `combat` value |
 | **Econ** | Highest resource (gold/draw) card | Most expensive affordable offer |
 | **Control** | Highest disruption card | Offer with most `opponent_discard` value |
+| **Combo** | Highest faction-trigger/ally-synergy card | Offer with ally bonuses + faction match; falls back to evaluator |
+| **Efficiency** | Highest sacrifice+draw value card | Offer with sacrifice and draw abilities; falls back to greedy-by-cost |
 | **Greedy** | Evaluator score (single-step) | Evaluator-scored offer |
 | **Lookahead** | Evaluator score with 2-ply look-ahead | Evaluator-scored offer |
 

@@ -105,6 +105,108 @@ func estimate_card_values(card: Card, ai_champions: int = 0) -> Dictionary:
 	return _estimate_card_values(card, ai_champions)
 
 
+# Score a card for the COMBO strategy.
+# Returns an integer where higher = better combo potential.
+#
+# Scoring breakdown:
+#  +3 per ally_bonus effect on the card (fires whenever a matching faction card
+#     has already been or will be played this turn).
+#  +3 bonus if the card's faction matches one that has already been played this
+#     turn (played_factions dict, key = faction string, value = count played).
+#  +2 per prepare_champion effect (re-enables expend abilities mid-turn).
+#  +1 per for_each_champion scaling effect (rewards a deep board).
+#  +1 if the card is a champion (persistent faction presence for future turns).
+func estimate_combo_value(card: Card, played_factions: Dictionary, ai_champions: int) -> int:
+	if card == null:
+		return 0
+
+	var score: int = 0
+	var card_faction: String = ""
+
+	if card is DataCard:
+		var data_card: DataCard = card as DataCard
+		for effect: Dictionary in data_card.effects:
+			var eid: String = String(effect.get("id", ""))
+			match eid:
+				"set_faction":
+					card_faction = String(effect.get("faction", ""))
+				"ally_bonus":
+					score += 3
+				"prepare_champion":
+					score += 2
+				"for_each_champion_gain_combat", "for_each_champion_gain_health", \
+				"for_each_other_champion_gain_combat", "for_each_other_guard_gain_combat", \
+				"for_each_other_wild_gain_combat":
+					score += 1
+				"champion_data":
+					# Champions stay in play and add faction presence every turn.
+					score += 1
+
+	# Bonus if playing this card would trigger ally effects already pending (i.e.
+	# a card from the same faction was played earlier this turn).
+	if not card_faction.is_empty() and played_factions.get(card_faction, 0) > 0:
+		score += 3
+
+	# Bonus for cards that scale with existing board presence.
+	if ai_champions > 0:
+		if card is DataCard:
+			for effect: Dictionary in (card as DataCard).effects:
+				var eid: String = String(effect.get("id", ""))
+				if eid in ["for_each_champion_gain_combat", "for_each_champion_gain_health",
+						"for_each_other_champion_gain_combat", "for_each_other_guard_gain_combat",
+						"for_each_other_wild_gain_combat"]:
+					# Additional weight when we actually have champions.
+					score += ai_champions
+
+	return score
+
+
+# Score a card for the EFFICIENCY strategy.
+# Returns an integer where higher = better deck-efficiency potential.
+#
+# Scoring breakdown:
+#  +6 per sacrifice effect (removes a weak card from the deck — highest value).
+#  +4 per draw_cards effect (accelerates cycling; each draw counted once).
+#  +3 per draw_then_discard or draw_up_to_then_discard (net cycle / thin).
+#  +2 per recover_discard_to_topdeck (recycles a key card).
+#  +1 per regular resource effect (gain_gold, gain_energy) — secondary value.
+func estimate_efficiency_value(card: Card) -> int:
+	if card == null:
+		return 0
+
+	var score: int = 0
+
+	if card is DataCard:
+		var data_card: DataCard = card as DataCard
+		for effect: Dictionary in data_card.effects:
+			var eid: String = String(effect.get("id", ""))
+			match eid:
+				"sacrifice_combat_offer", "sacrifice_for_additional_combat":
+					score += 6
+				"draw_cards":
+					score += int(effect.get("value", 1)) * 4
+				"draw_then_discard", "draw_up_to_then_discard":
+					score += 3
+				"recover_discard_to_topdeck":
+					score += 2
+				"gain_gold", "gain_energy":
+					score += int(effect.get("value", 1))
+
+	# Fallback for non-DataCard cards with an effects array.
+	if not (card is DataCard) and card.get("effects") != null and card.get("effects") is Array:
+		for raw: Variant in card.get("effects"):
+			if not (raw is Dictionary):
+				continue
+			var kind: String = String((raw as Dictionary).get("type", (raw as Dictionary).get("id", "")))
+			var amt: int = int((raw as Dictionary).get("value", 1))
+			if kind in ["draw", "cantrip"]:
+				score += amt * 4
+			if kind in ["sacrifice", "remove"]:
+				score += amt * 6
+
+	return score
+
+
 # ai_champions is the number of AI champions currently in play, used to scale
 # "for each champion" effects accurately.
 func _estimate_card_values(card: Card, ai_champions: int = 0) -> Dictionary:

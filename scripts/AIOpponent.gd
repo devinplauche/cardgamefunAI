@@ -6,9 +6,11 @@ enum Difficulty {
 	GREEDY,
 	LOOKAHEAD,
 	# Single-axis strategies useful as baselines in benchmarks.
-	AGGRO,    # Always prefer highest-damage cards; buy combat-heavy market offers.
-	ECON,     # Always prefer highest-resource cards; buy by highest gold cost.
-	CONTROL,  # Always prefer highest-disruption cards; buy disruptive market offers.
+	AGGRO,       # Always prefer highest-damage cards; buy combat-heavy market offers.
+	ECON,        # Always prefer highest-resource cards; buy by highest gold cost.
+	CONTROL,     # Always prefer highest-disruption cards; buy disruptive market offers.
+	COMBO,       # Maximises faction ally-trigger chains and champion synergies.
+	EFFICIENCY,  # Prizes sacrifice and draw effects to keep the deck lean and fast.
 }
 
 @export var difficulty: Difficulty = Difficulty.GREEDY
@@ -71,6 +73,10 @@ func _choose_card(playable_cards: Array[Card], self_player: Node, opponent_playe
 			return _choose_econ(playable_cards, self_player)
 		Difficulty.CONTROL:
 			return _choose_control(playable_cards, self_player)
+		Difficulty.COMBO:
+			return _choose_combo(playable_cards, self_player)
+		Difficulty.EFFICIENCY:
+			return _choose_efficiency(playable_cards, self_player)
 		_:
 			return _choose_random(playable_cards)
 
@@ -178,6 +184,32 @@ func _choose_control(playable_cards: Array[Card], self_player: Node) -> Card:
 	return best_card if best_card != null else _choose_random(playable_cards)
 
 
+func _choose_combo(playable_cards: Array[Card], self_player: Node) -> Card:
+	var ai_champions: int = _get_champion_count(self_player)
+	var played_factions: Dictionary = {}
+	if self_player != null and self_player.get("faction_counts_this_turn") != null:
+		played_factions = self_player.get("faction_counts_this_turn") as Dictionary
+	var best_card: Card = null
+	var best_value: int = -1
+	for card: Card in playable_cards:
+		var value: int = evaluator.estimate_combo_value(card, played_factions, ai_champions)
+		if value > best_value:
+			best_value = value
+			best_card = card
+	return best_card if best_card != null else _choose_random(playable_cards)
+
+
+func _choose_efficiency(playable_cards: Array[Card], self_player: Node) -> Card:
+	var best_card: Card = null
+	var best_value: int = -1
+	for card: Card in playable_cards:
+		var value: int = evaluator.estimate_efficiency_value(card)
+		if value > best_value:
+			best_value = value
+			best_card = card
+	return best_card if best_card != null else _choose_random(playable_cards)
+
+
 # Public synchronous card picker for use in headless simulations.
 # Filters the hand by mana (all Hero Realms cards have cost=0 so this is a no-op
 # in practice) and delegates to the configured strategy.
@@ -202,6 +234,10 @@ func choose_market_offer(offers: Array[Dictionary], gold_pool: int, context: Dic
 			return _choose_market_greedy_cost(offers, gold_pool)
 		Difficulty.CONTROL:
 			return _choose_market_by_offer_field(offers, gold_pool, "opponent_discard")
+		Difficulty.COMBO:
+			return _choose_market_combo(offers, gold_pool, context)
+		Difficulty.EFFICIENCY:
+			return _choose_market_efficiency(offers, gold_pool)
 		_:
 			return _choose_market_random(offers, gold_pool)
 
@@ -267,7 +303,81 @@ func _choose_market_greedy_cost(offers: Array[Dictionary], gold_pool: int) -> in
 	return best_idx
 
 
-func _build_eval_context(self_player: Node, opponent_player: Node) -> Dictionary:
+# COMBO market buying: prefer offers that have ally bonuses or match the faction
+# already most represented in the current game context. Falls back to evaluator
+# scoring so something is always bought if gold is available.
+func _choose_market_combo(offers: Array[Dictionary], gold_pool: int, context: Dictionary) -> int:
+	# Use the dominant faction from context if available.
+	var dominant_faction: String = String(context.get("ai_dominant_faction", ""))
+
+	var best_idx: int = -1
+	var best_score: int = -1
+
+	for i: int in range(offers.size()):
+		if offers[i].is_empty():
+			continue
+		if int(offers[i].get("cost", 99)) > gold_pool:
+			continue
+
+		var offer: Dictionary = offers[i]
+		var score: int = 0
+
+		# Award points for ally_combat / ally_gold / ally_health fields in the
+		# parsed market entry (positive values mean the card has ally text).
+		score += int(offer.get("ally_combat", 0)) + int(offer.get("ally_gold", 0)) + int(offer.get("ally_health", 0))
+
+		# Champions (card type contains "Champion") provide ongoing faction presence.
+		if String(offer.get("type", "")).to_lower().contains("champion"):
+			score += 2
+
+		# Faction match bonus.
+		if not dominant_faction.is_empty() and String(offer.get("faction", "")).to_lower() == dominant_faction.to_lower():
+			score += 3
+
+		if score > best_score:
+			best_score = score
+			best_idx = i
+
+	# If no offer has any combo value, fall back to evaluator scoring.
+	if best_idx == -1 or best_score == 0:
+		return _choose_market_scored(offers, gold_pool, context)
+
+	return best_idx
+
+
+# EFFICIENCY market buying: prioritise offers that have sacrifice or draw text,
+# then high draw_cards count, then ally/sacrifice_combat fields.
+# Falls back to greedy-by-cost if no offer has efficiency value.
+func _choose_market_efficiency(offers: Array[Dictionary], gold_pool: int) -> int:
+	var best_idx: int = -1
+	var best_score: int = -1
+
+	for i: int in range(offers.size()):
+		if offers[i].is_empty():
+			continue
+		if int(offers[i].get("cost", 99)) > gold_pool:
+			continue
+
+		var offer: Dictionary = offers[i]
+		var score: int = 0
+
+		# sacrifice_combat indicates the card has a sacrifice ability.
+		score += int(offer.get("sacrifice_combat", 0)) * 3
+
+		# draw_cards is a parsed field counting net card draws.
+		score += int(offer.get("draw_cards", 0)) * 4
+
+		if score > best_score:
+			best_score = score
+			best_idx = i
+
+	if best_idx == -1 or best_score == 0:
+		return _choose_market_greedy_cost(offers, gold_pool)
+
+	return best_idx
+
+
+
 	var opponent_hp_value: int = _get_health(opponent_player)
 	if fog_of_war:
 		# Optional hidden-information mode keeps AI from exact lethal math.

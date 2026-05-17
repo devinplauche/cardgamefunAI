@@ -10,12 +10,14 @@ extends Node
 # Strategy table: [display_name, AIOpponent.Difficulty]
 # Order determines seeding so keep it stable for reproducible results.
 const STRATEGIES: Array = [
-	["Random",    AIOpponent.Difficulty.RANDOM],
-	["Aggro",     AIOpponent.Difficulty.AGGRO],
-	["Econ",      AIOpponent.Difficulty.ECON],
-	["Control",   AIOpponent.Difficulty.CONTROL],
-	["Greedy",    AIOpponent.Difficulty.GREEDY],
-	["Lookahead", AIOpponent.Difficulty.LOOKAHEAD],
+	["Random",     AIOpponent.Difficulty.RANDOM],
+	["Aggro",      AIOpponent.Difficulty.AGGRO],
+	["Econ",       AIOpponent.Difficulty.ECON],
+	["Control",    AIOpponent.Difficulty.CONTROL],
+	["Combo",      AIOpponent.Difficulty.COMBO],
+	["Efficiency", AIOpponent.Difficulty.EFFICIENCY],
+	["Greedy",     AIOpponent.Difficulty.GREEDY],
+	["Lookahead",  AIOpponent.Difficulty.LOOKAHEAD],
 ]
 
 ## Games played per ordered pair (A always goes first).
