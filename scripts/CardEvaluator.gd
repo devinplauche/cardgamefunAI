@@ -129,9 +129,9 @@ func _estimate_card_values(card: Card, ai_champions: int = 0) -> Dictionary:
 				"gain_energy", "draw_cards", "gain_gold":
 					resource_total += value
 				"for_each_champion_gain_combat":
-					damage_total += value * max(ai_champions, 1)
+					damage_total += value * ai_champions
 				"for_each_champion_gain_health":
-					block_total += int(round(float(value * max(ai_champions, 1)) * HEALTH_TO_BLOCK_WEIGHT))
+					block_total += int(round(float(value * ai_champions) * HEALTH_TO_BLOCK_WEIGHT))
 				"for_each_other_champion_gain_combat", "for_each_other_guard_gain_combat", "for_each_other_wild_gain_combat":
 					damage_total += value * max(ai_champions - 1, 0)
 				"champion_data":
@@ -175,17 +175,16 @@ func _apply_card_to_sim_state(card: Card, context: Dictionary) -> void:
 	var ai_champions: int = int(context.get("ai_champions", 0))
 	var values: Dictionary = _estimate_card_values(card, ai_champions)
 
-	var card_damage: int = int(values.get("damage", 0))
-	var opponent_hp: int = int(context.get("opponent_hp", 0))
-	context["opponent_hp"] = max(opponent_hp - card_damage, 0)
-
 	var own_block: int = int(context.get("ai_block", 0))
 	context["ai_block"] = own_block + int(values.get("block", 0))
 
-	# Track accumulated combat and gold so lethal and purchase decisions stay
-	# accurate across multiple simulated card plays.
+	# In Hero Realms, combat is resolved at end of turn rather than applied
+	# card by card. Track accumulated combat so the lethal check in score_card
+	# can correctly compare total projected damage against opponent_hp + block.
+	# opponent_hp is intentionally left unchanged here so the check is not
+	# corrupted by double-subtracting damage in subsequent score_card calls.
 	var own_combat: int = int(context.get("ai_combat", 0))
-	context["ai_combat"] = own_combat + card_damage
+	context["ai_combat"] = own_combat + int(values.get("damage", 0))
 
 	var own_gold: int = int(context.get("ai_gold", 0))
 	context["ai_gold"] = own_gold + int(values.get("resource", 0))
