@@ -55,8 +55,8 @@ Use `res://tests/TestPlayerChoices.gd` to validate popup-choice request and reso
 ## AI Strategy Benchmark
 
 Use `res://tests/AIBenchmark.gd` to run a round-robin tournament that pits all
-six AI strategies (Random, Aggro, Econ, Control, Greedy, Lookahead) against each
-other and prints a ranked leaderboard.
+eight AI strategies (Random, Aggro, Econ, Control, Combo, Efficiency, Greedy,
+Lookahead) against each other and prints a ranked leaderboard.
 
 Each ordered pair of strategies plays 10 games (strategy A always goes first);
 since both orderings are tested the unordered matchup is resolved over 20 games.
