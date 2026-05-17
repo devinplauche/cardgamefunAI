@@ -135,24 +135,41 @@ func _build_eval_context(self_player: Node, opponent_player: Node) -> Dictionary
 		# Optional hidden-information mode keeps AI from exact lethal math.
 		opponent_hp_value = int(ceil(float(opponent_hp_value) * 0.9))
 
+	var ai_max_hp: int = _get_max_health(self_player)
+	if ai_max_hp <= 0:
+		ai_max_hp = 50
+
 	return {
 		"ai_mana": _get_mana(self_player),
 		"ai_max_mana": _get_max_mana(self_player),
 		"ai_block": _get_block(self_player),
+		"ai_hp": _get_health(self_player),
+		"ai_max_hp": ai_max_hp,
+		"ai_combat": _get_combat(self_player),
+		"ai_gold": _get_gold(self_player),
+		"ai_champions": _get_champion_count(self_player),
 		"opponent_hp": opponent_hp_value,
+		"opponent_block": _get_block(opponent_player),
+		"opponent_champions": _get_champion_count(opponent_player),
 		"board_threat": _estimate_opponent_threat(opponent_player)
 	}
 
 
 func _estimate_opponent_threat(opponent_player: Node) -> float:
 	var threat: float = 0.2
-	var opponent_resources: int = 0
-	if opponent_player.has_method("get_mana"):
-		opponent_resources = int(opponent_player.call("get_mana"))
-	elif opponent_player.get("mana") != null:
-		opponent_resources = int(opponent_player.get("mana"))
 
-	threat += clamp(float(opponent_resources) / 10.0, 0.0, 0.5)
+	# Combat pool is an immediate damage threat.
+	var combat: int = _get_combat(opponent_player)
+	threat += clamp(float(combat) / 20.0, 0.0, 0.4)
+
+	# Gold pool signals purchasing power and future deck strength.
+	var gold: int = _get_gold(opponent_player)
+	threat += clamp(float(gold) / 10.0, 0.0, 0.2)
+
+	# Champion count signals persistent board presence.
+	var champion_count: int = _get_champion_count(opponent_player)
+	threat += clamp(float(champion_count) * 0.1, 0.0, 0.2)
+
 	return clamp(threat, 0.0, 1.0)
 
 
@@ -268,6 +285,18 @@ func _get_health(player: Node) -> int:
 	return 0
 
 
+func _get_max_health(player: Node) -> int:
+	if player == null:
+		return 50
+	if player.has_method("get_max_health"):
+		return int(player.call("get_max_health"))
+	if player.get("max_hp") != null:
+		return int(player.get("max_hp"))
+	if player.get("player_max_hp") != null:
+		return int(player.get("player_max_hp"))
+	return 50
+
+
 func _get_block(player: Node) -> int:
 	if player == null:
 		return 0
@@ -280,3 +309,52 @@ func _get_block(player: Node) -> int:
 	if player.get("current_block") != null:
 		return int(player.get("current_block"))
 	return 0
+
+
+func _get_combat(player: Node) -> int:
+	if player == null:
+		return 0
+	if player.has_method("get_combat_pool"):
+		return int(player.call("get_combat_pool"))
+	if player.get("combat_pool") != null:
+		return int(player.get("combat_pool"))
+	return 0
+
+
+func _get_gold(player: Node) -> int:
+	if player == null:
+		return 0
+	if player.has_method("get_gold_pool"):
+		return int(player.call("get_gold_pool"))
+	if player.get("gold_pool") != null:
+		return int(player.get("gold_pool"))
+	return 0
+
+
+func _get_champion_count(player: Node) -> int:
+	if player == null:
+		return 0
+	if player.get("champions_in_play") != null:
+		return int(player.get("champions_in_play").size())
+	return 0
+
+
+# Public wrapper so external nodes (e.g., TurnManager) can get the same threat
+# estimate used internally without reaching into a private method.
+func estimate_threat(opponent_player: Node) -> float:
+	return _estimate_opponent_threat(opponent_player)
+
+
+# Score a raw market offer dictionary for the AI's current game state.
+# Returns a value in [0, 1]; higher means more desirable to buy.
+func score_market_offer(offer: Dictionary, context: Dictionary) -> float:
+	if offer.is_empty():
+		return 0.0
+	var temp_card: Card = GameState.create_market_card_from_entry(offer)
+	if temp_card == null:
+		return 0.0
+	# Use MARKET_EVAL_MANA so all market cards pass the playable_now check —
+	# we are scoring purchase desirability, not hand playability.
+	var buy_context: Dictionary = context.duplicate(true)
+	buy_context["ai_mana"] = CardEvaluator.MARKET_EVAL_MANA
+	return evaluator.score_card(temp_card, buy_context)

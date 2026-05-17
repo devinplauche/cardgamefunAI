@@ -707,17 +707,22 @@ func _resolve_ai_combat() -> void:
 
 
 func _run_ai_market_phase() -> void:
+	var market_context: Dictionary = _build_ai_market_context()
+
 	while true:
 		var best_index: int = -1
-		var best_cost: int = -1
+		var best_score: float = -1.0
 
 		for index: int in range(market_offers.size()):
 			var offer: Dictionary = market_offers[index]
 			if offer.is_empty():
 				continue
 			var cost: int = int(offer.get("cost", 99))
-			if cost <= opponent.gold_pool and cost > best_cost:
-				best_cost = cost
+			if cost > opponent.gold_pool:
+				continue
+			var offer_score: float = ai_opponent.score_market_offer(offer, market_context)
+			if offer_score > best_score:
+				best_score = offer_score
 				best_index = index
 
 		if best_index == -1:
@@ -735,6 +740,8 @@ func _run_ai_market_phase() -> void:
 
 		opponent.receive_acquired_card(purchased_card)
 		_replace_offer(best_index)
+		# Update the gold in context so subsequent scoring uses the new amount.
+		market_context["ai_gold"] = opponent.gold_pool
 
 	# Fire Gem is always available, so AI may buy those too.
 	while fire_gem_count > 0 and opponent.gold_pool >= 2:
@@ -746,6 +753,23 @@ func _run_ai_market_phase() -> void:
 			break
 		opponent.deck.discard_card(fire_gem)
 		fire_gem_count -= 1
+
+
+func _build_ai_market_context() -> Dictionary:
+	return {
+		"ai_mana": opponent.current_energy,
+		"ai_max_mana": opponent.max_energy,
+		"ai_block": opponent.current_block,
+		"ai_hp": opponent.current_hp,
+		"ai_max_hp": opponent.max_hp,
+		"ai_combat": opponent.combat_pool,
+		"ai_gold": opponent.gold_pool,
+		"ai_champions": opponent.champions_in_play.size(),
+		"opponent_hp": player.current_hp,
+		"opponent_block": player.current_block,
+		"opponent_champions": player.champions_in_play.size(),
+		"board_threat": ai_opponent.estimate_threat(player)
+	}
 
 
 func _on_opponent_defeated() -> void:
