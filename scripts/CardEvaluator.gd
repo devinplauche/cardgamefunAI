@@ -98,6 +98,9 @@ func estimate_sequence_score(cards: Array[Card], context: Dictionary) -> float:
 
 
 # Public alias used by strategy methods that need per-card value breakdowns.
+# The private _estimate_card_values is kept as-is so internal callers are
+# explicit about the implementation detail; this wrapper provides a stable
+# public surface for external code such as AIOpponent.
 func estimate_card_values(card: Card, ai_champions: int = 0) -> Dictionary:
 	return _estimate_card_values(card, ai_champions)
 

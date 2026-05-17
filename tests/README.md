@@ -78,6 +78,7 @@ Results include win / loss / draw counts and a final win-rate ranking.
 | **Lookahead** | Evaluator score with 2-ply look-ahead | Evaluator-scored offer |
 
 
+## Card Art Validation
 
 Use `res://tests/TestCardArt.gd` to validate that key card art paths resolve and raw image files can be loaded headlessly.
 

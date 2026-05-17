@@ -45,7 +45,7 @@ func _ready() -> void:
 	var n: int = STRATEGIES.size()
 
 	# Create one AIOpponent node per strategy.
-	for entry: Variant in STRATEGIES:
+	for entry: Array in STRATEGIES:
 		var ai: AIOpponent = AIOpponent.new()
 		ai.difficulty = entry[1]
 		add_child(ai)
