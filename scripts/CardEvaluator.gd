@@ -51,9 +51,10 @@ func score_card(card: Card, context: Dictionary) -> float:
 		elif projected_damage >= effective_opponent_hp - 3:
 			lethal_bonus = 0.5
 
-	# Self-preservation urgency: low AI HP makes defense more valuable.
+	# Self-preservation urgency: rises linearly from 0 at the threshold to 1
+	# when HP reaches 0 (e.g., urgency = 0.5 at half of LOW_HP_FRACTION).
 	var hp_ratio: float = clamp(float(ai_hp) / float(ai_max_hp), 0.0, 1.0)
-	var defense_urgency: float = clamp(1.0 - hp_ratio / LOW_HP_FRACTION, 0.0, 1.0)
+	var defense_urgency: float = clamp((LOW_HP_FRACTION - hp_ratio) / LOW_HP_FRACTION, 0.0, 1.0)
 
 	var tactical_score: float
 	if lethal_bonus >= 1.0:
@@ -139,7 +140,7 @@ func _estimate_card_values(card: Card, ai_champions: int = 0) -> Dictionary:
 					# their stats double to reflect their persistent presence.
 					damage_total += int(effect.get("combat", 0)) * 2
 					resource_total += int(effect.get("gold", 0)) * 2
-					block_total += int(round(float(int(effect.get("health", 0))) * HEALTH_TO_BLOCK_WEIGHT)) * 2
+					block_total += int(round(int(effect.get("health", 0)) * HEALTH_TO_BLOCK_WEIGHT)) * 2
 				_:
 					pass
 

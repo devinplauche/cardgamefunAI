@@ -353,6 +353,8 @@ func score_market_offer(offer: Dictionary, context: Dictionary) -> float:
 	var temp_card: Card = GameState.create_market_card_from_entry(offer)
 	if temp_card == null:
 		return 0.0
+	# DataCard extends RefCounted and is automatically freed when temp_card
+	# goes out of scope — no manual cleanup required.
 	# Use MARKET_EVAL_MANA so all market cards pass the playable_now check —
 	# we are scoring purchase desirability, not hand playability.
 	var buy_context: Dictionary = context.duplicate(true)
