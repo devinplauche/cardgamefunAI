@@ -97,6 +97,11 @@ func estimate_sequence_score(cards: Array[Card], context: Dictionary) -> float:
 	return clamp(total_score / float(cards.size()), 0.0, 1.0)
 
 
+# Public alias used by strategy methods that need per-card value breakdowns.
+func estimate_card_values(card: Card, ai_champions: int = 0) -> Dictionary:
+	return _estimate_card_values(card, ai_champions)
+
+
 # ai_champions is the number of AI champions currently in play, used to scale
 # "for each champion" effects accurately.
 func _estimate_card_values(card: Card, ai_champions: int = 0) -> Dictionary:

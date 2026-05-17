@@ -4,7 +4,11 @@ class_name AIOpponent
 enum Difficulty {
 	RANDOM,
 	GREEDY,
-	LOOKAHEAD
+	LOOKAHEAD,
+	# Single-axis strategies useful as baselines in benchmarks.
+	AGGRO,    # Always prefer highest-damage cards; buy combat-heavy market offers.
+	ECON,     # Always prefer highest-resource cards; buy by highest gold cost.
+	CONTROL,  # Always prefer highest-disruption cards; buy disruptive market offers.
 }
 
 @export var difficulty: Difficulty = Difficulty.GREEDY
@@ -61,6 +65,12 @@ func _choose_card(playable_cards: Array[Card], self_player: Node, opponent_playe
 			return _choose_greedy(playable_cards, self_player, opponent_player)
 		Difficulty.LOOKAHEAD:
 			return _choose_lookahead(playable_cards, self_player, opponent_player)
+		Difficulty.AGGRO:
+			return _choose_aggro(playable_cards, self_player)
+		Difficulty.ECON:
+			return _choose_econ(playable_cards, self_player)
+		Difficulty.CONTROL:
+			return _choose_control(playable_cards, self_player)
 		_:
 			return _choose_random(playable_cards)
 
@@ -127,6 +137,134 @@ func _best_future_score(cards: Array[Card], context: Dictionary) -> float:
 		best = max(best, evaluator.score_card(card, context))
 
 	return best
+
+
+func _choose_aggro(playable_cards: Array[Card], self_player: Node) -> Card:
+	var ai_champions: int = _get_champion_count(self_player)
+	var best_card: Card = null
+	var best_value: int = -1
+	for card: Card in playable_cards:
+		var vals: Dictionary = evaluator.estimate_card_values(card, ai_champions)
+		var value: int = int(vals.get("damage", 0))
+		if value > best_value:
+			best_value = value
+			best_card = card
+	return best_card if best_card != null else _choose_random(playable_cards)
+
+
+func _choose_econ(playable_cards: Array[Card], self_player: Node) -> Card:
+	var ai_champions: int = _get_champion_count(self_player)
+	var best_card: Card = null
+	var best_value: int = -1
+	for card: Card in playable_cards:
+		var vals: Dictionary = evaluator.estimate_card_values(card, ai_champions)
+		var value: int = int(vals.get("resource", 0))
+		if value > best_value:
+			best_value = value
+			best_card = card
+	return best_card if best_card != null else _choose_random(playable_cards)
+
+
+func _choose_control(playable_cards: Array[Card], self_player: Node) -> Card:
+	var ai_champions: int = _get_champion_count(self_player)
+	var best_card: Card = null
+	var best_value: int = -1
+	for card: Card in playable_cards:
+		var vals: Dictionary = evaluator.estimate_card_values(card, ai_champions)
+		var value: int = int(vals.get("disruption", 0))
+		if value > best_value:
+			best_value = value
+			best_card = card
+	return best_card if best_card != null else _choose_random(playable_cards)
+
+
+# Public synchronous card picker for use in headless simulations.
+# Filters the hand by mana (all Hero Realms cards have cost=0 so this is a no-op
+# in practice) and delegates to the configured strategy.
+func choose_card(hand: Array[Card], self_player: Node, opponent_player: Node) -> Card:
+	var playable: Array[Card] = _get_playable_cards(hand, _get_mana(self_player))
+	if playable.is_empty():
+		return null
+	return _choose_card(playable, self_player, opponent_player)
+
+
+# Public market-offer selector for headless simulations.
+# Returns the index of the best offer to buy, or -1 if nothing is affordable.
+func choose_market_offer(offers: Array[Dictionary], gold_pool: int, context: Dictionary) -> int:
+	match difficulty:
+		Difficulty.RANDOM:
+			return _choose_market_random(offers, gold_pool)
+		Difficulty.GREEDY, Difficulty.LOOKAHEAD:
+			return _choose_market_scored(offers, gold_pool, context)
+		Difficulty.AGGRO:
+			return _choose_market_by_offer_field(offers, gold_pool, "combat")
+		Difficulty.ECON:
+			return _choose_market_greedy_cost(offers, gold_pool)
+		Difficulty.CONTROL:
+			return _choose_market_by_offer_field(offers, gold_pool, "opponent_discard")
+		_:
+			return _choose_market_random(offers, gold_pool)
+
+
+func _choose_market_random(offers: Array[Dictionary], gold_pool: int) -> int:
+	var affordable: Array[int] = []
+	for i: int in range(offers.size()):
+		if offers[i].is_empty():
+			continue
+		if int(offers[i].get("cost", 99)) <= gold_pool:
+			affordable.append(i)
+	if affordable.is_empty():
+		return -1
+	return affordable[randi_range(0, affordable.size() - 1)]
+
+
+func _choose_market_scored(offers: Array[Dictionary], gold_pool: int, context: Dictionary) -> int:
+	var best_idx: int = -1
+	var best_score: float = -1.0
+	for i: int in range(offers.size()):
+		if offers[i].is_empty():
+			continue
+		if int(offers[i].get("cost", 99)) > gold_pool:
+			continue
+		var s: float = score_market_offer(offers[i], context)
+		if s > best_score:
+			best_score = s
+			best_idx = i
+	return best_idx
+
+
+# Picks the affordable offer whose raw `field` value (from the parsed market
+# entry dict) is highest. Falls back to greedy-by-cost when all offers score 0.
+func _choose_market_by_offer_field(offers: Array[Dictionary], gold_pool: int, field: String) -> int:
+	var best_idx: int = -1
+	var best_value: int = -1
+	for i: int in range(offers.size()):
+		if offers[i].is_empty():
+			continue
+		if int(offers[i].get("cost", 99)) > gold_pool:
+			continue
+		var value: int = int(offers[i].get(field, 0))
+		if value > best_value:
+			best_value = value
+			best_idx = i
+	if best_idx == -1:
+		return _choose_market_greedy_cost(offers, gold_pool)
+	return best_idx
+
+
+func _choose_market_greedy_cost(offers: Array[Dictionary], gold_pool: int) -> int:
+	var best_idx: int = -1
+	var best_cost: int = -1
+	for i: int in range(offers.size()):
+		if offers[i].is_empty():
+			continue
+		var cost: int = int(offers[i].get("cost", 99))
+		if cost > gold_pool:
+			continue
+		if cost > best_cost:
+			best_cost = cost
+			best_idx = i
+	return best_idx
 
 
 func _build_eval_context(self_player: Node, opponent_player: Node) -> Dictionary:
@@ -353,8 +491,8 @@ func score_market_offer(offer: Dictionary, context: Dictionary) -> float:
 	var temp_card: Card = GameState.create_market_card_from_entry(offer)
 	if temp_card == null:
 		return 0.0
-	# DataCard extends RefCounted and is automatically freed when temp_card
-	# goes out of scope — no manual cleanup required.
+	# create_market_card_from_entry returns a DataCard (which extends Card and
+	# RefCounted), so temp_card is automatically freed when it goes out of scope.
 	# Use MARKET_EVAL_MANA so all market cards pass the playable_now check —
 	# we are scoring purchase desirability, not hand playability.
 	var buy_context: Dictionary = context.duplicate(true)
