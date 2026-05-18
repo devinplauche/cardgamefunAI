@@ -85,7 +85,7 @@ class TestCardEffects(unittest.TestCase):
         self.assertEqual(player.hp, 7)
 
         # when opponent exists, this callable should not heal
-        player.hand = [Card(id="u4b", name="Blessing", data={"ability": custom_ability})]
+        player.hand = [Card(id="u4_with_opponent", name="Blessing", data={"ability": custom_ability})]
         opponent = Player("Opponent")
         player.play_card(player.hand[0], opponent=opponent)
         self.assertEqual(player.hp, 7)

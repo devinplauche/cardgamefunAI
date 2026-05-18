@@ -128,7 +128,7 @@ class Player:
         ability_handles_damage = (
             isinstance(ability, str) and ability in Player.UNIQUE_DAMAGE_ABILITIES
         ) or (
-            callable(ability) and bool(card.data.get("ability_handles_damage", False))
+            callable(ability) and card.data.get("ability_handles_damage", False)
         )
 
         if "damage" in card.data and not ability_handles_damage:
