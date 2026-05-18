@@ -82,12 +82,28 @@ var custom_choice: Dictionary = {}
 @onready var discard_title: Label = %DiscardTitle
 @onready var discard_cards: VBoxContainer = %DiscardCards
 @onready var close_discard_button: Button = %CloseDiscardButton
+@onready var difficulty_option: OptionButton = %DifficultyOption
 
 var shop_buttons: Array[Button] = []
+
+# Maps OptionButton item indices to Difficulty enum values (must match
+# the order items are added in _setup_difficulty_selector).
+const _DIFFICULTY_ORDER: Array = [
+	AIOpponent.Difficulty.RANDOM,
+	AIOpponent.Difficulty.GREEDY,
+	AIOpponent.Difficulty.LOOKAHEAD,
+	AIOpponent.Difficulty.AGGRO,
+	AIOpponent.Difficulty.ECON,
+	AIOpponent.Difficulty.CONTROL,
+	AIOpponent.Difficulty.COMBO,
+	AIOpponent.Difficulty.EFFICIENCY,
+	AIOpponent.Difficulty.ADAPTIVE,
+]
 
 
 func _ready() -> void:
 	shop_buttons = [shop_button_1, shop_button_2, shop_button_3, shop_button_4, shop_button_5]
+	_setup_difficulty_selector()
 	hand.card_selected.connect(_on_card_selected)
 	end_turn_button.pressed.connect(_on_end_turn_pressed)
 	end_turn_floating_button.pressed.connect(_on_end_turn_pressed)
@@ -111,6 +127,36 @@ func _ready() -> void:
 	_apply_responsive_layout()
 
 	_start_battle()
+
+
+func _setup_difficulty_selector() -> void:
+	if difficulty_option == null:
+		return
+
+	difficulty_option.clear()
+	var labels: Array[String] = [
+		"Random", "Greedy", "Lookahead", "Aggro",
+		"Econ", "Control", "Combo", "Efficiency", "Adaptive",
+	]
+	for label: String in labels:
+		difficulty_option.add_item(label)
+
+	# Pre-select the item that matches the current export setting.
+	var current_idx: int = _DIFFICULTY_ORDER.find(ai_difficulty)
+	if current_idx >= 0:
+		difficulty_option.selected = current_idx
+
+	difficulty_option.item_selected.connect(_on_difficulty_selected)
+
+
+func _on_difficulty_selected(index: int) -> void:
+	if index < 0 or index >= _DIFFICULTY_ORDER.size():
+		return
+	var new_difficulty: AIOpponent.Difficulty = _DIFFICULTY_ORDER[index]
+	ai_difficulty = new_difficulty
+	if ai_opponent != null:
+		ai_opponent.difficulty = new_difficulty
+	_log("AI difficulty changed to: " + difficulty_option.get_item_text(index))
 
 
 func _start_battle() -> void:
@@ -707,17 +753,22 @@ func _resolve_ai_combat() -> void:
 
 
 func _run_ai_market_phase() -> void:
+	var market_context: Dictionary = _build_ai_market_context()
+
 	while true:
 		var best_index: int = -1
-		var best_cost: int = -1
+		var best_score: float = -1.0
 
 		for index: int in range(market_offers.size()):
 			var offer: Dictionary = market_offers[index]
 			if offer.is_empty():
 				continue
 			var cost: int = int(offer.get("cost", 99))
-			if cost <= opponent.gold_pool and cost > best_cost:
-				best_cost = cost
+			if cost > opponent.gold_pool:
+				continue
+			var offer_score: float = ai_opponent.score_market_offer(offer, market_context)
+			if offer_score > best_score:
+				best_score = offer_score
 				best_index = index
 
 		if best_index == -1:
@@ -735,6 +786,8 @@ func _run_ai_market_phase() -> void:
 
 		opponent.receive_acquired_card(purchased_card)
 		_replace_offer(best_index)
+		# Update the gold in context so subsequent scoring uses the new amount.
+		market_context["ai_gold"] = opponent.gold_pool
 
 	# Fire Gem is always available, so AI may buy those too.
 	while fire_gem_count > 0 and opponent.gold_pool >= 2:
@@ -746,6 +799,23 @@ func _run_ai_market_phase() -> void:
 			break
 		opponent.deck.discard_card(fire_gem)
 		fire_gem_count -= 1
+
+
+func _build_ai_market_context() -> Dictionary:
+	return {
+		"ai_mana": opponent.current_energy,
+		"ai_max_mana": opponent.max_energy,
+		"ai_block": opponent.current_block,
+		"ai_hp": opponent.current_hp,
+		"ai_max_hp": opponent.max_hp,
+		"ai_combat": opponent.combat_pool,
+		"ai_gold": opponent.gold_pool,
+		"ai_champions": opponent.champions_in_play.size(),
+		"opponent_hp": player.current_hp,
+		"opponent_block": player.current_block,
+		"opponent_champions": player.champions_in_play.size(),
+		"board_threat": ai_opponent.estimate_threat(player)
+	}
 
 
 func _on_opponent_defeated() -> void:

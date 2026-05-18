@@ -4,12 +4,24 @@ class_name AIOpponent
 enum Difficulty {
 	RANDOM,
 	GREEDY,
-	LOOKAHEAD
+	LOOKAHEAD,
+	# Single-axis strategies useful as baselines in benchmarks.
+	AGGRO,       # Always prefer highest-damage cards; buy combat-heavy market offers.
+	ECON,        # Always prefer highest-resource cards; buy by highest gold cost.
+	CONTROL,     # Always prefer highest-disruption cards; buy disruptive market offers.
+	COMBO,       # Maximises faction ally-trigger chains and champion synergies.
+	EFFICIENCY,  # Prizes sacrifice and draw effects to keep the deck lean and fast.
+	ADAPTIVE,    # Dynamically switches axis based on game state (early econ → mid combo → late aggro).
 }
 
 @export var difficulty: Difficulty = Difficulty.GREEDY
 @export_range(1, 2, 1) var lookahead_depth: int = 2
 @export var fog_of_war: bool = false
+
+# Lethal-urgency threshold: if the opponent's effective HP (HP + block) minus
+# the AI's current combat pool is within this value, the AI treats buying
+# additional combat cards as the only priority.
+const LETHAL_URGENCY_THRESHOLD: int = 6
 
 var evaluator: CardEvaluator = CardEvaluator.new()
 
@@ -61,6 +73,18 @@ func _choose_card(playable_cards: Array[Card], self_player: Node, opponent_playe
 			return _choose_greedy(playable_cards, self_player, opponent_player)
 		Difficulty.LOOKAHEAD:
 			return _choose_lookahead(playable_cards, self_player, opponent_player)
+		Difficulty.AGGRO:
+			return _choose_aggro(playable_cards, self_player)
+		Difficulty.ECON:
+			return _choose_econ(playable_cards, self_player)
+		Difficulty.CONTROL:
+			return _choose_control(playable_cards, self_player)
+		Difficulty.COMBO:
+			return _choose_combo(playable_cards, self_player)
+		Difficulty.EFFICIENCY:
+			return _choose_efficiency(playable_cards, self_player)
+		Difficulty.ADAPTIVE:
+			return _choose_adaptive(playable_cards, self_player, opponent_player)
 		_:
 			return _choose_random(playable_cards)
 
@@ -106,7 +130,12 @@ func _choose_lookahead(playable_cards: Array[Card], self_player: Node, opponent_
 			var remaining: Array[Card] = _without_card(playable_cards, first_card)
 			context_after_first["ai_mana"] = int(root_context.get("ai_max_mana", context_after_first.get("ai_mana", 0)))
 			var follow_up: float = _best_future_score(remaining, context_after_first)
+			# Blend in a future-value estimate for the market card that would be
+			# added to the deck after this card play (discounted by 0.4 since it
+			# only appears in future turns, not the current one).
+			var market_future: float = float(context_after_first.get("_lookahead_market_bonus", 0.0))
 			sequence_score = clamp(sequence_score * 0.65 + follow_up * 0.35, 0.0, 1.0)
+			sequence_score = clamp(sequence_score + market_future * 0.4 * 0.10, 0.0, 1.0)
 
 		if sequence_score > best_score:
 			best_score = sequence_score
@@ -129,30 +158,350 @@ func _best_future_score(cards: Array[Card], context: Dictionary) -> float:
 	return best
 
 
+func _choose_aggro(playable_cards: Array[Card], self_player: Node) -> Card:
+	var ai_champions: int = _get_champion_count(self_player)
+	var best_card: Card = null
+	var best_value: int = -1
+	for card: Card in playable_cards:
+		var vals: Dictionary = evaluator.estimate_card_values(card, ai_champions)
+		var value: int = int(vals.get("damage", 0))
+		if value > best_value:
+			best_value = value
+			best_card = card
+	return best_card if best_card != null else _choose_random(playable_cards)
+
+
+func _choose_econ(playable_cards: Array[Card], self_player: Node) -> Card:
+	var ai_champions: int = _get_champion_count(self_player)
+	var best_card: Card = null
+	var best_value: int = -1
+	for card: Card in playable_cards:
+		var vals: Dictionary = evaluator.estimate_card_values(card, ai_champions)
+		var value: int = int(vals.get("resource", 0))
+		if value > best_value:
+			best_value = value
+			best_card = card
+	return best_card if best_card != null else _choose_random(playable_cards)
+
+
+func _choose_control(playable_cards: Array[Card], self_player: Node) -> Card:
+	var ai_champions: int = _get_champion_count(self_player)
+	var best_card: Card = null
+	var best_value: int = -1
+	for card: Card in playable_cards:
+		var vals: Dictionary = evaluator.estimate_card_values(card, ai_champions)
+		var value: int = int(vals.get("disruption", 0))
+		if value > best_value:
+			best_value = value
+			best_card = card
+	return best_card if best_card != null else _choose_random(playable_cards)
+
+
+func _choose_combo(playable_cards: Array[Card], self_player: Node) -> Card:
+	var ai_champions: int = _get_champion_count(self_player)
+	var played_factions: Dictionary = {}
+	if self_player != null and self_player.get("faction_counts_this_turn") != null:
+		played_factions = self_player.get("faction_counts_this_turn") as Dictionary
+	var best_card: Card = null
+	var best_value: int = -1
+	for card: Card in playable_cards:
+		var value: int = evaluator.estimate_combo_value(card, played_factions, ai_champions)
+		if value > best_value:
+			best_value = value
+			best_card = card
+	return best_card if best_card != null else _choose_greedy(playable_cards, self_player, opponent_player)
+
+
+func _choose_efficiency(playable_cards: Array[Card], self_player: Node) -> Card:
+	var best_card: Card = null
+	var best_value: int = -1
+	for card: Card in playable_cards:
+		var value: int = evaluator.estimate_efficiency_value(card)
+		if value > best_value:
+			best_value = value
+			best_card = card
+	return best_card if best_card != null else _choose_greedy(playable_cards, self_player, opponent_player)
+
+
+# ADAPTIVE strategy: dynamically switch axis based on game state.
+#   • Danger mode  (own HP < 40% max): prioritise block/health.
+#   • Late game    (opponent HP ≤ 25):  go full Aggro.
+#   • Otherwise:   evaluator-scored + faction-combo bonuses layered on top.
+#     This ensures Adaptive is never worse than Greedy while gaining when
+#     faction synergy or ally text is available (faction match +0.15, ally +0.10).
+func _choose_adaptive(playable_cards: Array[Card], self_player: Node, opponent_player: Node) -> Card:
+	var ai_hp: int = _get_health(self_player)
+	var ai_max_hp: int = _get_max_health(self_player)
+	var opp_hp: int = _get_health(opponent_player)
+	var ai_champions: int = _get_champion_count(self_player)
+
+	# Danger mode — survival first.
+	if ai_max_hp > 0 and float(ai_hp) / float(ai_max_hp) < 0.4:
+		var best_card: Card = null
+		var best_value: int = -1
+		for card: Card in playable_cards:
+			var vals: Dictionary = evaluator.estimate_card_values(card, ai_champions)
+			var value: int = int(vals.get("block", 0)) * 2 + int(vals.get("damage", 0))
+			if value > best_value:
+				best_value = value
+				best_card = card
+		return best_card if best_card != null else _choose_greedy(playable_cards, self_player, opponent_player)
+
+	# Late-game aggro — push for the kill.
+	if opp_hp <= 25:
+		return _choose_aggro(playable_cards, self_player)
+
+	# Mid/early game: evaluator score + faction-combo bonuses.
+	# Using Greedy as the baseline ensures Adaptive is never worse than Greedy
+	# while still rewarding faction synergy when it is available.
+	var context: Dictionary = _build_eval_context(self_player, opponent_player)
+	var played_factions: Dictionary = {}
+	if self_player != null and self_player.get("faction_counts_this_turn") != null:
+		played_factions = self_player.get("faction_counts_this_turn") as Dictionary
+	var best_card: Card = null
+	var best_score: float = -1.0
+	for card: Card in playable_cards:
+		var s: float = evaluator.score_card(card, context)
+		# Combo bonus: normalize estimate_combo_value (max ~10+ for high-synergy cards)
+		# into a 0–0.25 additive bonus so faction synergy never completely overrides
+		# evaluator score but is still meaningful when present.
+		var cv: int = evaluator.estimate_combo_value(card, played_factions, ai_champions)
+		s += clamp(float(cv) / 40.0, 0.0, 0.25)
+		if s > best_score:
+			best_score = s
+			best_card = card
+	return best_card if best_card != null else _choose_greedy(playable_cards, self_player, opponent_player)
+
+
+# Public synchronous card picker for use in headless simulations.
+# Filters the hand by mana (all Hero Realms cards have cost=0 so this is a no-op
+# in practice) and delegates to the configured strategy.
+func choose_card(hand: Array[Card], self_player: Node, opponent_player: Node) -> Card:
+	var playable: Array[Card] = _get_playable_cards(hand, _get_mana(self_player))
+	if playable.is_empty():
+		return null
+	return _choose_card(playable, self_player, opponent_player)
+
+
+# Public market-offer selector for headless simulations.
+# Returns the index of the best offer to buy, or -1 if nothing is affordable.
+func choose_market_offer(offers: Array[Dictionary], gold_pool: int, context: Dictionary) -> int:
+	match difficulty:
+		Difficulty.RANDOM:
+			return _choose_market_random(offers, gold_pool)
+		Difficulty.GREEDY, Difficulty.LOOKAHEAD:
+			return _choose_market_scored(offers, gold_pool, context)
+		Difficulty.AGGRO:
+			return _choose_market_by_offer_field(offers, gold_pool, "combat")
+		Difficulty.ECON:
+			return _choose_market_greedy_cost(offers, gold_pool)
+		Difficulty.CONTROL:
+			return _choose_market_by_offer_field(offers, gold_pool, "opponent_discard")
+		Difficulty.COMBO:
+			return _choose_market_combo(offers, gold_pool, context)
+		Difficulty.EFFICIENCY:
+			return _choose_market_efficiency(offers, gold_pool)
+		Difficulty.ADAPTIVE:
+			return _choose_market_adaptive(offers, gold_pool, context)
+		_:
+			return _choose_market_random(offers, gold_pool)
+
+
+func _choose_market_random(offers: Array[Dictionary], gold_pool: int) -> int:
+	var affordable: Array[int] = []
+	for i: int in range(offers.size()):
+		if offers[i].is_empty():
+			continue
+		if int(offers[i].get("cost", 99)) <= gold_pool:
+			affordable.append(i)
+	if affordable.is_empty():
+		return -1
+	return affordable[randi_range(0, affordable.size() - 1)]
+
+
+func _choose_market_scored(offers: Array[Dictionary], gold_pool: int, context: Dictionary) -> int:
+	# Lethal-urgency pass: if accumulated combat is close to finishing the
+	# opponent, heavily favour offers that provide additional combat value and
+	# ignore economic / efficiency considerations for this purchase.
+	var ai_combat: int = int(context.get("ai_combat", 0))
+	var opponent_hp: int = int(context.get("opponent_hp", 999))
+	var opponent_block: int = int(context.get("opponent_block", 0))
+	var effective_opp_hp: int = opponent_hp + opponent_block
+	var lethal_urgent: bool = effective_opp_hp > 0 and (effective_opp_hp - ai_combat) <= LETHAL_URGENCY_THRESHOLD
+
+	var best_idx: int = -1
+	var best_score: float = -1.0
+	for i: int in range(offers.size()):
+		if offers[i].is_empty():
+			continue
+		if int(offers[i].get("cost", 99)) > gold_pool:
+			continue
+		var s: float
+		if lethal_urgent:
+			# Score purely on raw combat contribution of the offer.
+			var offer_combat: int = int(offers[i].get("combat", 0))
+			s = clamp(float(offer_combat) / 10.0, 0.0, 1.0)
+		else:
+			s = score_market_offer(offers[i], context)
+		if s > best_score:
+			best_score = s
+			best_idx = i
+	return best_idx
+
+
+# Picks the affordable offer whose raw `field` value (from the parsed market
+# entry dict) is highest. Falls back to greedy-by-cost when all offers score 0.
+func _choose_market_by_offer_field(offers: Array[Dictionary], gold_pool: int, field: String) -> int:
+	var best_idx: int = -1
+	var best_value: int = -1
+	for i: int in range(offers.size()):
+		if offers[i].is_empty():
+			continue
+		if int(offers[i].get("cost", 99)) > gold_pool:
+			continue
+		var value: int = int(offers[i].get(field, 0))
+		if value > best_value:
+			best_value = value
+			best_idx = i
+	if best_idx == -1:
+		return _choose_market_greedy_cost(offers, gold_pool)
+	return best_idx
+
+
+func _choose_market_greedy_cost(offers: Array[Dictionary], gold_pool: int) -> int:
+	var best_idx: int = -1
+	var best_cost: int = -1
+	for i: int in range(offers.size()):
+		if offers[i].is_empty():
+			continue
+		var cost: int = int(offers[i].get("cost", 99))
+		if cost > gold_pool:
+			continue
+		if cost > best_cost:
+			best_cost = cost
+			best_idx = i
+	return best_idx
+
+
+# COMBO market buying: use the evaluator as the base score so Combo is never
+# worse than Greedy, then layer faction-match (+0.10) and ally-bonus (+0.06)
+# bonuses on top.  Champions also get a small bonus (+0.06) for persistent
+# faction presence.  This means an on-faction card beats an off-faction card
+# only when they are otherwise close in evaluator value.
+func _choose_market_combo(offers: Array[Dictionary], gold_pool: int, context: Dictionary) -> int:
+	var dominant_faction: String = String(context.get("ai_dominant_faction", ""))
+
+	var best_idx: int = -1
+	var best_score: float = -1.0
+
+	for i: int in range(offers.size()):
+		if offers[i].is_empty():
+			continue
+		if int(offers[i].get("cost", 99)) > gold_pool:
+			continue
+
+		var offer: Dictionary = offers[i]
+		# Base score from the evaluator (same source as Greedy).
+		var s: float = score_market_offer(offer, context)
+
+		# Champion bonus: persistent board presence.
+		if String(offer.get("type", "")).to_lower().contains("champion"):
+			s += 0.06
+
+		# Faction match bonus.
+		if not dominant_faction.is_empty() and String(offer.get("faction", "")).to_lower() == dominant_faction.to_lower():
+			s += 0.10
+
+		# Ally-text bonus: synergy with on-faction allies already in play.
+		var ally_total: int = int(offer.get("ally_combat", 0)) + int(offer.get("ally_gold", 0)) + int(offer.get("ally_health", 0))
+		if ally_total > 0:
+			s += 0.06
+
+		if s > best_score:
+			best_score = s
+			best_idx = i
+
+	return best_idx if best_idx >= 0 else _choose_market_scored(offers, gold_pool, context)
+
+
+# EFFICIENCY market buying: prioritise offers that have sacrifice or draw text,
+# then high draw_cards count, then ally/sacrifice_combat fields.
+# Falls back to greedy-by-cost if no offer has efficiency value.
+func _choose_market_efficiency(offers: Array[Dictionary], gold_pool: int) -> int:
+	var best_idx: int = -1
+	var best_score: int = -1
+
+	for i: int in range(offers.size()):
+		if offers[i].is_empty():
+			continue
+		if int(offers[i].get("cost", 99)) > gold_pool:
+			continue
+
+		var offer: Dictionary = offers[i]
+		var score: int = 0
+
+		# sacrifice_combat indicates the card has a sacrifice ability.
+		score += int(offer.get("sacrifice_combat", 0)) * 3
+
+		# draw_cards is a parsed field counting net card draws.
+		score += int(offer.get("draw_cards", 0)) * 4
+
+		if score > best_score:
+			best_score = score
+			best_idx = i
+
+	if best_idx == -1 or best_score == 0:
+		return _choose_market_greedy_cost(offers, gold_pool)
+
+	return best_idx
+
+
 func _build_eval_context(self_player: Node, opponent_player: Node) -> Dictionary:
 	var opponent_hp_value: int = _get_health(opponent_player)
 	if fog_of_war:
 		# Optional hidden-information mode keeps AI from exact lethal math.
 		opponent_hp_value = int(ceil(float(opponent_hp_value) * 0.9))
 
+	var ai_max_hp: int = _get_max_health(self_player)
+	if ai_max_hp <= 0:
+		ai_max_hp = 50
+
+	# Determine the faction most played this turn so market-buying strategies
+	# (especially COMBO and ADAPTIVE) can prefer on-faction offers.
+	var dominant_faction: String = _dominant_faction(self_player)
+
 	return {
 		"ai_mana": _get_mana(self_player),
 		"ai_max_mana": _get_max_mana(self_player),
 		"ai_block": _get_block(self_player),
+		"ai_hp": _get_health(self_player),
+		"ai_max_hp": ai_max_hp,
+		"ai_combat": _get_combat(self_player),
+		"ai_gold": _get_gold(self_player),
+		"ai_champions": _get_champion_count(self_player),
 		"opponent_hp": opponent_hp_value,
-		"board_threat": _estimate_opponent_threat(opponent_player)
+		"opponent_block": _get_block(opponent_player),
+		"opponent_champions": _get_champion_count(opponent_player),
+		"board_threat": _estimate_opponent_threat(opponent_player),
+		"ai_dominant_faction": dominant_faction,
 	}
 
 
 func _estimate_opponent_threat(opponent_player: Node) -> float:
 	var threat: float = 0.2
-	var opponent_resources: int = 0
-	if opponent_player.has_method("get_mana"):
-		opponent_resources = int(opponent_player.call("get_mana"))
-	elif opponent_player.get("mana") != null:
-		opponent_resources = int(opponent_player.get("mana"))
 
-	threat += clamp(float(opponent_resources) / 10.0, 0.0, 0.5)
+	# Combat pool is an immediate damage threat.
+	var combat: int = _get_combat(opponent_player)
+	threat += clamp(float(combat) / 20.0, 0.0, 0.4)
+
+	# Gold pool signals purchasing power and future deck strength.
+	var gold: int = _get_gold(opponent_player)
+	threat += clamp(float(gold) / 10.0, 0.0, 0.2)
+
+	# Champion count signals persistent board presence.
+	var champion_count: int = _get_champion_count(opponent_player)
+	threat += clamp(float(champion_count) * 0.1, 0.0, 0.2)
+
 	return clamp(threat, 0.0, 1.0)
 
 
@@ -268,6 +617,18 @@ func _get_health(player: Node) -> int:
 	return 0
 
 
+func _get_max_health(player: Node) -> int:
+	if player == null:
+		return 50
+	if player.has_method("get_max_health"):
+		return int(player.call("get_max_health"))
+	if player.get("max_hp") != null:
+		return int(player.get("max_hp"))
+	if player.get("player_max_hp") != null:
+		return int(player.get("player_max_hp"))
+	return 50
+
+
 func _get_block(player: Node) -> int:
 	if player == null:
 		return 0
@@ -280,3 +641,138 @@ func _get_block(player: Node) -> int:
 	if player.get("current_block") != null:
 		return int(player.get("current_block"))
 	return 0
+
+
+func _get_combat(player: Node) -> int:
+	if player == null:
+		return 0
+	if player.has_method("get_combat_pool"):
+		return int(player.call("get_combat_pool"))
+	if player.get("combat_pool") != null:
+		return int(player.get("combat_pool"))
+	return 0
+
+
+func _get_gold(player: Node) -> int:
+	if player == null:
+		return 0
+	if player.has_method("get_gold_pool"):
+		return int(player.call("get_gold_pool"))
+	if player.get("gold_pool") != null:
+		return int(player.get("gold_pool"))
+	return 0
+
+
+func _get_champion_count(player: Node) -> int:
+	if player == null:
+		return 0
+	if player.get("champions_in_play") != null:
+		return int(player.get("champions_in_play").size())
+	return 0
+
+
+# Public wrapper so external nodes (e.g., TurnManager) can get the same threat
+# estimate used internally without reaching into a private method.
+func estimate_threat(opponent_player: Node) -> float:
+	return _estimate_opponent_threat(opponent_player)
+
+
+# Score a raw market offer dictionary for the AI's current game state.
+# Returns a value in [0, 1]; higher means more desirable to buy.
+func score_market_offer(offer: Dictionary, context: Dictionary) -> float:
+	if offer.is_empty():
+		return 0.0
+	var temp_card: Card = GameState.create_market_card_from_entry(offer)
+	if temp_card == null:
+		return 0.0
+	# create_market_card_from_entry returns a DataCard (which extends Card and
+	# RefCounted), so temp_card is automatically freed when it goes out of scope.
+	# Use MARKET_EVAL_MANA so all market cards pass the playable_now check —
+	# we are scoring purchase desirability, not hand playability.
+	var buy_context: Dictionary = context.duplicate(true)
+	buy_context["ai_mana"] = CardEvaluator.MARKET_EVAL_MANA
+	return evaluator.score_card(temp_card, buy_context)
+
+
+# ADAPTIVE market buying: evaluator as baseline with situation-aware overrides.
+#   • Lethal urgency (opponent within LETHAL_URGENCY_THRESHOLD HP of death): buy combat.
+#   • Danger mode  (own HP < 40% max): buy defensively by health/combat value.
+#   • Late game    (opponent HP ≤ 25):  buy by raw combat value.
+#   • Otherwise:   evaluator base + champion/faction/ally-text bonuses.
+#     Adaptive is always at least as good as Greedy in the general case.
+func _choose_market_adaptive(offers: Array[Dictionary], gold_pool: int, context: Dictionary) -> int:
+	var ai_hp: int = int(context.get("ai_hp", 50))
+	var ai_max_hp: int = max(int(context.get("ai_max_hp", 50)), 1)
+	var opp_hp: int = int(context.get("opponent_hp", 999))
+	var ai_combat: int = int(context.get("ai_combat", 0))
+	var opponent_block: int = int(context.get("opponent_block", 0))
+	var effective_opp: int = opp_hp + opponent_block
+	var dominant: String = String(context.get("ai_dominant_faction", ""))
+
+	# Lethal urgency — buy the most combat-dense card to finish the opponent.
+	if effective_opp > 0 and (effective_opp - ai_combat) <= LETHAL_URGENCY_THRESHOLD:
+		return _choose_market_by_offer_field(offers, gold_pool, "combat")
+
+	# Danger mode — buy defensively.
+	if float(ai_hp) / float(ai_max_hp) < 0.4:
+		var best_idx: int = -1
+		var best_val: int = -1
+		for i: int in range(offers.size()):
+			if offers[i].is_empty():
+				continue
+			if int(offers[i].get("cost", 99)) > gold_pool:
+				continue
+			var val: int = int(offers[i].get("health", 0)) * 2 + int(offers[i].get("combat", 0))
+			if val > best_val:
+				best_val = val
+				best_idx = i
+		if best_idx != -1:
+			return best_idx
+
+	# Late-game — maximise raw combat to close out.
+	if opp_hp <= 25:
+		return _choose_market_by_offer_field(offers, gold_pool, "combat")
+
+	# General: evaluator score + situation-aware bonuses.
+	# Adaptive is always at least as good as Greedy and gains when board
+	# presence (champions), faction synergy, or ally text adds value.
+	var best_idx: int = -1
+	var best_score: float = -1.0
+	for i: int in range(offers.size()):
+		if offers[i].is_empty():
+			continue
+		if int(offers[i].get("cost", 99)) > gold_pool:
+			continue
+		var s: float = score_market_offer(offers[i], context)
+		# Champion bonus: persistent board presence.
+		if String(offers[i].get("type", "")).to_lower().contains("champion"):
+			s += 0.05
+		# Faction synergy bonus.
+		if not dominant.is_empty() and String(offers[i].get("faction", "")).to_lower() == dominant.to_lower():
+			s += 0.08
+		# Ally-text synergy bonus.
+		var ally_total: int = int(offers[i].get("ally_combat", 0)) + int(offers[i].get("ally_gold", 0)) + int(offers[i].get("ally_health", 0))
+		if ally_total > 0:
+			s += 0.05
+		if s > best_score:
+			best_score = s
+			best_idx = i
+	return best_idx if best_idx >= 0 else _choose_market_scored(offers, gold_pool, context)
+
+
+# Returns the faction string with the highest play-count this turn for the
+# given player node, or an empty string if none have been played yet.
+func _dominant_faction(player: Node) -> String:
+	if player == null:
+		return ""
+	var faction_counts: Dictionary = {}
+	if player.get("faction_counts_this_turn") != null:
+		faction_counts = player.get("faction_counts_this_turn") as Dictionary
+	var dominant: String = ""
+	var max_count: int = 0
+	for faction: String in faction_counts.keys():
+		var count: int = int(faction_counts[faction])
+		if count > max_count:
+			max_count = count
+			dominant = faction
+	return dominant
