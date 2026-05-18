@@ -4,7 +4,7 @@ from dataclasses import dataclass, asdict
 import json
 import random
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, List, Sequence
 
 from src.engine import Card, Deck, Player
 
@@ -106,16 +106,17 @@ class WeightedStrategy(Strategy):
         heal = _card_stat(card, "heal")
         draw = _card_stat(card, "draw")
         opponent_armor = getattr(opponent, "armor", 0)
-        finisher = max(0, damage - max(0, opponent.hp + opponent_armor - damage))
+        overkill_damage = max(0, damage - (opponent.hp + opponent_armor))
+        lethal_bonus = 1 if damage >= opponent.hp + opponent_armor else 0
         survival_value = armor + heal if player.hp <= 10 else 0
         return (
             self.weights["damage"] * damage
             + self.weights["armor"] * armor
             + self.weights["heal"] * heal
             + self.weights["draw"] * draw
-            + self.weights["finisher"] * (1 if damage > opponent.hp + opponent_armor else 0)
+            + self.weights["finisher"] * lethal_bonus
             + self.weights["survival"] * survival_value
-            + 0.05 * finisher
+            + 0.05 * overkill_damage
         )
 
     def choose_card(self, player: Player, opponent: Player, rng: random.Random) -> Card | None:

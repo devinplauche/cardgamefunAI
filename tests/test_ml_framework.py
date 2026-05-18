@@ -43,7 +43,7 @@ class TestMLFramework(unittest.TestCase):
         result = trainer.train(seed=3)
 
         self.assertEqual(result.strategy_name, "trained_weighted_strategy")
-        self.assertEqual(len(result.history), 3)
+        self.assertEqual(len(result.history), trainer.generations + 1)
         self.assertEqual(result.evaluation.total_matches, 6)
         self.assertGreaterEqual(result.history[-1].average_score, result.history[0].average_score)
 
