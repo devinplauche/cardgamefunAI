@@ -43,6 +43,13 @@ class Card:
     ally_gold: int = 0
     ally_health: int = 0
     is_champion: bool = False
+    effect_text: str = ""
+    ally_effect_text: str = ""
+    topdeck_from_discard: bool = False
+    topdeck_from_hand: bool = False
+    stun_champion: bool = False
+    acquire_to_top_max_cost: int = 0
+    returns_to_hand_on_stun: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +94,25 @@ def _enrich_card(raw: dict) -> Card:
     if re.search(r'draw a card', ally_text, re.IGNORECASE):
         draw += 1
 
+    topdeck_from_discard = bool(
+        re.search(r'put a card from your discard on top of your deck', effect_text, re.IGNORECASE)
+    )
+    topdeck_from_hand = bool(
+        re.search(r'put one card from your hand on top of your deck', effect_text, re.IGNORECASE)
+    )
+    stun_champion = bool(re.search(r'stun target champion', effect_text + " " + ally_text, re.IGNORECASE))
+    acquire_to_top_max_cost = 0
+    m = re.search(
+        r'acquire any card costing (\d+) or less and put it on top of your deck',
+        ally_text,
+        re.IGNORECASE,
+    )
+    if m:
+        acquire_to_top_max_cost = int(m.group(1))
+    returns_to_hand_on_stun = bool(
+        re.search(r'when this champion is stunned, return it to your hand', effect_text, re.IGNORECASE)
+    )
+
     return Card(
         name=raw["name"],
         cost=int(raw.get("cost", 0)),
@@ -102,6 +128,13 @@ def _enrich_card(raw: dict) -> Card:
         ally_gold=ally_gold,
         ally_health=ally_health,
         is_champion="champion" in raw.get("type", "").lower(),
+        effect_text=effect_text,
+        ally_effect_text=ally_text,
+        topdeck_from_discard=topdeck_from_discard,
+        topdeck_from_hand=topdeck_from_hand,
+        stun_champion=stun_champion,
+        acquire_to_top_max_cost=acquire_to_top_max_cost,
+        returns_to_hand_on_stun=returns_to_hand_on_stun,
     )
 
 
@@ -135,6 +168,31 @@ def _make_fire_gem() -> Card:
     return Card("Fire Gem", gold=2)
 
 
+def _intrinsic_card_value(card: Card) -> float:
+    """Static value estimate used for top-deck and stun-target choices."""
+    return (
+        card.combat * 1.7
+        + card.gold * 1.4
+        + card.health * 0.8
+        + card.draw_cards * 2.2
+        + card.opponent_discard * 1.6
+        + (2.5 if card.is_champion else 0.0)
+        + (1.8 if card.stun_champion else 0.0)
+        + (1.4 if card.topdeck_from_discard or card.acquire_to_top_max_cost > 0 else 0.0)
+    )
+
+
+def _choose_stun_target(opponent: "Player") -> Optional[Card]:
+    """Pick the highest-impact enemy champion to stun."""
+    if not opponent.champions_in_play:
+        return None
+    # Prioritize immediate pressure and persistent card value.
+    return max(
+        opponent.champions_in_play,
+        key=lambda c: (c.combat * 2.4 + c.health * 1.0 + _intrinsic_card_value(c)),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Player state
 # ---------------------------------------------------------------------------
@@ -155,6 +213,7 @@ class Player:
         random.shuffle(self.deck)
         self.champions_in_play: List[Card] = []
         self.faction_counts: Dict[str, int] = {}
+        self.bought_cards: Dict[str, int] = {}
 
     def _reshuffle(self) -> None:
         self.deck = list(self.discard)
@@ -187,20 +246,48 @@ class Player:
         self.hand.remove(card)
 
         # Track faction for ally trigger counting (used by COMBO strategy).
+        ally_active = False
         if card.faction and card.faction != "neutral":
             self.faction_counts[card.faction] = (
                 self.faction_counts.get(card.faction, 0) + 1
             )
+            ally_active = self.faction_counts.get(card.faction, 0) >= 2
 
         self.combat_pool += card.combat
         self.gold_pool += card.gold
         if card.health > 0:
             self.current_hp = min(self.max_hp, self.current_hp + card.health)
+        if ally_active:
+            self.combat_pool += card.ally_combat
+            self.gold_pool += card.ally_gold
+            if card.ally_health > 0:
+                self.current_hp = min(self.max_hp, self.current_hp + card.ally_health)
         if card.sacrifice_combat > 0:
             # Sacrifice: always take the combat gain (simplified).
             self.combat_pool += card.sacrifice_combat
         if card.draw_cards > 0:
             self.draw(card.draw_cards)
+
+        if card.topdeck_from_discard and self.discard:
+            best_discard = max(self.discard, key=_intrinsic_card_value)
+            self.discard.remove(best_discard)
+            self.deck.insert(0, best_discard)
+
+        if card.topdeck_from_hand and self.hand:
+            lowest_in_hand = min(self.hand, key=_intrinsic_card_value)
+            # "May put one card ... on top": only use when this does not lose much value.
+            if _intrinsic_card_value(lowest_in_hand) <= 1.5:
+                self.hand.remove(lowest_in_hand)
+                self.deck.insert(0, lowest_in_hand)
+
+        if ally_active and card.stun_champion and opponent.champions_in_play:
+            target = _choose_stun_target(opponent)
+            if target is not None and target in opponent.champions_in_play:
+                opponent.champions_in_play.remove(target)
+                if target.returns_to_hand_on_stun:
+                    opponent.hand.append(target)
+                else:
+                    opponent.discard.append(target)
 
         if card.is_champion:
             # Champions enter play; they expend each turn.
@@ -217,6 +304,7 @@ class Player:
 
     def buy_card(self, card: Card) -> None:
         self.discard.append(card)
+        self.bought_cards[card.name] = self.bought_cards.get(card.name, 0) + 1
 
     def resolve_combat(self, opponent: "Player") -> None:
         net = max(self.combat_pool - opponent.current_block, 0)
@@ -461,6 +549,37 @@ def _choose_adaptive(hand: List[Card], active: Player, opponent: Player) -> Opti
     return best or _choose_greedy(hand, active, opponent)
 
 
+def _choose_oracle(hand: List[Card], active: Player, opponent: Player) -> Optional[Card]:
+    """High-skill tactical chooser with lookahead for stun/top-deck value."""
+    ctx = _build_context(active, opponent)
+    champs = len(active.champions_in_play)
+    best, best_score = None, -1.0
+    for c in hand:
+        score = _score_card_adaptive(c, ctx, champs)
+        remaining = [x for x in hand if x is not c]
+        if c.draw_cards > 0:
+            follow = max((_score_card_adaptive(x, ctx, champs) for x in remaining), default=0.0)
+            score += follow * 0.16
+        ally_active_after_play = (
+            c.faction and c.faction != "neutral" and active.faction_counts.get(c.faction, 0) >= 1
+        )
+        if ally_active_after_play and c.stun_champion and opponent.champions_in_play:
+            target = _choose_stun_target(opponent)
+            if target is not None:
+                score += min(0.30, _intrinsic_card_value(target) / 28.0)
+        if c.topdeck_from_discard and active.discard:
+            best_discard = max(active.discard, key=_intrinsic_card_value)
+            score += min(0.18, _intrinsic_card_value(best_discard) / 26.0)
+        if ally_active_after_play and c.acquire_to_top_max_cost > 0:
+            score += 0.10
+        projected = active.combat_pool + c.combat
+        if projected >= opponent.current_hp + opponent.current_block:
+            score += 0.55
+        if score > best_score:
+            best_score, best = score, c
+    return best or _choose_adaptive(hand, active, opponent)
+
+
 _CARD_CHOOSERS = {
     "Random":     _choose_random,
     "Aggro":      _choose_aggro,
@@ -471,6 +590,7 @@ _CARD_CHOOSERS = {
     "Greedy":     _choose_greedy,
     "Lookahead":  _choose_lookahead,
     "Adaptive":   _choose_adaptive,
+    "Oracle":     _choose_oracle,
 }
 
 # ---------------------------------------------------------------------------
@@ -794,6 +914,61 @@ def _market_adaptive(offers: List[Optional[Card]], gold: int, ctx: Dict) -> int:
     return _market_adaptive_combo_buy(offers, gold, ctx, champs)
 
 
+def _score_market_card_oracle(card: Card, ctx: Dict, ai_champions: int) -> float:
+    score = _score_card_adaptive(card, ctx, ai_champions)
+    dominant = ctx.get("ai_dominant_faction", "")
+    if dominant and card.faction.lower() == dominant.lower():
+        score += 0.08
+    if card.is_champion:
+        score += 0.06
+    if card.stun_champion and ctx.get("opponent_champions", 0) > 0:
+        score += min(0.24, 0.08 * ctx.get("opponent_champions", 0))
+    if card.topdeck_from_discard:
+        score += 0.08
+    if card.acquire_to_top_max_cost > 0:
+        score += 0.10
+    ai_hp = ctx.get("ai_hp", 50)
+    ai_max_hp = max(ctx.get("ai_max_hp", 50), 1)
+    if ai_hp / ai_max_hp < 0.4:
+        score += min(0.20, card.health / 12.0)
+    return min(1.8, score)
+
+
+def _market_oracle(offers: List[Optional[Card]], gold: int, ctx: Dict) -> int:
+    aff = _affordable(offers, gold)
+    if not aff:
+        return -1
+
+    ai_combat = ctx.get("ai_combat", 0)
+    effective = ctx.get("opponent_hp", 999) + ctx.get("opponent_block", 0)
+    if effective > 0 and (effective - ai_combat) <= _LETHAL_URGENCY_THRESHOLD:
+        return _market_aggro(offers, gold, ctx)
+
+    champs = ctx.get("ai_champions", 0)
+    phase = _adaptive_phase(ctx)
+    second_discount = {
+        _ADAPTIVE_PHASE_EARLY: 0.82,
+        _ADAPTIVE_PHASE_MID: 0.74,
+        _ADAPTIVE_PHASE_LATE: 0.62,
+    }[phase]
+
+    best_idx = -1
+    best_total = -1.0
+    for idx1, c1 in aff:
+        s1 = _score_market_card_oracle(c1, ctx, champs)
+        remaining_gold = gold - c1.cost
+        aff2 = [
+            c2 for i2, c2 in enumerate(offers)
+            if c2 is not None and i2 != idx1 and c2.cost <= remaining_gold
+        ]
+        s2 = max((_score_market_card_oracle(c2, ctx, champs) for c2 in aff2), default=0.0)
+        total = s1 + second_discount * s2
+        if total > best_total:
+            best_total = total
+            best_idx = idx1
+    return best_idx
+
+
 _MARKET_CHOOSERS = {
     "Random":     _market_random,
     "Aggro":      _market_aggro,
@@ -804,6 +979,7 @@ _MARKET_CHOOSERS = {
     "Greedy":     _market_scored,
     "Lookahead":  _market_scored,
     "Adaptive":   _market_adaptive,
+    "Oracle":     _market_oracle,
 }
 
 # ---------------------------------------------------------------------------
@@ -839,6 +1015,21 @@ def _run_turn(
             break
         if not active.play_card(card, opponent):
             break
+        ally_active = (
+            card.faction
+            and card.faction != "neutral"
+            and active.faction_counts.get(card.faction, 0) >= 2
+        )
+        if ally_active and card.acquire_to_top_max_cost > 0:
+            affordable_free = [
+                (i, c)
+                for i, c in enumerate(market)
+                if c is not None and c.cost <= card.acquire_to_top_max_cost
+            ]
+            if affordable_free:
+                best_i, best_card = max(affordable_free, key=lambda t: _intrinsic_card_value(t[1]))
+                active.deck.insert(0, best_card)
+                market[best_i] = market_pile.pop(0) if market_pile else None
 
     # Buy from market.
     while True:
@@ -870,8 +1061,8 @@ def _run_game(
     strategy_a: str,
     strategy_b: str,
     all_market_cards: List[Card],
-) -> int:
-    """Return 1 if A wins, 2 if B wins, 0 for a draw."""
+) -> Dict:
+    """Return winner and per-player purchase stats for analytics."""
     player_a = Player("A")
     player_b = Player("B")
 
@@ -902,7 +1093,11 @@ def _run_game(
         elif player_b.current_hp > player_a.current_hp:
             winner = 2
 
-    return winner
+    return {
+        "winner": winner,
+        "a_bought": dict(player_a.bought_cards),
+        "b_bought": dict(player_b.bought_cards),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -919,6 +1114,7 @@ STRATEGIES = [
     "Greedy",
     "Lookahead",
     "Adaptive",
+    "Oracle",
 ]
 
 # Seed multipliers matching AIBenchmark.gd constants for reproducibility.
@@ -936,6 +1132,7 @@ def run_tournament(
     losses = [0] * n
     draws = [0] * n
     h2h = [[0] * n for _ in range(n)]
+    card_stats: Dict[str, Dict[str, int]] = {}
 
     for i, strat_a in enumerate(STRATEGIES):
         for j, strat_b in enumerate(STRATEGIES):
@@ -945,7 +1142,8 @@ def run_tournament(
             for g in range(games_per_pair):
                 seed_val = i * _SEED_STRATEGY_MULT + j * _SEED_OPPONENT_MULT + g * _SEED_GAME_MULT
                 random.seed(seed_val)
-                result = _run_game(strat_a, strat_b, market_cards)
+                outcome = _run_game(strat_a, strat_b, market_cards)
+                result = outcome["winner"]
                 if result == 1:
                     wa += 1
                     wins[i] += 1
@@ -960,9 +1158,28 @@ def run_tournament(
                     wd += 1
                     draws[i] += 1
                     draws[j] += 1
+
+                for side, bought in (("a", outcome["a_bought"]), ("b", outcome["b_bought"])):
+                    side_won = (result == 1 and side == "a") or (result == 2 and side == "b")
+                    for card_name, qty in bought.items():
+                        s = card_stats.setdefault(
+                            card_name,
+                            {
+                                "purchase_samples": 0,
+                                "purchase_wins": 0,
+                                "game_samples": 0,
+                                "game_wins": 0,
+                            },
+                        )
+                        s["purchase_samples"] += qty
+                        if side_won:
+                            s["purchase_wins"] += qty
+                        s["game_samples"] += 1
+                        if side_won:
+                            s["game_wins"] += 1
             print(f"[BENCH] {strat_a} vs {strat_b} → A={wa}  B={wb}  D={wd}")
 
-    return {"wins": wins, "losses": losses, "draws": draws, "h2h": h2h}
+    return {"wins": wins, "losses": losses, "draws": draws, "h2h": h2h, "card_stats": card_stats}
 
 
 # ---------------------------------------------------------------------------
@@ -1037,6 +1254,52 @@ def print_h2h(results: Dict) -> None:
     print("")
 
 
+def print_card_values(results: Dict, min_game_samples: int = 20) -> None:
+    card_stats = results.get("card_stats", {})
+    entries = []
+    for name, s in card_stats.items():
+        games = s.get("game_samples", 0)
+        if games < min_game_samples:
+            continue
+        game_wr = s.get("game_wins", 0) / games if games else 0.0
+        purchase_samples = s.get("purchase_samples", 0)
+        purchase_wr = (
+            s.get("purchase_wins", 0) / purchase_samples if purchase_samples else 0.0
+        )
+        entries.append(
+            {
+                "name": name,
+                "game_win_rate": game_wr,
+                "game_samples": games,
+                "purchase_win_rate": purchase_wr,
+                "purchase_samples": purchase_samples,
+            }
+        )
+    entries.sort(
+        key=lambda e: (e["game_win_rate"], e["purchase_win_rate"], e["purchase_samples"]),
+        reverse=True,
+    )
+
+    print(
+        "\n[BENCH] ═════════════ CARD VALUE RANKING (BEST → WORST) ═══════════════════"
+    )
+    print(
+        "[BENCH] Card                     GameWin%   Games   PurchaseWin%   Purchases"
+    )
+    print(
+        "[BENCH] ────────────────────────────────────────────────────────────────────"
+    )
+    for rank, e in enumerate(entries, start=1):
+        print(
+            f"[BENCH] #{rank:>2} {e['name']:<22} {e['game_win_rate'] * 100:>7.1f}%"
+            f"  {e['game_samples']:>6}   {e['purchase_win_rate'] * 100:>7.1f}%"
+            f"   {e['purchase_samples']:>9}"
+        )
+    print(
+        "[BENCH] ═══════════════════════════════════════════════════════════════════"
+    )
+
+
 def export_csv(results: Dict, path: str) -> None:
     entries = _make_entries(results)
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -1076,6 +1339,12 @@ def main() -> None:
         default="",
         help="Export results to a CSV file",
     )
+    parser.add_argument(
+        "--card-min-samples",
+        type=int,
+        default=20,
+        help="Minimum games-with-card needed to include a card in value rankings",
+    )
     args = parser.parse_args()
 
     here = os.path.dirname(os.path.abspath(__file__))
@@ -1096,6 +1365,7 @@ def main() -> None:
     results = run_tournament(market_cards, games_per_pair=args.games)
     print_rankings(results)
     print_h2h(results)
+    print_card_values(results, min_game_samples=max(1, args.card_min_samples))
     if args.csv:
         export_csv(results, args.csv)
 
