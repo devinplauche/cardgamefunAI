@@ -1,4 +1,5 @@
 import json
+import random
 import tempfile
 import unittest
 
@@ -25,7 +26,7 @@ class TestMLFramework(unittest.TestCase):
         opponent.hp = 6
         opponent.armor = 0
 
-        choice = strategy.choose_card(player, opponent, rng=None)
+        choice = strategy.choose_card(player, opponent, rng=random.Random(0))
 
         self.assertEqual(choice.name, "Strike")
 

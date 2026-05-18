@@ -10,6 +10,8 @@ from src.engine import Card, Deck, Player
 
 
 DEFAULT_WEIGHT_KEYS = ("damage", "armor", "heal", "draw", "finisher", "survival", "overkill")
+LETHAL_CARD_SCORE = 1.0
+GENERATION_SEED_STRIDE = 100
 DEFAULT_WEIGHTS = {
     "damage": 1.2,
     "armor": 0.8,
@@ -109,7 +111,7 @@ class WeightedStrategy(Strategy):
         opponent_armor = getattr(opponent, "armor", 0)
         opponent_effective_hp = opponent.hp + opponent_armor
         overkill_damage = max(0, damage - opponent_effective_hp)
-        lethal_bonus = 1 if damage >= opponent_effective_hp else 0
+        lethal_bonus = LETHAL_CARD_SCORE if damage >= opponent_effective_hp else 0.0
         survival_value = armor + heal if player.hp <= 10 else 0
         return (
             self.weights["damage"] * damage
@@ -303,7 +305,7 @@ class StrategyTrainer:
     def _mutate_weights(self, weights: Dict[str, float], rng: random.Random) -> Dict[str, float]:
         mutated = dict(weights)
         for key in DEFAULT_WEIGHT_KEYS:
-            mutated[key] = round(mutated[key] + rng.uniform(-self.mutation_scale, self.mutation_scale), 3)
+            mutated[key] = round(max(0.0, mutated[key] + rng.uniform(-self.mutation_scale, self.mutation_scale)), 3)
         return mutated
 
     def train(self, seed: int = 0) -> TrainingResult:
@@ -324,7 +326,7 @@ class StrategyTrainer:
             for candidate_index, candidate_weights in enumerate(candidates):
                 evaluation = self.evaluate(
                     WeightedStrategy(candidate_weights),
-                    seed=seed + (generation * 100) + candidate_index,
+                    seed=seed + (generation * GENERATION_SEED_STRIDE) + candidate_index,
                 )
                 if evaluation.average_score > best_generation_evaluation.average_score:
                     best_generation_weights = dict(candidate_weights)
