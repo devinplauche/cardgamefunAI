@@ -170,6 +170,8 @@ def _make_fire_gem() -> Card:
 
 def _intrinsic_card_value(card: Card) -> float:
     """Static value estimate used for top-deck and stun-target choices."""
+    # Hand-tuned weights from benchmark iterations:
+    # combat/resource lead, draw/disruption are high leverage, health is lower impact.
     return (
         card.combat * 1.7
         + card.gold * 1.4
@@ -312,7 +314,10 @@ class Player:
 
         if card.topdeck_from_hand and self.hand:
             if smart_decisions:
-                lowest_in_hand = min(self.hand, key=_intrinsic_card_value)
+                lowest_in_hand = min(
+                    self.hand,
+                    key=lambda c: (_intrinsic_card_value(c), c.cost, c.name),
+                )
                 # "May put one card ... on top": only use when this does not lose much value.
                 if _intrinsic_card_value(lowest_in_hand) <= _TOPDECK_LOW_VALUE_THRESHOLD:
                     self.hand.remove(lowest_in_hand)
@@ -1077,7 +1082,8 @@ def _run_turn(
             if affordable_free:
                 if smart_decisions:
                     best_i, best_card = max(
-                        affordable_free, key=lambda t: _intrinsic_card_value(t[1])
+                        affordable_free,
+                        key=lambda t: (_intrinsic_card_value(t[1]), t[1].cost, t[1].name),
                     )
                 else:
                     best_i, best_card = random.choice(affordable_free)
@@ -1331,7 +1337,12 @@ def print_card_values(results: Dict, min_game_samples: int = 20) -> None:
     # Ranking priority: game win rate first, then purchase win rate,
     # then purchase sample size as a stability tie-breaker.
     entries.sort(
-        key=lambda e: (e["game_win_rate"], e["purchase_win_rate"], e["purchase_samples"]),
+        key=lambda e: (
+            e["game_win_rate"],
+            e["purchase_win_rate"],
+            e["purchase_samples"],
+            e["name"],
+        ),
         reverse=True,
     )
 
