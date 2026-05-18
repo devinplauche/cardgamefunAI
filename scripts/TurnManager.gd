@@ -82,12 +82,28 @@ var custom_choice: Dictionary = {}
 @onready var discard_title: Label = %DiscardTitle
 @onready var discard_cards: VBoxContainer = %DiscardCards
 @onready var close_discard_button: Button = %CloseDiscardButton
+@onready var difficulty_option: OptionButton = %DifficultyOption
 
 var shop_buttons: Array[Button] = []
+
+# Maps OptionButton item indices to Difficulty enum values (must match
+# the order items are added in _setup_difficulty_selector).
+const _DIFFICULTY_ORDER: Array = [
+	AIOpponent.Difficulty.RANDOM,
+	AIOpponent.Difficulty.GREEDY,
+	AIOpponent.Difficulty.LOOKAHEAD,
+	AIOpponent.Difficulty.AGGRO,
+	AIOpponent.Difficulty.ECON,
+	AIOpponent.Difficulty.CONTROL,
+	AIOpponent.Difficulty.COMBO,
+	AIOpponent.Difficulty.EFFICIENCY,
+	AIOpponent.Difficulty.ADAPTIVE,
+]
 
 
 func _ready() -> void:
 	shop_buttons = [shop_button_1, shop_button_2, shop_button_3, shop_button_4, shop_button_5]
+	_setup_difficulty_selector()
 	hand.card_selected.connect(_on_card_selected)
 	end_turn_button.pressed.connect(_on_end_turn_pressed)
 	end_turn_floating_button.pressed.connect(_on_end_turn_pressed)
@@ -111,6 +127,36 @@ func _ready() -> void:
 	_apply_responsive_layout()
 
 	_start_battle()
+
+
+func _setup_difficulty_selector() -> void:
+	if difficulty_option == null:
+		return
+
+	difficulty_option.clear()
+	var labels: Array[String] = [
+		"Random", "Greedy", "Lookahead", "Aggro",
+		"Econ", "Control", "Combo", "Efficiency", "Adaptive",
+	]
+	for label: String in labels:
+		difficulty_option.add_item(label)
+
+	# Pre-select the item that matches the current export setting.
+	var current_idx: int = _DIFFICULTY_ORDER.find(ai_difficulty)
+	if current_idx >= 0:
+		difficulty_option.selected = current_idx
+
+	difficulty_option.item_selected.connect(_on_difficulty_selected)
+
+
+func _on_difficulty_selected(index: int) -> void:
+	if index < 0 or index >= _DIFFICULTY_ORDER.size():
+		return
+	var new_difficulty: AIOpponent.Difficulty = _DIFFICULTY_ORDER[index]
+	ai_difficulty = new_difficulty
+	if ai_opponent != null:
+		ai_opponent.difficulty = new_difficulty
+	_log("AI difficulty changed to: " + difficulty_option.get_item_text(index))
 
 
 func _start_battle() -> void:

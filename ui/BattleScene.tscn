@@ -167,6 +167,11 @@ unique_name_in_owner = true
 layout_mode = 2
 text = "End Turn"
 
+[node name="DifficultyOption" type="OptionButton" parent="Margin/MainScroll/Layout/TopBar/TopActions"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "AI Difficulty"
+
 [node name="MidRow" type="HBoxContainer" parent="Margin/MainScroll/Layout"]
 layout_mode = 2
 size_flags_vertical = 3

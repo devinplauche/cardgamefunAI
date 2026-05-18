@@ -3,7 +3,9 @@ extends Node
 ##
 ## Every ordered pair of strategies plays GAMES_PER_PAIR games (strategy A
 ## always goes first for those games, and separately B always goes first).
-## Results are accumulated per-strategy and printed as a ranked leaderboard.
+## Results are accumulated per-strategy and printed as a ranked leaderboard
+## with 95% confidence intervals. A head-to-head win-rate matrix is also
+## printed. Results are exported to user://ai_benchmark_results.csv.
 ##
 ## Run from the scene AIBenchmarkRunner.tscn (headless is fine).
 
@@ -18,11 +20,12 @@ const STRATEGIES: Array = [
 	["Efficiency", AIOpponent.Difficulty.EFFICIENCY],
 	["Greedy",     AIOpponent.Difficulty.GREEDY],
 	["Lookahead",  AIOpponent.Difficulty.LOOKAHEAD],
+	["Adaptive",   AIOpponent.Difficulty.ADAPTIVE],
 ]
 
 ## Games played per ordered pair (A always goes first).
 ## Each unordered matchup therefore runs 2 * GAMES_PER_PAIR total games.
-const GAMES_PER_PAIR: int = 10
+const GAMES_PER_PAIR: int = 50
 
 const _MAX_TURNS: int = 40
 const _MARKET_SIZE: int = 5
@@ -41,6 +44,9 @@ var _wins: Array[int] = []
 var _losses: Array[int] = []
 var _draws: Array[int] = []
 
+# Head-to-head matrix: _h2h[a][b] = wins of strategy a against strategy b.
+var _h2h: Array = []   # Array[Array[int]]
+
 
 func _ready() -> void:
 	GameState.load_databases()
@@ -55,6 +61,10 @@ func _ready() -> void:
 		_wins.append(0)
 		_losses.append(0)
 		_draws.append(0)
+		var row: Array[int] = []
+		row.resize(n)
+		row.fill(0)
+		_h2h.append(row)
 
 	print("[BENCH] Starting benchmark: %d strategies × %d games per ordered pair" % [n, GAMES_PER_PAIR])
 
@@ -65,6 +75,8 @@ func _ready() -> void:
 			_run_ordered_matchup(i, j)
 
 	_print_ranking()
+	_print_h2h_matrix()
+	_export_csv()
 	get_tree().quit(0)
 
 
@@ -84,10 +96,12 @@ func _run_ordered_matchup(a_idx: int, b_idx: int) -> void:
 			wins_a += 1
 			_wins[a_idx] += 1
 			_losses[b_idx] += 1
+			_h2h[a_idx][b_idx] += 1
 		elif result == 2:
 			wins_b += 1
 			_wins[b_idx] += 1
 			_losses[a_idx] += 1
+			_h2h[b_idx][a_idx] += 1
 		else:
 			local_draws += 1
 			_draws[a_idx] += 1
@@ -204,6 +218,15 @@ func _run_turn(
 
 
 func _make_context(active: BattlePlayer, other: BattlePlayer) -> Dictionary:
+	# Determine the dominant faction played this turn for COMBO / ADAPTIVE buying.
+	var dominant_faction: String = ""
+	var max_count: int = 0
+	for faction: String in active.faction_counts_this_turn.keys():
+		var count: int = int(active.faction_counts_this_turn[faction])
+		if count > max_count:
+			max_count = count
+			dominant_faction = faction
+
 	return {
 		"ai_mana": active.current_energy,
 		"ai_max_mana": active.max_energy,
@@ -216,7 +239,8 @@ func _make_context(active: BattlePlayer, other: BattlePlayer) -> Dictionary:
 		"opponent_hp": other.current_hp,
 		"opponent_block": other.current_block,
 		"opponent_champions": other.champions_in_play.size(),
-		"board_threat": 0.2
+		"board_threat": 0.2,
+		"ai_dominant_faction": dominant_faction,
 	}
 
 
@@ -232,35 +256,118 @@ func _print_ranking() -> void:
 	for i: int in range(n):
 		var total: int = _wins[i] + _losses[i] + _draws[i]
 		var win_rate: float = 0.0
+		var ci_half: float = 0.0
 		if total > 0:
 			# Count a draw as half a win.
 			win_rate = (float(_wins[i]) + 0.5 * float(_draws[i])) / float(total)
+			# 95% confidence interval half-width using normal approximation.
+			ci_half = 1.96 * sqrt(win_rate * (1.0 - win_rate) / float(total))
 		entries.append({
 			"name": String(STRATEGIES[i][0]),
 			"wins": _wins[i],
 			"losses": _losses[i],
 			"draws": _draws[i],
 			"total": total,
-			"win_rate": win_rate
+			"win_rate": win_rate,
+			"ci_half": ci_half,
 		})
 
 	entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return float(a.get("win_rate", 0.0)) > float(b.get("win_rate", 0.0))
 	)
 
-	print("\n[BENCH] ══════════════════ STRATEGY RANKINGS ══════════════════")
-	print("[BENCH] %-12s  %5s  %5s  %5s  %5s   Win%%" % ["Strategy", "W", "L", "D", "GP"])
-	print("[BENCH] ──────────────────────────────────────────────────────────")
+	print("\n[BENCH] ══════════════════ STRATEGY RANKINGS ══════════════════════════════")
+	print("[BENCH] %-12s  %5s  %5s  %5s  %5s   Win%%   95%% CI" % ["Strategy", "W", "L", "D", "GP"])
+	print("[BENCH] ────────────────────────────────────────────────────────────────────")
 	for rank: int in range(entries.size()):
 		var e: Dictionary = entries[rank]
 		var pct: String = "%.1f%%" % (float(e.get("win_rate", 0.0)) * 100.0)
-		print("[BENCH] #%d %-10s  %5d  %5d  %5d  %5d   %s" % [
+		var ci: String = "±%.1f%%" % (float(e.get("ci_half", 0.0)) * 100.0)
+		print("[BENCH] #%d %-10s  %5d  %5d  %5d  %5d   %s  %s" % [
 			rank + 1,
 			String(e.get("name", "")),
 			int(e.get("wins", 0)),
 			int(e.get("losses", 0)),
 			int(e.get("draws", 0)),
 			int(e.get("total", 0)),
-			pct
+			pct,
+			ci,
 		])
-	print("[BENCH] ══════════════════════════════════════════════════════════")
+	print("[BENCH] ══════════════════════════════════════════════════════════════════")
+
+
+func _print_h2h_matrix() -> void:
+	var n: int = STRATEGIES.size()
+	# Build short column headers (first 6 chars to keep the table narrow).
+	var headers: String = "[BENCH] H2H%% (row beats col)  "
+	for j: int in range(n):
+		headers += "%7s" % String(STRATEGIES[j][0]).left(6)
+	print("\n" + headers)
+	print("[BENCH] " + "-".repeat(headers.length() - 8))
+
+	for i: int in range(n):
+		var row_name: String = "%-12s" % String(STRATEGIES[i][0])
+		var row_str: String = "[BENCH] " + row_name + "  "
+		for j: int in range(n):
+			if i == j:
+				row_str += "      -"
+			else:
+				var total_ij: int = _h2h[i][j] + _h2h[j][i]
+				if total_ij == 0:
+					row_str += "    n/a"
+				else:
+					var pct: float = float(_h2h[i][j]) / float(total_ij) * 100.0
+					row_str += "  %4.0f%%" % pct
+		print(row_str)
+	print("")
+
+
+func _export_csv() -> void:
+	var n: int = STRATEGIES.size()
+	var lines: Array[String] = []
+	lines.append("Rank,Strategy,W,L,D,GP,WinPct,CI95Half")
+
+	var entries: Array[Dictionary] = []
+	for i: int in range(n):
+		var total: int = _wins[i] + _losses[i] + _draws[i]
+		var win_rate: float = 0.0
+		var ci_half: float = 0.0
+		if total > 0:
+			win_rate = (float(_wins[i]) + 0.5 * float(_draws[i])) / float(total)
+			ci_half = 1.96 * sqrt(win_rate * (1.0 - win_rate) / float(total))
+		entries.append({
+			"name": String(STRATEGIES[i][0]),
+			"wins": _wins[i],
+			"losses": _losses[i],
+			"draws": _draws[i],
+			"total": total,
+			"win_rate": win_rate,
+			"ci_half": ci_half,
+		})
+
+	entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("win_rate", 0.0)) > float(b.get("win_rate", 0.0))
+	)
+
+	for rank: int in range(entries.size()):
+		var e: Dictionary = entries[rank]
+		lines.append("%d,%s,%d,%d,%d,%d,%.4f,%.4f" % [
+			rank + 1,
+			String(e.get("name", "")),
+			int(e.get("wins", 0)),
+			int(e.get("losses", 0)),
+			int(e.get("draws", 0)),
+			int(e.get("total", 0)),
+			float(e.get("win_rate", 0.0)),
+			float(e.get("ci_half", 0.0)),
+		])
+
+	var csv_path: String = "user://ai_benchmark_results.csv"
+	var file: FileAccess = FileAccess.open(csv_path, FileAccess.WRITE)
+	if file != null:
+		for line: String in lines:
+			file.store_line(line)
+		file.close()
+		print("[BENCH] CSV exported → " + csv_path)
+	else:
+		push_warning("[BENCH] Could not write CSV to " + csv_path)

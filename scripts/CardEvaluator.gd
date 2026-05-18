@@ -67,8 +67,8 @@ func score_card(card: Card, context: Dictionary) -> float:
 		# AI is threatened: survival takes priority.
 		tactical_score = block_score * 0.45 + damage_score * 0.25 + disruption_score * 0.15 + resource_score * 0.15
 	else:
-		# Mid-game: disruption and damage lead, defense and resources support.
-		tactical_score = disruption_score * 0.40 + damage_score * 0.30 + block_score * 0.20 + resource_score * 0.10
+		# Mid-game: damage leads, disruption supports, then defense and resources.
+		tactical_score = damage_score * 0.45 + disruption_score * 0.25 + block_score * 0.20 + resource_score * 0.10
 
 	# High board threat increases the value of defensive cards.
 	tactical_score += clamp(board_threat, 0.0, 1.0) * block_score * 0.20
