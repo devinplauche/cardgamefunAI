@@ -9,7 +9,7 @@ from typing import Dict, List, Sequence
 from src.engine import Card, Deck, Player
 
 
-DEFAULT_WEIGHT_KEYS = ("damage", "armor", "heal", "draw", "finisher", "survival")
+DEFAULT_WEIGHT_KEYS = ("damage", "armor", "heal", "draw", "finisher", "survival", "overkill")
 DEFAULT_WEIGHTS = {
     "damage": 1.2,
     "armor": 0.8,
@@ -17,6 +17,7 @@ DEFAULT_WEIGHTS = {
     "draw": 0.7,
     "finisher": 2.5,
     "survival": 1.4,
+    "overkill": 0.05,
 }
 
 STANDARD_CARD_SPECS = (
@@ -116,7 +117,7 @@ class WeightedStrategy(Strategy):
             + self.weights["draw"] * draw
             + self.weights["finisher"] * lethal_bonus
             + self.weights["survival"] * survival_value
-            + 0.05 * overkill_damage
+            + self.weights["overkill"] * overkill_damage
         )
 
     def choose_card(self, player: Player, opponent: Player, rng: random.Random) -> Card | None:

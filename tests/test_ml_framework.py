@@ -41,10 +41,11 @@ class TestMLFramework(unittest.TestCase):
         trainer = StrategyTrainer(generations=2, population_size=4, matches_per_opponent=2)
 
         result = trainer.train(seed=3)
+        expected_matches = len(trainer.baseline_strategies) * trainer.matches_per_opponent
 
         self.assertEqual(result.strategy_name, "trained_weighted_strategy")
         self.assertEqual(len(result.history), trainer.generations + 1)
-        self.assertEqual(result.evaluation.total_matches, 6)
+        self.assertEqual(result.evaluation.total_matches, expected_matches)
         self.assertGreaterEqual(result.history[-1].average_score, result.history[0].average_score)
 
         with tempfile.NamedTemporaryFile(suffix=".json") as handle:
