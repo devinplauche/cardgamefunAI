@@ -112,7 +112,7 @@ class WeightedStrategy(Strategy):
         opponent_armor = getattr(opponent, "armor", 0)
         opponent_total_health_pool = opponent.hp + opponent_armor
         overkill_damage = max(0, damage - opponent_total_health_pool)
-        lethal_bonus = LETHAL_CARD_SCORE if damage >= opponent_total_health_pool else 0.0
+        lethal_bonus = LETHAL_CARD_SCORE if damage == opponent_total_health_pool else 0.0
         survival_value = armor + heal if player.hp <= 10 else 0
         return (
             self.weights["damage"] * damage
@@ -215,6 +215,7 @@ class StrategyArena:
         active_player, active_strategy = player, player_strategy
         waiting_player, waiting_strategy = opponent, opponent_strategy
 
+        final_turn = self.config.max_turns
         for turn in range(1, self.config.max_turns + 1):
             active_player.draw(1)
             card = active_strategy.choose_card(active_player, waiting_player, rng)
@@ -223,12 +224,11 @@ class StrategyArena:
                 self._apply_card(active_player, waiting_player, played)
 
             if waiting_player.hp <= 0 or active_player.hp <= 0:
+                final_turn = turn
                 break
 
             active_player, waiting_player = waiting_player, active_player
             active_strategy, waiting_strategy = waiting_strategy, active_strategy
-        else:
-            turn = self.config.max_turns
 
         if player.hp > opponent.hp:
             winner = "player"
@@ -239,7 +239,7 @@ class StrategyArena:
 
         return MatchResult(
             winner=winner,
-            turns_played=turn,
+            turns_played=final_turn,
             player_hp=player.hp,
             opponent_hp=opponent.hp,
         )
