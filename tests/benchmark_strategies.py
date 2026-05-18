@@ -301,7 +301,10 @@ class Player:
 
         if card.topdeck_from_discard and self.discard:
             if smart_decisions:
-                topdeck_card = max(self.discard, key=_intrinsic_card_value)
+                topdeck_card = max(
+                    self.discard,
+                    key=lambda c: (_intrinsic_card_value(c), c.cost, c.name),
+                )
             else:
                 topdeck_card = random.choice(self.discard)
             self.discard.remove(topdeck_card)
@@ -370,9 +373,12 @@ class Player:
 _LOW_HP_FRACTION = 0.4
 _HEALTH_TO_BLOCK = 0.7
 _AGGRO_HP_THRESHOLD = 15
+# Optional top-deck threshold for low-impact cards (coin-tier cards score around this range).
 _TOPDECK_LOW_VALUE_THRESHOLD = 1.5
 _RANDOM_TOPDECK_PROBABILITY = 0.35
+# Follow-up discount for Oracle 2-ply sequencing; immediate tempo should dominate.
 _ORACLE_FOLLOWUP_DISCOUNT = 0.65
+_ORACLE_MARKET_SCORE_CAP = 1.8
 
 
 def _estimate_values(card: Card, ai_champions: int) -> Dict[str, int]:
@@ -972,7 +978,7 @@ def _score_market_card_oracle(card: Card, ctx: Dict, ai_champions: int) -> float
     ai_max_hp = max(ctx.get("ai_max_hp", 50), 1)
     if ai_hp / ai_max_hp < 0.4:
         score += min(0.20, card.health / 12.0)
-    return min(1.8, score)
+    return min(_ORACLE_MARKET_SCORE_CAP, score)
 
 
 def _market_oracle(offers: List[Optional[Card]], gold: int, ctx: Dict) -> int:
