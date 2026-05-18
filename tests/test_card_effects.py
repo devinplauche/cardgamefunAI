@@ -70,7 +70,7 @@ class TestCardEffects(unittest.TestCase):
         ]
 
         attacker.play_card(attacker.hand[0], opponent=defender)
-        self.assertEqual(defender.hp, 17)  # 1 absorbed by armor, 3 damage dealt
+        self.assertEqual(defender.hp, 17)  # 1 damage absorbed by armor, 3 damage dealt
         self.assertEqual(attacker.hp, 11)
 
     def test_unique_callable_ability(self):

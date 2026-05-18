@@ -72,7 +72,7 @@ class Player:
 
     def _require_opponent(self, opponent: Player | None, effect_name: str) -> Player:
         if opponent is None:
-            raise ValueError(f"{effect_name} effect requires an opponent")
+            raise ValueError(f"{effect_name} requires an opponent")
         return opponent
 
     def _resolve_unique_ability(self, card: Card, opponent: Player | None) -> None:
@@ -116,7 +116,7 @@ class Player:
             callable(ability) and card.data.get("ability_handles_damage", False)
         )
 
-    def _preflight_card_effect(self, card: Card, opponent: Player | None, ability: Any) -> None:
+    def _validate_effect_preconditions(self, card: Card, opponent: Player | None, ability: Any) -> None:
         if ability is not None and not callable(ability) and not isinstance(ability, str):
             raise ValueError("Card ability must be a string or callable")
 
@@ -135,7 +135,7 @@ class Player:
             return
 
         ability = card.data.get("ability")
-        self._preflight_card_effect(card, opponent, ability)
+        self._validate_effect_preconditions(card, opponent, ability)
 
         if "armor" in card.data:
             self.armor += max(0, int(card.data["armor"]))
