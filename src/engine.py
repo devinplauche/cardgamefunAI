@@ -34,6 +34,7 @@ class Deck:
 
 
 class Player:
+    # Abilities in this set apply damage internally and should bypass base damage handling.
     UNIQUE_DAMAGE_ABILITIES = frozenset({"piercing_strike", "guard_breaker", "siphon"})
 
     def __init__(self, name: str, deck: Deck | None = None):

@@ -90,6 +90,27 @@ class TestCardEffects(unittest.TestCase):
         player.play_card(player.hand[0], opponent=opponent)
         self.assertEqual(player.hp, 7)
 
+    def test_callable_ability_handles_damage_flag(self):
+        def callable_damage(owner, opponent, card):
+            opponent.receive_damage(card.data["damage"])
+
+        attacker = Player("Attacker")
+        defender = Player("Defender")
+        attacker.hand = [
+            Card(
+                id="u4c",
+                name="Custom Damage",
+                data={
+                    "damage": 4,
+                    "ability": callable_damage,
+                    "ability_handles_damage": True,
+                },
+            )
+        ]
+
+        attacker.play_card(attacker.hand[0], opponent=defender)
+        self.assertEqual(defender.hp, 16)
+
     def test_unknown_unique_ability_raises(self):
         player = Player("Player")
         opponent = Player("Opponent")
