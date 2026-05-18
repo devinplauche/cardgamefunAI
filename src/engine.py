@@ -68,8 +68,7 @@ class Player:
 
     def heal(self, amount: int) -> int:
         amount = max(0, amount)
-        max_hp = getattr(self, "max_hp", self.hp)
-        healed = min(amount, max(0, max_hp - self.hp))
+        healed = min(amount, max(0, self.max_hp - self.hp))
         self.hp += healed
         return healed
 

@@ -111,10 +111,10 @@ class WeightedStrategy(Strategy):
         draw = _card_stat(card, "draw")
         opponent_hp = getattr(opponent, "hp", 0)
         opponent_armor = getattr(opponent, "armor", 0)
-        opponent_total_health_pool = opponent_hp + opponent_armor
-        is_lethal = damage >= opponent_total_health_pool
+        opponent_effective_hp = opponent_hp + opponent_armor
+        is_lethal = damage >= opponent_effective_hp
         lethal_bonus = LETHAL_CARD_SCORE if is_lethal else 0.0
-        excess_damage = damage - opponent_total_health_pool if damage > opponent_total_health_pool else 0
+        excess_damage = damage - opponent_effective_hp if damage > opponent_effective_hp else 0
         survival_value = armor + heal if player.hp <= 10 else 0
         return (
             self.weights["damage"] * damage
