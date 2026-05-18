@@ -114,17 +114,36 @@ class TestCardEffects(unittest.TestCase):
     def test_unknown_unique_ability_raises(self):
         player = Player("Player")
         opponent = Player("Opponent")
-        player.hand = [Card(id="u5", name="Mystery", data={"ability": "unknown"})]
+        player.hp = 10
+        player.hand = [Card(id="u5", name="Mystery", data={"ability": "unknown", "heal": 5})]
 
         with self.assertRaises(ValueError):
             player.play_card(player.hand[0], opponent=opponent)
+        self.assertEqual(player.hp, 10)
 
     def test_damage_requires_opponent(self):
         player = Player("Player")
-        player.hand = [Card(id="u6", name="Strike", data={"damage": 2})]
+        player.hp = 10
+        player.hand = [Card(id="u6", name="Strike", data={"damage": 2, "heal": 3})]
 
         with self.assertRaises(ValueError):
             player.play_card(player.hand[0])
+        self.assertEqual(player.hp, 10)
+
+    def test_unique_ability_requires_opponent_before_other_effects_apply(self):
+        player = Player("Player")
+        player.hp = 7
+        player.hand = [
+            Card(
+                id="u7",
+                name="Siphon Without Target",
+                data={"ability": "siphon", "damage": 4, "heal": 5},
+            )
+        ]
+
+        with self.assertRaises(ValueError):
+            player.play_card(player.hand[0])
+        self.assertEqual(player.hp, 7)
 
 
 if __name__ == "__main__":

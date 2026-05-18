@@ -109,9 +109,33 @@ class Player:
 
         raise ValueError(f"Unknown unique ability: {ability}")
 
+    def _ability_handles_damage(self, ability: Any, card: Card) -> bool:
+        return (
+            isinstance(ability, str) and ability in Player.UNIQUE_DAMAGE_ABILITIES
+        ) or (
+            callable(ability) and card.data.get("ability_handles_damage", False)
+        )
+
+    def _preflight_card_effect(self, card: Card, opponent: Player | None, ability: Any) -> None:
+        if ability is not None and not callable(ability) and not isinstance(ability, str):
+            raise ValueError("Card ability must be a string or callable")
+
+        if isinstance(ability, str) and ability not in Player.UNIQUE_DAMAGE_ABILITIES:
+            raise ValueError(f"Unknown unique ability: {ability}")
+
+        ability_handles_damage = self._ability_handles_damage(ability, card)
+        if "damage" in card.data and not ability_handles_damage:
+            self._require_opponent(opponent, "damage")
+
+        if ability in Player.UNIQUE_DAMAGE_ABILITIES:
+            self._require_opponent(opponent, str(ability))
+
     def resolve_card_effect(self, card: Card, opponent: Player | None = None) -> None:
         if not isinstance(card.data, dict):
             return
+
+        ability = card.data.get("ability")
+        self._preflight_card_effect(card, opponent, ability)
 
         if "armor" in card.data:
             self.armor += max(0, int(card.data["armor"]))
@@ -122,14 +146,9 @@ class Player:
         if "heal" in card.data:
             self.heal(int(card.data["heal"]))
 
-        ability = card.data.get("ability")
         # Callable abilities can opt out of base damage application by setting
         # `ability_handles_damage=True` in card.data when they apply damage internally.
-        ability_handles_damage = (
-            isinstance(ability, str) and ability in Player.UNIQUE_DAMAGE_ABILITIES
-        ) or (
-            callable(ability) and card.data.get("ability_handles_damage", False)
-        )
+        ability_handles_damage = self._ability_handles_damage(ability, card)
 
         if "damage" in card.data and not ability_handles_damage:
             target = self._require_opponent(opponent, "damage")
