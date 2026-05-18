@@ -122,6 +122,8 @@ class Player:
             self.heal(int(card.data["heal"]))
 
         ability = card.data.get("ability")
+        # Callable abilities can opt out of base damage application by setting
+        # `ability_handles_damage=True` in card.data when they apply damage internally.
         ability_handles_damage = (
             isinstance(ability, str) and ability in Player.UNIQUE_DAMAGE_ABILITIES
         ) or (

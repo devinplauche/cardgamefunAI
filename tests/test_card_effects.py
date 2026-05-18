@@ -75,7 +75,7 @@ class TestCardEffects(unittest.TestCase):
 
     def test_unique_callable_ability(self):
         def custom_ability(owner, opponent, card):
-            if opponent is None and card.name == "Blessing":
+            if opponent is None:
                 owner.heal(2)
 
         player = Player("Player")
