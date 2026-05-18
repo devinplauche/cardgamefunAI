@@ -3,11 +3,15 @@ import sys
 import subprocess
 import os
 import time
+import importlib.util
 
 
 class TestGUILaunch(unittest.TestCase):
     def test_basic_py_gui_launches(self):
         """Launch the Tkinter GUI in a subprocess, confirm it starts, then terminate."""
+        if importlib.util.find_spec("tkinter") is None:
+            self.skipTest("tkinter is not available in this environment")
+
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
         script_path = os.path.join(repo_root, 'src', 'simple-start', 'basic.py')
 
