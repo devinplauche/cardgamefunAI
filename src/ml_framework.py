@@ -107,8 +107,9 @@ class WeightedStrategy(Strategy):
         heal = _card_stat(card, "heal")
         draw = _card_stat(card, "draw")
         opponent_armor = getattr(opponent, "armor", 0)
-        overkill_damage = max(0, damage - (opponent.hp + opponent_armor))
-        lethal_bonus = 1 if damage >= opponent.hp + opponent_armor else 0
+        opponent_effective_hp = opponent.hp + opponent_armor
+        overkill_damage = max(0, damage - opponent_effective_hp)
+        lethal_bonus = 1 if damage >= opponent_effective_hp else 0
         survival_value = armor + heal if player.hp <= 10 else 0
         return (
             self.weights["damage"] * damage
@@ -325,7 +326,7 @@ class StrategyTrainer:
                     WeightedStrategy(candidate_weights),
                     seed=seed + (generation * 100) + candidate_index,
                 )
-                if evaluation.average_score >= best_generation_evaluation.average_score:
+                if evaluation.average_score > best_generation_evaluation.average_score:
                     best_generation_weights = dict(candidate_weights)
                     best_generation_evaluation = evaluation
 
