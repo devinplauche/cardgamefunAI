@@ -193,6 +193,37 @@ def _choose_stun_target(opponent: "Player") -> Optional[Card]:
     )
 
 
+def _clone_player_state(player: "Player") -> "Player":
+    clone = Player(player.name)
+    clone.max_hp = player.max_hp
+    clone.current_hp = player.current_hp
+    clone.current_block = player.current_block
+    clone.combat_pool = player.combat_pool
+    clone.gold_pool = player.gold_pool
+    clone.hand = list(player.hand)
+    clone.discard = list(player.discard)
+    clone.deck = list(player.deck)
+    clone.champions_in_play = list(player.champions_in_play)
+    clone.faction_counts = dict(player.faction_counts)
+    clone.bought_cards = dict(player.bought_cards)
+    return clone
+
+
+def _oracle_state_utility(active: "Player", opponent: "Player") -> float:
+    effective_opp = opponent.current_hp + opponent.current_block
+    pressure = max(0, active.combat_pool - opponent.current_block)
+    utility = (
+        active.gold_pool * 1.1
+        + pressure * 1.5
+        + len(active.champions_in_play) * 2.6
+        - len(opponent.champions_in_play) * 2.0
+        + (active.current_hp - opponent.current_hp) * 0.10
+    )
+    if active.combat_pool >= effective_opp > 0:
+        utility += 20.0
+    return utility
+
+
 # ---------------------------------------------------------------------------
 # Player state
 # ---------------------------------------------------------------------------
@@ -240,7 +271,7 @@ class Player:
             self.combat_pool += champ.combat
             self.gold_pool += champ.gold
 
-    def play_card(self, card: Card, opponent: "Player") -> bool:
+    def play_card(self, card: Card, opponent: "Player", smart_decisions: bool = False) -> bool:
         if card not in self.hand:
             return False
         self.hand.remove(card)
@@ -269,19 +300,31 @@ class Player:
             self.draw(card.draw_cards)
 
         if card.topdeck_from_discard and self.discard:
-            best_discard = max(self.discard, key=_intrinsic_card_value)
-            self.discard.remove(best_discard)
-            self.deck.insert(0, best_discard)
+            if smart_decisions:
+                topdeck_card = max(self.discard, key=_intrinsic_card_value)
+            else:
+                topdeck_card = random.choice(self.discard)
+            self.discard.remove(topdeck_card)
+            self.deck.insert(0, topdeck_card)
 
         if card.topdeck_from_hand and self.hand:
-            lowest_in_hand = min(self.hand, key=_intrinsic_card_value)
-            # "May put one card ... on top": only use when this does not lose much value.
-            if _intrinsic_card_value(lowest_in_hand) <= 1.5:
-                self.hand.remove(lowest_in_hand)
-                self.deck.insert(0, lowest_in_hand)
+            if smart_decisions:
+                lowest_in_hand = min(self.hand, key=_intrinsic_card_value)
+                # "May put one card ... on top": only use when this does not lose much value.
+                if _intrinsic_card_value(lowest_in_hand) <= 1.5:
+                    self.hand.remove(lowest_in_hand)
+                    self.deck.insert(0, lowest_in_hand)
+            else:
+                if random.random() < 0.35:
+                    random_card = random.choice(self.hand)
+                    self.hand.remove(random_card)
+                    self.deck.insert(0, random_card)
 
         if ally_active and card.stun_champion and opponent.champions_in_play:
-            target = _choose_stun_target(opponent)
+            target = (
+                _choose_stun_target(opponent)
+                if smart_decisions else random.choice(opponent.champions_in_play)
+            )
             if target is not None and target in opponent.champions_in_play:
                 opponent.champions_in_play.remove(target)
                 if target.returns_to_hand_on_stun:
@@ -551,30 +594,25 @@ def _choose_adaptive(hand: List[Card], active: Player, opponent: Player) -> Opti
 
 def _choose_oracle(hand: List[Card], active: Player, opponent: Player) -> Optional[Card]:
     """High-skill tactical chooser with lookahead for stun/top-deck value."""
-    ctx = _build_context(active, opponent)
-    champs = len(active.champions_in_play)
     best, best_score = None, -1.0
     for c in hand:
-        score = _score_card_adaptive(c, ctx, champs)
-        remaining = [x for x in hand if x is not c]
-        if c.draw_cards > 0:
-            follow = max((_score_card_adaptive(x, ctx, champs) for x in remaining), default=0.0)
-            score += follow * 0.16
-        ally_active_after_play = (
-            c.faction and c.faction != "neutral" and active.faction_counts.get(c.faction, 0) >= 1
-        )
-        if ally_active_after_play and c.stun_champion and opponent.champions_in_play:
-            target = _choose_stun_target(opponent)
-            if target is not None:
-                score += min(0.30, _intrinsic_card_value(target) / 28.0)
-        if c.topdeck_from_discard and active.discard:
-            best_discard = max(active.discard, key=_intrinsic_card_value)
-            score += min(0.18, _intrinsic_card_value(best_discard) / 26.0)
-        if ally_active_after_play and c.acquire_to_top_max_cost > 0:
-            score += 0.10
-        projected = active.combat_pool + c.combat
-        if projected >= opponent.current_hp + opponent.current_block:
-            score += 0.55
+        active_sim = _clone_player_state(active)
+        opponent_sim = _clone_player_state(opponent)
+        if c not in active_sim.hand:
+            continue
+        if not active_sim.play_card(c, opponent_sim, smart_decisions=True):
+            continue
+        score = _oracle_state_utility(active_sim, opponent_sim)
+        # One more ply of lookahead: evaluate best immediate follow-up card.
+        best_follow = 0.0
+        for follow_card in list(active_sim.hand):
+            a2 = _clone_player_state(active_sim)
+            o2 = _clone_player_state(opponent_sim)
+            if follow_card in a2.hand and a2.play_card(follow_card, o2, smart_decisions=True):
+                follow_score = _oracle_state_utility(a2, o2)
+                if follow_score > best_follow:
+                    best_follow = follow_score
+        score += best_follow * 0.65
         if score > best_score:
             best_score, best = score, c
     return best or _choose_adaptive(hand, active, opponent)
@@ -1002,6 +1040,7 @@ def _run_turn(
     draw_count: int,
 ) -> int:
     active.start_turn(draw_count)
+    smart_decisions = strategy == "Oracle"
 
     card_chooser = _CARD_CHOOSERS[strategy]
     market_chooser = _MARKET_CHOOSERS[strategy]
@@ -1013,7 +1052,7 @@ def _run_turn(
         card = card_chooser(list(active.hand), active, opponent)
         if card is None:
             break
-        if not active.play_card(card, opponent):
+        if not active.play_card(card, opponent, smart_decisions=smart_decisions):
             break
         ally_active = (
             card.faction
@@ -1027,7 +1066,12 @@ def _run_turn(
                 if c is not None and c.cost <= card.acquire_to_top_max_cost
             ]
             if affordable_free:
-                best_i, best_card = max(affordable_free, key=lambda t: _intrinsic_card_value(t[1]))
+                if smart_decisions:
+                    best_i, best_card = max(
+                        affordable_free, key=lambda t: _intrinsic_card_value(t[1])
+                    )
+                else:
+                    best_i, best_card = random.choice(affordable_free)
                 active.deck.insert(0, best_card)
                 market[best_i] = market_pile.pop(0) if market_pile else None
 
