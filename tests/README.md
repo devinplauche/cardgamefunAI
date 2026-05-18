@@ -55,12 +55,14 @@ Use `res://tests/TestPlayerChoices.gd` to validate popup-choice request and reso
 ## AI Strategy Benchmark
 
 Use `res://tests/AIBenchmark.gd` to run a round-robin tournament that pits all
-eight AI strategies (Random, Aggro, Econ, Control, Combo, Efficiency, Greedy,
-Lookahead) against each other and prints a ranked leaderboard.
+nine AI strategies (Random, Aggro, Econ, Control, Combo, Efficiency, Greedy,
+Lookahead, Adaptive) against each other and prints a ranked leaderboard with
+95% confidence intervals, a head-to-head win-rate matrix, and a CSV export.
 
-Each ordered pair of strategies plays 10 games (strategy A always goes first);
-since both orderings are tested the unordered matchup is resolved over 20 games.
-Results include win / loss / draw counts and a final win-rate ranking.
+Each ordered pair of strategies plays 50 games (strategy A always goes first);
+since both orderings are tested the unordered matchup is resolved over 100 games.
+Results include win / loss / draw counts, a final win-rate ranking with 95%
+confidence intervals, and a CSV written to `user://ai_benchmark_results.csv`.
 
 ```bash
 "/c/Users/devinsGamingPC/Downloads/Godot_v4.5.1-stable_win64.exe/Godot_v4.5.1-stable_win64_console.exe" --headless --path . --scene res://tests/AIBenchmarkRunner.tscn
@@ -76,8 +78,9 @@ Results include win / loss / draw counts and a final win-rate ranking.
 | **Control** | Highest disruption card | Offer with most `opponent_discard` value |
 | **Combo** | Highest faction-trigger/ally-synergy card | Offer with ally bonuses + faction match; falls back to evaluator |
 | **Efficiency** | Highest sacrifice+draw value card | Offer with sacrifice and draw abilities; falls back to greedy-by-cost |
-| **Greedy** | Evaluator score (single-step) | Evaluator-scored offer |
-| **Lookahead** | Evaluator score with 2-ply look-ahead | Evaluator-scored offer |
+| **Greedy** | Evaluator score (single-step) | Evaluator-scored offer with lethal-urgency pass |
+| **Lookahead** | Evaluator score with 2-ply look-ahead (includes market future value) | Evaluator-scored offer with lethal-urgency pass |
+| **Adaptive** | Dynamic axis switching: danger→block, late→aggro, mid+champions→combo, early→greedy | Dynamic: danger→health/combat, late→combat, mid+champions→combo, early→greedy-by-cost |
 
 
 ## Card Art Validation

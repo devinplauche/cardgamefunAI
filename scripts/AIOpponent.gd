@@ -18,6 +18,11 @@ enum Difficulty {
 @export_range(1, 2, 1) var lookahead_depth: int = 2
 @export var fog_of_war: bool = false
 
+# Lethal-urgency threshold: if the opponent's effective HP (HP + block) minus
+# the AI's current combat pool is within this value, the AI treats buying
+# additional combat cards as the only priority.
+const LETHAL_URGENCY_THRESHOLD: int = 6
+
 var evaluator: CardEvaluator = CardEvaluator.new()
 
 
@@ -307,7 +312,7 @@ func _choose_market_scored(offers: Array[Dictionary], gold_pool: int, context: D
 	var opponent_hp: int = int(context.get("opponent_hp", 999))
 	var opponent_block: int = int(context.get("opponent_block", 0))
 	var effective_opp_hp: int = opponent_hp + opponent_block
-	var lethal_urgent: bool = effective_opp_hp > 0 and (effective_opp_hp - ai_combat) <= 6
+	var lethal_urgent: bool = effective_opp_hp > 0 and (effective_opp_hp - ai_combat) <= LETHAL_URGENCY_THRESHOLD
 
 	var best_idx: int = -1
 	var best_score: float = -1.0
