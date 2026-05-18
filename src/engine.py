@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 import random
-from typing import List, Any
+from typing import List, Any, Callable
 
 
 @dataclass
@@ -40,6 +40,7 @@ class Player:
         self.hand: List[Card] = []
         self.discard: List[Card] = []
         self.hp: int = 20
+        self.armor: int = 0
 
     def draw(self, n: int = 1) -> List[Card]:
         cards = self.deck.draw(n)
@@ -49,10 +50,93 @@ class Player:
     def hand_size(self) -> int:
         return len(self.hand)
 
-    def play_card(self, card: Card) -> Card:
+    def receive_damage(self, amount: int, ignore_armor: bool = False) -> int:
+        amount = max(0, amount)
+        if amount == 0:
+            return 0
+
+        if not ignore_armor and self.armor > 0:
+            absorbed = min(self.armor, amount)
+            self.armor -= absorbed
+            amount -= absorbed
+
+        if amount > 0:
+            self.hp = max(0, self.hp - amount)
+        return amount
+
+    def heal(self, amount: int) -> int:
+        amount = max(0, amount)
+        self.hp += amount
+        return amount
+
+    def _require_opponent(self, opponent: Player | None, effect_name: str) -> Player:
+        if opponent is None:
+            raise ValueError(f"{effect_name} effect requires an opponent")
+        return opponent
+
+    def _resolve_unique_ability(self, card: Card, opponent: Player | None) -> None:
+        ability = card.data.get("ability")
+        if ability is None:
+            return
+
+        if callable(ability):
+            ability(self, opponent, card)
+            return
+
+        if not isinstance(ability, str):
+            raise ValueError("Card ability must be a string or callable")
+
+        if ability == "piercing_strike":
+            target = self._require_opponent(opponent, "piercing_strike")
+            damage = int(card.data.get("damage", 0))
+            target.receive_damage(damage, ignore_armor=True)
+            return
+
+        if ability == "guard_breaker":
+            target = self._require_opponent(opponent, "guard_breaker")
+            target.armor = 0
+            damage = int(card.data.get("damage", 0))
+            target.receive_damage(damage)
+            return
+
+        if ability == "siphon":
+            target = self._require_opponent(opponent, "siphon")
+            damage = int(card.data.get("damage", 0))
+            dealt = target.receive_damage(damage)
+            self.heal(dealt)
+            return
+
+        raise ValueError(f"Unknown unique ability: {ability}")
+
+    def resolve_card_effect(self, card: Card, opponent: Player | None = None) -> None:
+        if not isinstance(card.data, dict):
+            return
+
+        if "armor" in card.data:
+            self.armor += max(0, int(card.data["armor"]))
+
+        if "draw" in card.data:
+            self.draw(max(0, int(card.data["draw"])))
+
+        if "heal" in card.data:
+            self.heal(int(card.data["heal"]))
+
+        ability = card.data.get("ability")
+        ability_handles_damage = ability in {"piercing_strike", "guard_breaker", "siphon"}
+
+        if "damage" in card.data and not ability_handles_damage:
+            target = self._require_opponent(opponent, "damage")
+            target.receive_damage(int(card.data["damage"]))
+
+        if "self_damage" in card.data:
+            self.receive_damage(int(card.data["self_damage"]))
+
+        self._resolve_unique_ability(card, opponent)
+
+    def play_card(self, card: Card, opponent: Player | None = None, resolve_effects: bool = True) -> Card:
         """Play a card from hand: remove from hand and place into discard. Returns the card.
 
-        This is a simple prototype behavior: no cost checks or effect resolution here.
+        This prototype resolves effects directly from card data.
         """
         if card not in self.hand:
             raise ValueError("Card not in hand")
@@ -60,6 +144,8 @@ class Player:
         self.hand.remove(card)
         # add to discard
         self.discard.append(card)
+        if resolve_effects:
+            self.resolve_card_effect(card, opponent=opponent)
         return card
 
 
@@ -110,4 +196,3 @@ class TurnManager:
         self.active_player = self.players[self.active_index]
         # start the next player's turn automatically
         self.start_turn()
-
