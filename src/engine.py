@@ -34,6 +34,8 @@ class Deck:
 
 
 class Player:
+    UNIQUE_DAMAGE_ABILITIES = frozenset({"piercing_strike", "guard_breaker", "siphon"})
+
     def __init__(self, name: str, deck: Deck | None = None):
         self.name = name
         self.deck = deck if deck else Deck()
@@ -122,7 +124,7 @@ class Player:
             self.heal(int(card.data["heal"]))
 
         ability = card.data.get("ability")
-        ability_handles_damage = ability in {"piercing_strike", "guard_breaker", "siphon"}
+        ability_handles_damage = ability in Player.UNIQUE_DAMAGE_ABILITIES
 
         if "damage" in card.data and not ability_handles_damage:
             target = self._require_opponent(opponent, "damage")

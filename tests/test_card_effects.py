@@ -74,7 +74,9 @@ class TestCardEffects(unittest.TestCase):
         self.assertEqual(attacker.hp, 11)
 
     def test_unique_callable_ability(self):
-        def custom_ability(owner, _opponent, _card):
+        def custom_ability(owner, opponent, card):
+            self.assertIsNone(opponent)
+            self.assertEqual(card.name, "Blessing")
             owner.heal(2)
 
         player = Player("Player")
