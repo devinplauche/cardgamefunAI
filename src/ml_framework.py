@@ -20,7 +20,7 @@ DEFAULT_WEIGHTS = {
     "draw": 0.7,
     "finisher": 2.5,
     "survival": 1.4,
-    "overkill": 0.05,
+    "overkill": -0.05,
 }
 
 STANDARD_CARD_SPECS = (
@@ -113,7 +113,7 @@ class WeightedStrategy(Strategy):
         opponent_total_health_pool = opponent.hp + opponent_armor
         is_lethal = damage >= opponent_total_health_pool
         lethal_bonus = LETHAL_CARD_SCORE if is_lethal else 0.0
-        overkill_damage = damage - opponent_total_health_pool if damage > opponent_total_health_pool else 0
+        excess_damage = damage - opponent_total_health_pool if damage > opponent_total_health_pool else 0
         survival_value = armor + heal if player.hp <= 10 else 0
         return (
             self.weights["damage"] * damage
@@ -122,7 +122,7 @@ class WeightedStrategy(Strategy):
             + self.weights["draw"] * draw
             + self.weights["finisher"] * lethal_bonus
             + self.weights["survival"] * survival_value
-            + self.weights["overkill"] * overkill_damage
+            + self.weights["overkill"] * excess_damage
         )
 
     def choose_card(self, player: Player, opponent: Player, rng: random.Random) -> Card | None:
