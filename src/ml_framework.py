@@ -109,8 +109,9 @@ class WeightedStrategy(Strategy):
         armor = _card_stat(card, "armor")
         heal = _card_stat(card, "heal")
         draw = _card_stat(card, "draw")
+        opponent_hp = getattr(opponent, "hp", 0)
         opponent_armor = getattr(opponent, "armor", 0)
-        opponent_total_health_pool = opponent.hp + opponent_armor
+        opponent_total_health_pool = opponent_hp + opponent_armor
         is_lethal = damage >= opponent_total_health_pool
         lethal_bonus = LETHAL_CARD_SCORE if is_lethal else 0.0
         excess_damage = damage - opponent_total_health_pool if damage > opponent_total_health_pool else 0
@@ -199,8 +200,9 @@ class StrategyArena:
         draw = _card_stat(card, "draw")
 
         if damage:
-            blocked = min(getattr(opponent, "armor", 0), damage)
-            opponent.armor = max(0, getattr(opponent, "armor", 0) - blocked)
+            opponent_armor = getattr(opponent, "armor", 0)
+            blocked = min(opponent_armor, damage)
+            opponent.armor = max(0, opponent_armor - blocked)
             opponent.hp -= damage - blocked
         if armor:
             player.armor = getattr(player, "armor", 0) + armor
