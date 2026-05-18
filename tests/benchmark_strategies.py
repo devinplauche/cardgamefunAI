@@ -311,11 +311,11 @@ class Player:
             if smart_decisions:
                 lowest_in_hand = min(self.hand, key=_intrinsic_card_value)
                 # "May put one card ... on top": only use when this does not lose much value.
-                if _intrinsic_card_value(lowest_in_hand) <= 1.5:
+                if _intrinsic_card_value(lowest_in_hand) <= _TOPDECK_LOW_VALUE_THRESHOLD:
                     self.hand.remove(lowest_in_hand)
                     self.deck.insert(0, lowest_in_hand)
             else:
-                if random.random() < 0.35:
+                if random.random() < _RANDOM_TOPDECK_PROBABILITY:
                     random_card = random.choice(self.hand)
                     self.hand.remove(random_card)
                     self.deck.insert(0, random_card)
@@ -370,6 +370,9 @@ class Player:
 _LOW_HP_FRACTION = 0.4
 _HEALTH_TO_BLOCK = 0.7
 _AGGRO_HP_THRESHOLD = 15
+_TOPDECK_LOW_VALUE_THRESHOLD = 1.5
+_RANDOM_TOPDECK_PROBABILITY = 0.35
+_ORACLE_FOLLOWUP_DISCOUNT = 0.65
 
 
 def _estimate_values(card: Card, ai_champions: int) -> Dict[str, int]:
@@ -612,7 +615,7 @@ def _choose_oracle(hand: List[Card], active: Player, opponent: Player) -> Option
                 follow_score = _oracle_state_utility(a2, o2)
                 if follow_score > best_follow:
                     best_follow = follow_score
-        score += best_follow * 0.65
+        score += best_follow * _ORACLE_FOLLOWUP_DISCOUNT
         if score > best_score:
             best_score, best = score, c
     return best or _choose_adaptive(hand, active, opponent)
@@ -1319,6 +1322,8 @@ def print_card_values(results: Dict, min_game_samples: int = 20) -> None:
                 "purchase_samples": purchase_samples,
             }
         )
+    # Ranking priority: game win rate first, then purchase win rate,
+    # then purchase sample size as a stability tie-breaker.
     entries.sort(
         key=lambda e: (e["game_win_rate"], e["purchase_win_rate"], e["purchase_samples"]),
         reverse=True,
