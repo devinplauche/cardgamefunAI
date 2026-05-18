@@ -223,8 +223,7 @@ class StrategyArena:
             active_player.draw(1)
             card = active_strategy.choose_card(active_player, waiting_player, rng)
             if card is not None and card in active_player.hand:
-                played = active_player.play_card(card)
-                self._apply_card(active_player, waiting_player, played)
+                active_player.play_card(card, opponent=waiting_player)
 
             if waiting_player.hp <= 0 or active_player.hp <= 0:
                 final_turn = turn
