@@ -451,18 +451,11 @@ def _choose_adaptive(hand: List[Card], active: Player, opponent: Player) -> Opti
     # Late-game aggro – push for the kill.
     if opponent.current_hp <= 25:
         return _choose_aggro(hand, active, opponent)
-    # Mid/early game: use the evaluator as base and layer faction-combo bonuses on top.
-    # This ensures Adaptive is never worse than Greedy while gaining when faction
-    # synergy is available (faction match +0.15, ally text +0.10).
+    # General: use the enhanced Adaptive scorer (includes faction/ally/phase bonuses).
     ctx = _build_context(active, opponent)
-    played = active.faction_counts
     best, best_score = None, -1.0
     for c in hand:
-        s = _score_card(c, ctx, champs)
-        if c.faction != "neutral" and played.get(c.faction, 0) > 0:
-            s += 0.15
-        if c.ally_combat or c.ally_gold or c.ally_health:
-            s += 0.10
+        s = _score_card_adaptive(c, ctx, champs)
         if s > best_score:
             best_score, best = s, c
     return best or _choose_greedy(hand, active, opponent)
@@ -479,6 +472,177 @@ _CARD_CHOOSERS = {
     "Lookahead":  _choose_lookahead,
     "Adaptive":   _choose_adaptive,
 }
+
+# ---------------------------------------------------------------------------
+# Adaptive-enhanced scoring: phase constants and helper functions
+# ---------------------------------------------------------------------------
+
+_ADAPTIVE_PHASE_EARLY = 0  # Economy phase: starter deck dominant
+_ADAPTIVE_PHASE_MID   = 1  # Board-development: some market cards acquired
+_ADAPTIVE_PHASE_LATE  = 2  # Closing phase: opponent near death
+
+
+def _adaptive_phase(ctx: Dict) -> int:
+    """Classify game phase for Adaptive weight-profile selection."""
+    opp_hp = ctx.get("opponent_hp", 50)
+    total_champs = ctx.get("ai_champions", 0) + ctx.get("opponent_champions", 0)
+    if opp_hp <= 28 or total_champs >= 5:
+        return _ADAPTIVE_PHASE_LATE
+    elif total_champs >= 2:
+        return _ADAPTIVE_PHASE_MID
+    return _ADAPTIVE_PHASE_EARLY
+
+
+def _score_card_adaptive(card: Card, ctx: Dict, ai_champions: int = 0) -> float:
+    """
+    Enhanced scorer for the Adaptive strategy.
+
+    Key differences from the base _score_card:
+      • 6 weight profiles vs 4 — one per game phase / urgency mode
+      • Champions get a 1.35× persistence multiplier (they give value every turn)
+      • Anti-combo disruption boost when opponent has in-play champions
+      • Faction-match (+0.10) and ally-text (+0.06) bonuses baked in
+      • Early-game resource bias (0.35): economy compounds over turns
+    """
+    ai_hp        = ctx.get("ai_hp", 50)
+    ai_max_hp    = max(ctx.get("ai_max_hp", 50), 1)
+    ai_combat    = ctx.get("ai_combat", 0)
+    opp_hp       = ctx.get("opponent_hp", 999)
+    opp_block    = ctx.get("opponent_block", 0)
+    opp_champs   = ctx.get("opponent_champions", 0)
+    board_threat = ctx.get("board_threat", 0.2)
+    dominant     = ctx.get("ai_dominant_faction", "")
+    eff_opp_hp   = opp_hp + opp_block
+
+    vals  = _estimate_values(card, ai_champions)
+    dmg_s = min(vals["damage"]     / 20.0, 1.0)
+    blk_s = min(vals["block"]      / 15.0, 1.0)
+    dis_s = min(vals["disruption"] / 10.0, 1.0)
+    res_s = min(vals["resource"]   / 10.0, 1.0)
+
+    # Lethal opportunity detection.
+    proj = ai_combat + vals["damage"]
+    if eff_opp_hp > 0 and proj >= eff_opp_hp:
+        lethal_bonus = 1.0
+    elif eff_opp_hp > 0 and proj >= eff_opp_hp - 3:
+        lethal_bonus = 0.5
+    else:
+        lethal_bonus = 0.0
+
+    # HP pressure gradient.
+    hp_ratio = ai_hp / ai_max_hp
+    defense_urgency = (
+        max(0.0, min(1.0, (0.4 - hp_ratio) / 0.4)) if hp_ratio < 0.4 else 0.0
+    )
+
+    phase = _adaptive_phase(ctx)
+
+    # Anti-combo disruption boost: each opponent champion adds pressure.
+    dis_boost = min(0.15, opp_champs * 0.06)
+
+    # Choose weight profile (w_dmg, w_blk, w_dis, w_res).
+    if lethal_bonus >= 1.0:
+        w_dmg, w_blk, w_dis, w_res = 0.80, 0.07, 0.08, 0.05
+    elif defense_urgency > 0.5:
+        # Critical — maximise survivability.
+        w_dmg, w_blk, w_dis, w_res = 0.15, 0.60, 0.15, 0.10
+    elif defense_urgency > 0.2:
+        # Moderate danger.
+        w_dmg, w_blk, w_dis, w_res = 0.25, 0.45, 0.15, 0.15
+    elif phase == _ADAPTIVE_PHASE_LATE or opp_hp <= 28:
+        # Late game: push for the kill.
+        w_dmg, w_blk, w_dis, w_res = 0.65, 0.12, 0.10, 0.13
+    elif phase == _ADAPTIVE_PHASE_MID:
+        # Mid game: balanced; boost disruption if opponent has champions.
+        w_dmg = 0.45 - dis_boost * 0.5
+        w_blk = 0.20
+        w_dis = 0.20 + dis_boost
+        w_res = 0.15
+    else:
+        # Early game: lean heavily on resource accumulation — it compounds.
+        w_dmg, w_blk, w_dis, w_res = 0.30, 0.20, 0.15, 0.35
+
+    tactical = (
+        dmg_s * w_dmg + blk_s * w_blk + dis_s * w_dis + res_s * w_res
+    )
+    # Proactive defence: always credit some block when opponent board is strong.
+    tactical += min(board_threat, 1.0) * blk_s * 0.20
+
+    # Cost-efficiency in the market context.
+    ai_gold = ctx.get("ai_gold", 99)
+    cost_eff = (
+        max(0.5, 1.0 - card.cost / max(ai_gold, 1) * 0.25)
+        if ai_gold >= card.cost else 0.0
+    )
+
+    final = cost_eff * 0.20 + tactical * 0.80
+    if lethal_bonus > 0.0:
+        final = max(final, 0.85 * lethal_bonus)
+
+    # Champion persistence multiplier: champions contribute every turn.
+    if card.is_champion:
+        final = min(1.0, final * 1.35)
+
+    # Faction-match and ally-text synergy bonuses.
+    if dominant and card.faction.lower() == dominant.lower():
+        final = min(1.0, final + 0.10)
+    if card.ally_combat + card.ally_gold + card.ally_health > 0:
+        final = min(1.0, final + 0.06)
+
+    return max(0.0, min(1.0, final))
+
+
+def _market_adaptive_combo_buy(
+    offers: List[Optional[Card]], gold: int, ctx: Dict, champs: int
+) -> int:
+    """
+    Combination-buy lookahead: find the first card to buy that maximises the
+    total deck value considering what second card would still be affordable.
+
+    Greedy always picks the highest single-card score; this planner reasons
+    about 2-card sequences so that two medium cards can beat one great card
+    when gold allows both purchases.
+
+    The second-card discount is phase-aware:
+      • Early game  (0.85): two medium cards compound well for economy.
+      • Mid game    (0.75): moderate — balance quality vs quantity.
+      • Late game   (0.60): prefer one great card to avoid deck dilution.
+    """
+    aff = _affordable(offers, gold)
+    if not aff:
+        return -1
+
+    phase = _adaptive_phase(ctx)
+    second_card_discount = {
+        _ADAPTIVE_PHASE_EARLY: 0.85,
+        _ADAPTIVE_PHASE_MID:   0.75,
+        _ADAPTIVE_PHASE_LATE:  0.60,
+    }[phase]
+
+    best_first = -1
+    best_total = -1.0
+
+    for idx1, c1 in aff:
+        s1 = _score_card_adaptive(c1, ctx, champs)
+        remaining = gold - c1.cost
+
+        # Find the best second card affordable with remaining gold.
+        aff2 = [
+            (i, c)
+            for i, c in enumerate(offers)
+            if c is not None and i != idx1 and c.cost <= remaining
+        ]
+        if aff2:
+            s2 = max(_score_card_adaptive(c, ctx, champs) for _, c in aff2)
+            total = s1 + second_card_discount * s2
+        else:
+            total = s1
+
+        if total > best_total:
+            best_total = total
+            best_first = idx1
+
+    return best_first
 
 # ---------------------------------------------------------------------------
 # Market-buying strategy functions
@@ -587,20 +751,30 @@ def _market_efficiency(offers: List[Optional[Card]], gold: int, ctx: Dict) -> in
 
 
 def _market_adaptive(offers: List[Optional[Card]], gold: int, ctx: Dict) -> int:
-    ai_hp = ctx.get("ai_hp", 50)
-    ai_max_hp = max(ctx.get("ai_max_hp", 50), 1)
-    opp_hp = ctx.get("opponent_hp", 50)
-    ai_combat = ctx.get("ai_combat", 0)
+    """
+    Adaptive market buying with combination-buy lookahead and phase-aware scoring.
+
+    Stages (in priority order):
+      1. Lethal urgency  — finish the opponent NOW with maximum combat.
+      2. Danger mode     — prioritise health/combat to survive.
+      3. Late game       — all-in on combat to seal the win.
+      4. General         — combination-buy lookahead using the enhanced Adaptive scorer.
+         This is the key differentiator: plans the best 2-card purchase sequence
+         rather than always picking the single highest-scoring card.
+    """
+    ai_hp         = ctx.get("ai_hp", 50)
+    ai_max_hp     = max(ctx.get("ai_max_hp", 50), 1)
+    opp_hp        = ctx.get("opponent_hp", 50)
+    ai_combat     = ctx.get("ai_combat", 0)
     opponent_block = ctx.get("opponent_block", 0)
-    effective_opp = opp_hp + opponent_block
-    dominant = ctx.get("ai_dominant_faction", "")
+    effective_opp  = opp_hp + opponent_block
     champs = ctx.get("ai_champions", 0)
 
-    # Lethal urgency — buy the most combat-dense card to finish the opponent.
+    # Lethal urgency — close out the game NOW.
     if effective_opp > 0 and (effective_opp - ai_combat) <= _LETHAL_URGENCY_THRESHOLD:
         return _market_aggro(offers, gold, ctx)
 
-    # Danger mode — prioritise health/combat cards for survival.
+    # Danger mode — buy survival (health + some combat to maintain pressure).
     if ai_hp / ai_max_hp < 0.4:
         aff = _affordable(offers, gold)
         if aff:
@@ -612,28 +786,12 @@ def _market_adaptive(offers: List[Optional[Card]], gold: int, ctx: Dict) -> int:
             if best_idx >= 0:
                 return best_idx
 
-    # Late game — all-in on combat to close out.
+    # Late game — all-in on combat to seal the win.
     if opp_hp <= 25:
         return _market_aggro(offers, gold, ctx)
 
-    # General: evaluator as baseline + situation-aware bonuses.
-    # Adaptive is always at least as good as Greedy and gains in situations where
-    # board presence (champions), faction synergy, or ally text add value.
-    aff = _affordable(offers, gold)
-    if not aff:
-        return -1
-    best_idx, best_score = -1, -1.0
-    for idx, c in aff:
-        s = _score_card(c, ctx, champs)
-        if c.is_champion:
-            s += 0.05  # persistent board presence
-        if dominant and c.faction.lower() == dominant.lower():
-            s += 0.08  # on-faction synergy
-        if c.ally_combat + c.ally_gold + c.ally_health > 0:
-            s += 0.05  # ally-text synergy
-        if s > best_score:
-            best_score, best_idx = s, idx
-    return best_idx
+    # General: combination-buy lookahead with the enhanced Adaptive scorer.
+    return _market_adaptive_combo_buy(offers, gold, ctx, champs)
 
 
 _MARKET_CHOOSERS = {
