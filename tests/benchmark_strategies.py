@@ -398,7 +398,8 @@ def _choose_combo(hand: List[Card], active: Player, opponent: Player) -> Optiona
             score += 3
         if score > best_val:
             best_val, best = score, c
-    return best if best and best_val > 0 else _choose_random(hand, active, opponent)
+    # Fall back to greedy evaluator (not random) so combo is never worse than greedy.
+    return best if best and best_val > 0 else _choose_greedy(hand, active, opponent)
 
 
 def _choose_efficiency(hand: List[Card], active: Player, opponent: Player) -> Optional[Card]:
@@ -407,7 +408,8 @@ def _choose_efficiency(hand: List[Card], active: Player, opponent: Player) -> Op
         score = c.sacrifice_combat * 6 + c.draw_cards * 4 + c.gold
         if score > best_val:
             best_val, best = score, c
-    return best if best and best_val > 0 else _choose_random(hand, active, opponent)
+    # Fall back to greedy evaluator (not random) so efficiency is never worse than greedy.
+    return best if best and best_val > 0 else _choose_greedy(hand, active, opponent)
 
 
 def _choose_greedy(hand: List[Card], active: Player, opponent: Player) -> Optional[Card]:
@@ -449,11 +451,21 @@ def _choose_adaptive(hand: List[Card], active: Player, opponent: Player) -> Opti
     # Late-game aggro – push for the kill.
     if opponent.current_hp <= 25:
         return _choose_aggro(hand, active, opponent)
-    # Mid-game with champions – leverage combo potential.
-    if champs >= 1:
-        return _choose_combo(hand, active, opponent)
-    # Early game – evaluator-driven.
-    return _choose_greedy(hand, active, opponent)
+    # Mid/early game: use the evaluator as base and layer faction-combo bonuses on top.
+    # This ensures Adaptive is never worse than Greedy while gaining when faction
+    # synergy is available (faction match +0.15, ally text +0.10).
+    ctx = _build_context(active, opponent)
+    played = active.faction_counts
+    best, best_score = None, -1.0
+    for c in hand:
+        s = _score_card(c, ctx, champs)
+        if c.faction != "neutral" and played.get(c.faction, 0) > 0:
+            s += 0.15
+        if c.ally_combat or c.ally_gold or c.ally_health:
+            s += 0.10
+        if s > best_score:
+            best_score, best = s, c
+    return best or _choose_greedy(hand, active, opponent)
 
 
 _CARD_CHOOSERS = {
@@ -544,16 +556,22 @@ def _market_combo(offers: List[Optional[Card]], gold: int, ctx: Dict) -> int:
     if not aff:
         return -1
     dominant = ctx.get("ai_dominant_faction", "")
-    best_idx, best_score = -1, -1
+    champs = ctx.get("ai_champions", 0)
+    # Use the evaluator as the base score so Combo is never worse than Greedy.
+    # Layer faction-match (+0.10) and ally-bonus (+0.06) bonuses on top so that
+    # on-faction cards are preferred when they are otherwise equal in value.
+    best_idx, best_score = -1, -1.0
     for idx, c in aff:
-        score = c.ally_combat + c.ally_gold + c.ally_health
+        s = _score_card(c, ctx, champs)
         if c.is_champion:
-            score += 2
+            s += 0.06  # champions provide persistent faction presence
         if dominant and c.faction.lower() == dominant.lower():
-            score += 3
-        if score > best_score:
-            best_score, best_idx = score, idx
-    return best_idx if best_score > 0 else _market_scored(offers, gold, ctx)
+            s += 0.10  # on-faction bonus
+        if c.ally_combat + c.ally_gold + c.ally_health > 0:
+            s += 0.06  # ally-text bonus
+        if s > best_score:
+            best_score, best_idx = s, idx
+    return best_idx
 
 
 def _market_efficiency(offers: List[Optional[Card]], gold: int, ctx: Dict) -> int:
@@ -570,11 +588,20 @@ def _market_efficiency(offers: List[Optional[Card]], gold: int, ctx: Dict) -> in
 
 def _market_adaptive(offers: List[Optional[Card]], gold: int, ctx: Dict) -> int:
     ai_hp = ctx.get("ai_hp", 50)
-    ai_max_hp = ctx.get("ai_max_hp", 50)
+    ai_max_hp = max(ctx.get("ai_max_hp", 50), 1)
     opp_hp = ctx.get("opponent_hp", 50)
+    ai_combat = ctx.get("ai_combat", 0)
+    opponent_block = ctx.get("opponent_block", 0)
+    effective_opp = opp_hp + opponent_block
+    dominant = ctx.get("ai_dominant_faction", "")
     champs = ctx.get("ai_champions", 0)
 
-    if ai_max_hp > 0 and ai_hp / ai_max_hp < 0.4:
+    # Lethal urgency — buy the most combat-dense card to finish the opponent.
+    if effective_opp > 0 and (effective_opp - ai_combat) <= _LETHAL_URGENCY_THRESHOLD:
+        return _market_aggro(offers, gold, ctx)
+
+    # Danger mode — prioritise health/combat cards for survival.
+    if ai_hp / ai_max_hp < 0.4:
         aff = _affordable(offers, gold)
         if aff:
             best_idx, best_val = -1, -1
@@ -584,11 +611,29 @@ def _market_adaptive(offers: List[Optional[Card]], gold: int, ctx: Dict) -> int:
                     best_val, best_idx = v, idx
             if best_idx >= 0:
                 return best_idx
+
+    # Late game — all-in on combat to close out.
     if opp_hp <= 25:
         return _market_aggro(offers, gold, ctx)
-    if champs >= 1:
-        return _market_combo(offers, gold, ctx)
-    return _market_scored(offers, gold, ctx)
+
+    # General: evaluator as baseline + situation-aware bonuses.
+    # Adaptive is always at least as good as Greedy and gains in situations where
+    # board presence (champions), faction synergy, or ally text add value.
+    aff = _affordable(offers, gold)
+    if not aff:
+        return -1
+    best_idx, best_score = -1, -1.0
+    for idx, c in aff:
+        s = _score_card(c, ctx, champs)
+        if c.is_champion:
+            s += 0.05  # persistent board presence
+        if dominant and c.faction.lower() == dominant.lower():
+            s += 0.08  # on-faction synergy
+        if c.ally_combat + c.ally_gold + c.ally_health > 0:
+            s += 0.05  # ally-text synergy
+        if s > best_score:
+            best_score, best_idx = s, idx
+    return best_idx
 
 
 _MARKET_CHOOSERS = {

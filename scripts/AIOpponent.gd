@@ -209,7 +209,7 @@ func _choose_combo(playable_cards: Array[Card], self_player: Node) -> Card:
 		if value > best_value:
 			best_value = value
 			best_card = card
-	return best_card if best_card != null else _choose_random(playable_cards)
+	return best_card if best_card != null else _choose_greedy(playable_cards, self_player, opponent_player)
 
 
 func _choose_efficiency(playable_cards: Array[Card], self_player: Node) -> Card:
@@ -220,14 +220,15 @@ func _choose_efficiency(playable_cards: Array[Card], self_player: Node) -> Card:
 		if value > best_value:
 			best_value = value
 			best_card = card
-	return best_card if best_card != null else _choose_random(playable_cards)
+	return best_card if best_card != null else _choose_greedy(playable_cards, self_player, opponent_player)
 
 
 # ADAPTIVE strategy: dynamically switch axis based on game state.
 #   • Danger mode  (own HP < 40% max): prioritise block/health.
 #   • Late game    (opponent HP ≤ 25):  go full Aggro.
-#   • Mid-game     (turn-based heuristic via champion count): Combo/Greedy.
-#   • Early game   (few champions, high gold potential):   Econ-leaning Greedy.
+#   • Otherwise:   evaluator-scored + faction-combo bonuses layered on top.
+#     This ensures Adaptive is never worse than Greedy while gaining when
+#     faction synergy or ally text is available (faction match +0.15, ally +0.10).
 func _choose_adaptive(playable_cards: Array[Card], self_player: Node, opponent_player: Node) -> Card:
 	var ai_hp: int = _get_health(self_player)
 	var ai_max_hp: int = _get_max_health(self_player)
@@ -250,12 +251,26 @@ func _choose_adaptive(playable_cards: Array[Card], self_player: Node, opponent_p
 	if opp_hp <= 25:
 		return _choose_aggro(playable_cards, self_player)
 
-	# Mid-game with champions — leverage combo potential.
-	if ai_champions >= 1:
-		return _choose_combo(playable_cards, self_player)
-
-	# Early game — greedy but leaning toward resource generation.
-	return _choose_greedy(playable_cards, self_player, opponent_player)
+	# Mid/early game: evaluator score + faction-combo bonuses.
+	# Using Greedy as the baseline ensures Adaptive is never worse than Greedy
+	# while still rewarding faction synergy when it is available.
+	var context: Dictionary = _build_eval_context(self_player, opponent_player)
+	var played_factions: Dictionary = {}
+	if self_player != null and self_player.get("faction_counts_this_turn") != null:
+		played_factions = self_player.get("faction_counts_this_turn") as Dictionary
+	var best_card: Card = null
+	var best_score: float = -1.0
+	for card: Card in playable_cards:
+		var s: float = evaluator.score_card(card, context)
+		# Combo bonus: normalize estimate_combo_value (max ~10+ for high-synergy cards)
+		# into a 0–0.25 additive bonus so faction synergy never completely overrides
+		# evaluator score but is still meaningful when present.
+		var cv: int = evaluator.estimate_combo_value(card, played_factions, ai_champions)
+		s += clamp(float(cv) / 40.0, 0.0, 0.25)
+		if s > best_score:
+			best_score = s
+			best_card = card
+	return best_card if best_card != null else _choose_greedy(playable_cards, self_player, opponent_player)
 
 
 # Public synchronous card picker for use in headless simulations.
@@ -368,15 +383,16 @@ func _choose_market_greedy_cost(offers: Array[Dictionary], gold_pool: int) -> in
 	return best_idx
 
 
-# COMBO market buying: prefer offers that have ally bonuses or match the faction
-# already most represented in the current game context. Falls back to evaluator
-# scoring so something is always bought if gold is available.
+# COMBO market buying: use the evaluator as the base score so Combo is never
+# worse than Greedy, then layer faction-match (+0.10) and ally-bonus (+0.06)
+# bonuses on top.  Champions also get a small bonus (+0.06) for persistent
+# faction presence.  This means an on-faction card beats an off-faction card
+# only when they are otherwise close in evaluator value.
 func _choose_market_combo(offers: Array[Dictionary], gold_pool: int, context: Dictionary) -> int:
-	# Use the dominant faction from context if available.
 	var dominant_faction: String = String(context.get("ai_dominant_faction", ""))
 
 	var best_idx: int = -1
-	var best_score: int = -1
+	var best_score: float = -1.0
 
 	for i: int in range(offers.size()):
 		if offers[i].is_empty():
@@ -385,29 +401,27 @@ func _choose_market_combo(offers: Array[Dictionary], gold_pool: int, context: Di
 			continue
 
 		var offer: Dictionary = offers[i]
-		var score: int = 0
+		# Base score from the evaluator (same source as Greedy).
+		var s: float = score_market_offer(offer, context)
 
-		# Award points for ally_combat / ally_gold / ally_health fields in the
-		# parsed market entry (positive values mean the card has ally text).
-		score += int(offer.get("ally_combat", 0)) + int(offer.get("ally_gold", 0)) + int(offer.get("ally_health", 0))
-
-		# Champions (card type contains "Champion") provide ongoing faction presence.
+		# Champion bonus: persistent board presence.
 		if String(offer.get("type", "")).to_lower().contains("champion"):
-			score += 2
+			s += 0.06
 
 		# Faction match bonus.
 		if not dominant_faction.is_empty() and String(offer.get("faction", "")).to_lower() == dominant_faction.to_lower():
-			score += 3
+			s += 0.10
 
-		if score > best_score:
-			best_score = score
+		# Ally-text bonus: synergy with on-faction allies already in play.
+		var ally_total: int = int(offer.get("ally_combat", 0)) + int(offer.get("ally_gold", 0)) + int(offer.get("ally_health", 0))
+		if ally_total > 0:
+			s += 0.06
+
+		if s > best_score:
+			best_score = s
 			best_idx = i
 
-	# If no offer has any combo value, fall back to evaluator scoring.
-	if best_idx == -1 or best_score == 0:
-		return _choose_market_scored(offers, gold_pool, context)
-
-	return best_idx
+	return best_idx if best_idx >= 0 else _choose_market_scored(offers, gold_pool, context)
 
 
 # EFFICIENCY market buying: prioritise offers that have sacrifice or draw text,
@@ -680,16 +694,24 @@ func score_market_offer(offer: Dictionary, context: Dictionary) -> float:
 	return evaluator.score_card(temp_card, buy_context)
 
 
-# ADAPTIVE market buying: mirrors the ADAPTIVE card-selection logic.
-#   • Danger mode  (own HP < 40% max): buy defensively by block/health value.
+# ADAPTIVE market buying: evaluator as baseline with situation-aware overrides.
+#   • Lethal urgency (opponent within LETHAL_URGENCY_THRESHOLD HP of death): buy combat.
+#   • Danger mode  (own HP < 40% max): buy defensively by health/combat value.
 #   • Late game    (opponent HP ≤ 25):  buy by raw combat value.
-#   • Mid-game:    use COMBO market logic to build faction synergy.
-#   • Early game:  use greedy-by-cost to accelerate purchasing power.
+#   • Otherwise:   evaluator base + champion/faction/ally-text bonuses.
+#     Adaptive is always at least as good as Greedy in the general case.
 func _choose_market_adaptive(offers: Array[Dictionary], gold_pool: int, context: Dictionary) -> int:
 	var ai_hp: int = int(context.get("ai_hp", 50))
 	var ai_max_hp: int = max(int(context.get("ai_max_hp", 50)), 1)
 	var opp_hp: int = int(context.get("opponent_hp", 999))
-	var ai_champions: int = int(context.get("ai_champions", 0))
+	var ai_combat: int = int(context.get("ai_combat", 0))
+	var opponent_block: int = int(context.get("opponent_block", 0))
+	var effective_opp: int = opp_hp + opponent_block
+	var dominant: String = String(context.get("ai_dominant_faction", ""))
+
+	# Lethal urgency — buy the most combat-dense card to finish the opponent.
+	if effective_opp > 0 and (effective_opp - ai_combat) <= LETHAL_URGENCY_THRESHOLD:
+		return _choose_market_by_offer_field(offers, gold_pool, "combat")
 
 	# Danger mode — buy defensively.
 	if float(ai_hp) / float(ai_max_hp) < 0.4:
@@ -706,18 +728,36 @@ func _choose_market_adaptive(offers: Array[Dictionary], gold_pool: int, context:
 				best_idx = i
 		if best_idx != -1:
 			return best_idx
-		return _choose_market_scored(offers, gold_pool, context)
 
 	# Late-game — maximise raw combat to close out.
 	if opp_hp <= 25:
 		return _choose_market_by_offer_field(offers, gold_pool, "combat")
 
-	# Mid-game with champions — combo/faction synergy.
-	if ai_champions >= 1:
-		return _choose_market_combo(offers, gold_pool, context)
-
-	# Early game — highest-cost affordable card to accelerate deck value.
-	return _choose_market_greedy_cost(offers, gold_pool)
+	# General: evaluator score + situation-aware bonuses.
+	# Adaptive is always at least as good as Greedy and gains when board
+	# presence (champions), faction synergy, or ally text adds value.
+	var best_idx: int = -1
+	var best_score: float = -1.0
+	for i: int in range(offers.size()):
+		if offers[i].is_empty():
+			continue
+		if int(offers[i].get("cost", 99)) > gold_pool:
+			continue
+		var s: float = score_market_offer(offers[i], context)
+		# Champion bonus: persistent board presence.
+		if String(offers[i].get("type", "")).to_lower().contains("champion"):
+			s += 0.05
+		# Faction synergy bonus.
+		if not dominant.is_empty() and String(offers[i].get("faction", "")).to_lower() == dominant.to_lower():
+			s += 0.08
+		# Ally-text synergy bonus.
+		var ally_total: int = int(offers[i].get("ally_combat", 0)) + int(offers[i].get("ally_gold", 0)) + int(offers[i].get("ally_health", 0))
+		if ally_total > 0:
+			s += 0.05
+		if s > best_score:
+			best_score = s
+			best_idx = i
+	return best_idx if best_idx >= 0 else _choose_market_scored(offers, gold_pool, context)
 
 
 # Returns the faction string with the highest play-count this turn for the
