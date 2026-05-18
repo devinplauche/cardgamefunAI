@@ -54,6 +54,27 @@ Use `res://tests/TestPlayerChoices.gd` to validate popup-choice request and reso
 
 ## AI Strategy Benchmark
 
+### Pure-Python benchmark (no Godot required)
+
+`tests/benchmark_strategies.py` is a self-contained Python port of the GDScript
+benchmark. It uses `cards/marketplace.json` and the same starter deck, strategy
+logic, and seeding scheme as `AIBenchmark.gd`, so results are directly comparable.
+It runs in under 5 seconds for the default 50 games/pair and requires no external
+dependencies beyond Python 3.8+.
+
+```bash
+# Full run (50 games/pair, ~3 s)
+python3 tests/benchmark_strategies.py
+
+# Faster smoke-test (10 games/pair)
+python3 tests/benchmark_strategies.py --games 10
+
+# Export results to CSV
+python3 tests/benchmark_strategies.py --csv results.csv
+```
+
+### GDScript benchmark (requires Godot)
+
 Use `res://tests/AIBenchmark.gd` to run a round-robin tournament that pits all
 nine AI strategies (Random, Aggro, Econ, Control, Combo, Efficiency, Greedy,
 Lookahead, Adaptive) against each other and prints a ranked leaderboard with
