@@ -25,8 +25,9 @@ class TestMLFramework(unittest.TestCase):
         ]
         opponent.hp = 6
         opponent.armor = 0
+        rng = random.Random(0)
 
-        choice = strategy.choose_card(player, opponent, rng=random.Random(0))
+        choice = strategy.choose_card(player, opponent, rng=rng)
 
         self.assertEqual(choice.name, "Strike")
 
