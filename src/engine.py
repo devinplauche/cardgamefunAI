@@ -122,7 +122,11 @@ class Player:
             self.heal(int(card.data["heal"]))
 
         ability = card.data.get("ability")
-        ability_handles_damage = ability in Player.UNIQUE_DAMAGE_ABILITIES
+        ability_handles_damage = (
+            isinstance(ability, str) and ability in Player.UNIQUE_DAMAGE_ABILITIES
+        ) or (
+            callable(ability) and bool(card.data.get("ability_handles_damage", False))
+        )
 
         if "damage" in card.data and not ability_handles_damage:
             target = self._require_opponent(opponent, "damage")
