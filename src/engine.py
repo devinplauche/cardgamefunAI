@@ -43,7 +43,8 @@ class Player:
         self.hand: List[Card] = []
         self.discard: List[Card] = []
         self.hp: int = 20
-        self.armor: int = 0
+        self.max_hp: int = 20
+        self.armor: int = 0  # Armor absorbs incoming damage before HP is reduced.
 
     def draw(self, n: int = 1) -> List[Card]:
         cards = self.deck.draw(n)
@@ -67,8 +68,10 @@ class Player:
 
     def heal(self, amount: int) -> int:
         amount = max(0, amount)
-        self.hp += amount
-        return amount
+        max_hp = getattr(self, "max_hp", self.hp)
+        healed = min(amount, max(0, max_hp - self.hp))
+        self.hp += healed
+        return healed
 
     def _require_opponent(self, opponent: Player | None, effect_name: str) -> Player:
         if opponent is None:

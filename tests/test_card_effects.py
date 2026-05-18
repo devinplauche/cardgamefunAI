@@ -28,6 +28,14 @@ class TestCardEffects(unittest.TestCase):
         self.assertEqual(player.hand_size(), 1)  # drew one after playing one
         self.assertEqual(player.deck.count(), 0)
 
+    def test_heal_caps_at_max_hp(self):
+        player = Player("Player")
+        player.hp = 19
+        player.hand = [Card(id="c4", name="Big Recover", data={"heal": 5})]
+
+        player.play_card(player.hand[0])
+        self.assertEqual(player.hp, player.max_hp)
+
     def test_unique_piercing_strike_ignores_armor(self):
         attacker = Player("Attacker")
         defender = Player("Defender")

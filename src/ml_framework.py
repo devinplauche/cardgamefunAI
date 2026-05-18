@@ -193,24 +193,6 @@ class StrategyArena:
         player.draw(self.config.opening_hand)
         return player
 
-    def _apply_card(self, player: Player, opponent: Player, card: Card) -> None:
-        damage = _card_stat(card, "damage")
-        armor = _card_stat(card, "armor")
-        heal = _card_stat(card, "heal")
-        draw = _card_stat(card, "draw")
-
-        if damage:
-            opponent_armor = getattr(opponent, "armor", 0)
-            blocked = min(opponent_armor, damage)
-            opponent.armor = max(0, opponent_armor - blocked)
-            opponent.hp -= damage - blocked
-        if armor:
-            player.armor = getattr(player, "armor", 0) + armor
-        if heal:
-            player.hp = min(getattr(player, "max_hp", self.config.starting_hp), player.hp + heal)
-        if draw:
-            player.draw(draw)
-
     def play_match(self, player_strategy: Strategy, opponent_strategy: Strategy, seed: int) -> MatchResult:
         rng = random.Random(seed)
         player = self._make_player("player", "player", rng)
