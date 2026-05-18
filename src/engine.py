@@ -54,8 +54,6 @@ class Player:
 
     def receive_damage(self, amount: int, ignore_armor: bool = False) -> int:
         amount = max(0, amount)
-        if amount == 0:
-            return 0
 
         if not ignore_armor and self.armor > 0:
             absorbed = min(self.armor, amount)
@@ -135,7 +133,7 @@ class Player:
 
         self._resolve_unique_ability(card, opponent)
 
-    def play_card(self, card: Card, opponent: Player | None = None, resolve_effects: bool = True) -> Card:
+    def play_card(self, card: Card, opponent: Player | None = None) -> Card:
         """Play a card from hand: remove from hand and place into discard. Returns the card.
 
         This prototype resolves effects directly from card data.
@@ -146,8 +144,7 @@ class Player:
         self.hand.remove(card)
         # add to discard
         self.discard.append(card)
-        if resolve_effects:
-            self.resolve_card_effect(card, opponent=opponent)
+        self.resolve_card_effect(card, opponent=opponent)
         return card
 
 
