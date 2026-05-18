@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 import random
-from typing import List, Any
+from typing import List, Any, Callable
 
 
 @dataclass
@@ -34,12 +34,16 @@ class Deck:
 
 
 class Player:
+    # Abilities in this set apply damage internally and should bypass base damage handling.
+    UNIQUE_DAMAGE_ABILITIES = frozenset({"piercing_strike", "guard_breaker", "siphon"})
+
     def __init__(self, name: str, deck: Deck | None = None):
         self.name = name
         self.deck = deck if deck else Deck()
         self.hand: List[Card] = []
         self.discard: List[Card] = []
         self.hp: int = 20
+        self.armor: int = 0
 
     def draw(self, n: int = 1) -> List[Card]:
         cards = self.deck.draw(n)
@@ -49,10 +53,116 @@ class Player:
     def hand_size(self) -> int:
         return len(self.hand)
 
-    def play_card(self, card: Card) -> Card:
+    def receive_damage(self, amount: int, ignore_armor: bool = False) -> int:
+        amount = max(0, amount)
+
+        if not ignore_armor and self.armor > 0:
+            absorbed = min(self.armor, amount)
+            self.armor -= absorbed
+            amount -= absorbed
+
+        if amount > 0:
+            self.hp = max(0, self.hp - amount)
+        return amount
+
+    def heal(self, amount: int) -> int:
+        amount = max(0, amount)
+        self.hp += amount
+        return amount
+
+    def _require_opponent(self, opponent: Player | None, effect_name: str) -> Player:
+        if opponent is None:
+            raise ValueError(f"{effect_name} requires an opponent")
+        return opponent
+
+    def _resolve_unique_ability(self, card: Card, opponent: Player | None) -> None:
+        ability = card.data.get("ability")
+        if ability is None:
+            return
+
+        if callable(ability):
+            ability(self, opponent, card)
+            return
+
+        if not isinstance(ability, str):
+            raise ValueError("Card ability must be a string or callable")
+
+        if ability == "piercing_strike":
+            target = self._require_opponent(opponent, "piercing_strike")
+            damage = int(card.data.get("damage", 0))
+            target.receive_damage(damage, ignore_armor=True)
+            return
+
+        if ability == "guard_breaker":
+            target = self._require_opponent(opponent, "guard_breaker")
+            target.armor = 0
+            damage = int(card.data.get("damage", 0))
+            target.receive_damage(damage)
+            return
+
+        if ability == "siphon":
+            target = self._require_opponent(opponent, "siphon")
+            damage = int(card.data.get("damage", 0))
+            dealt = target.receive_damage(damage)
+            self.heal(dealt)
+            return
+
+        raise ValueError(f"Unknown unique ability: {ability}")
+
+    def _ability_handles_damage(self, ability: Any, card: Card) -> bool:
+        return (
+            isinstance(ability, str) and ability in Player.UNIQUE_DAMAGE_ABILITIES
+        ) or (
+            callable(ability) and card.data.get("ability_handles_damage", False)
+        )
+
+    def _validate_effect_preconditions(self, card: Card, opponent: Player | None, ability: Any) -> None:
+        if ability is not None and not callable(ability) and not isinstance(ability, str):
+            raise ValueError("Card ability must be a string or callable")
+
+        if isinstance(ability, str) and ability not in Player.UNIQUE_DAMAGE_ABILITIES:
+            raise ValueError(f"Unknown unique ability: {ability}")
+
+        ability_handles_damage = self._ability_handles_damage(ability, card)
+        if "damage" in card.data and not ability_handles_damage:
+            self._require_opponent(opponent, "damage")
+
+        if ability in Player.UNIQUE_DAMAGE_ABILITIES:
+            self._require_opponent(opponent, str(ability))
+
+    def resolve_card_effect(self, card: Card, opponent: Player | None = None) -> None:
+        if not isinstance(card.data, dict):
+            return
+
+        ability = card.data.get("ability")
+        self._validate_effect_preconditions(card, opponent, ability)
+
+        if "armor" in card.data:
+            self.armor += max(0, int(card.data["armor"]))
+
+        if "draw" in card.data:
+            self.draw(max(0, int(card.data["draw"])))
+
+        if "heal" in card.data:
+            self.heal(int(card.data["heal"]))
+
+        # Callable abilities can opt out of base damage application by setting
+        # `ability_handles_damage=True` in card.data when they apply damage internally.
+        ability_handles_damage = self._ability_handles_damage(ability, card)
+
+        if "damage" in card.data and not ability_handles_damage:
+            target = self._require_opponent(opponent, "damage")
+            target.receive_damage(int(card.data["damage"]))
+
+        if "self_damage" in card.data:
+            self.receive_damage(int(card.data["self_damage"]))
+
+        self._resolve_unique_ability(card, opponent)
+
+    def play_card(self, card: Card, opponent: Player | None = None) -> Card:
         """Play a card from hand: remove from hand and place into discard. Returns the card.
 
-        This is a simple prototype behavior: no cost checks or effect resolution here.
+        This prototype resolves effects directly from card data.
         """
         if card not in self.hand:
             raise ValueError("Card not in hand")
@@ -60,6 +170,7 @@ class Player:
         self.hand.remove(card)
         # add to discard
         self.discard.append(card)
+        self.resolve_card_effect(card, opponent=opponent)
         return card
 
 
@@ -110,4 +221,3 @@ class TurnManager:
         self.active_player = self.players[self.active_index]
         # start the next player's turn automatically
         self.start_turn()
-
