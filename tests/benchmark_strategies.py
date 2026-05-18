@@ -63,7 +63,9 @@ def _enrich_card(raw: dict) -> Card:
     ally_text = raw.get("ally_effect", "")
 
     # Detect card draws in effect text
-    draw = int(bool(re.search(r'draw a card', effect_text, re.IGNORECASE)))
+    draw = 0
+    if re.search(r'draw a card', effect_text, re.IGNORECASE):
+        draw = 1
     m = re.search(r'draw (\d+) cards?', effect_text, re.IGNORECASE)
     if m:
         draw = max(draw, int(m.group(1)))
@@ -642,10 +644,11 @@ def _run_turn(
         if idx < 0 or idx >= len(market) or market[idx] is None:
             break
         offer = market[idx]
-        if offer.cost > active.gold_pool:  # type: ignore[union-attr]
+        assert offer is not None  # guarded by the None check above
+        if offer.cost > active.gold_pool:
             break
-        active.gold_pool -= offer.cost  # type: ignore[union-attr]
-        active.buy_card(offer)  # type: ignore[arg-type]
+        active.gold_pool -= offer.cost
+        active.buy_card(offer)
         # Refill the market slot.
         market[idx] = market_pile.pop(0) if market_pile else None
 
@@ -769,6 +772,7 @@ def _make_entries(results: Dict) -> List[Dict]:
     for i, name in enumerate(STRATEGIES):
         total = wins[i] + losses[i] + draws[i]
         wr = (wins[i] + 0.5 * draws[i]) / total if total else 0.0
+        # 95% CI half-width using the normal approximation for binomial proportion.
         ci = 1.96 * math.sqrt(wr * (1.0 - wr) / total) if total else 0.0
         entries.append({
             "name": name,
