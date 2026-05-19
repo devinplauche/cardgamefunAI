@@ -21,6 +21,7 @@ const STRATEGIES: Array = [
 	["Greedy",     AIOpponent.Difficulty.GREEDY],
 	["Lookahead",  AIOpponent.Difficulty.LOOKAHEAD],
 	["Adaptive",   AIOpponent.Difficulty.ADAPTIVE],
+	["Oracle",     AIOpponent.Difficulty.ORACLE],
 ]
 
 ## Games played per ordered pair (A always goes first).

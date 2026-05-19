@@ -76,8 +76,8 @@ python3 tests/benchmark_strategies.py --csv results.csv
 ### GDScript benchmark (requires Godot)
 
 Use `res://tests/AIBenchmark.gd` to run a round-robin tournament that pits all
-nine AI strategies (Random, Aggro, Econ, Control, Combo, Efficiency, Greedy,
-Lookahead, Adaptive) against each other and prints a ranked leaderboard with
+ten AI strategies (Random, Aggro, Econ, Control, Combo, Efficiency, Greedy,
+Lookahead, Adaptive, Oracle) against each other and prints a ranked leaderboard with
 95% confidence intervals, a head-to-head win-rate matrix, and a CSV export.
 
 Each ordered pair of strategies plays 50 games (strategy A always goes first);
@@ -102,6 +102,7 @@ confidence intervals, and a CSV written to `user://ai_benchmark_results.csv`.
 | **Greedy** | Evaluator score (single-step) | Evaluator-scored offer with lethal-urgency pass |
 | **Lookahead** | Evaluator score with 2-ply look-ahead (includes market future value) | Evaluator-scored offer with lethal-urgency pass |
 | **Adaptive** | Dynamic axis switching: danger→block, late→aggro, mid+champions→combo, early→greedy | Dynamic: danger→health/combat, late→combat, mid+champions→combo, early→greedy-by-cost |
+| **Oracle** | Adaptive-style scoring plus follow-up lookahead, faction/utility bonuses, and stronger tactical tie-breaking | Two-card market lookahead with extra value for champions, topdeck effects, stun lines, and on-faction synergy |
 
 
 ## Card Art Validation

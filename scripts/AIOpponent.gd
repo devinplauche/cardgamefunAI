@@ -12,6 +12,7 @@ enum Difficulty {
 	COMBO,       # Maximises faction ally-trigger chains and champion synergies.
 	EFFICIENCY,  # Prizes sacrifice and draw effects to keep the deck lean and fast.
 	ADAPTIVE,    # Dynamically switches axis based on game state (early econ → mid combo → late aggro).
+	ORACLE,      # Adds tactical lookahead and smarter market planning to push for the strongest line.
 }
 
 @export var difficulty: Difficulty = Difficulty.GREEDY
@@ -22,6 +23,8 @@ enum Difficulty {
 # the AI's current combat pool is within this value, the AI treats buying
 # additional combat cards as the only priority.
 const LETHAL_URGENCY_THRESHOLD: int = 6
+const ORACLE_FOLLOWUP_DISCOUNT: float = 0.65
+const ORACLE_MARKET_SCORE_CAP: float = 1.8
 
 var evaluator: CardEvaluator = CardEvaluator.new()
 
@@ -85,6 +88,8 @@ func _choose_card(playable_cards: Array[Card], self_player: Node, opponent_playe
 			return _choose_efficiency(playable_cards, self_player)
 		Difficulty.ADAPTIVE:
 			return _choose_adaptive(playable_cards, self_player, opponent_player)
+		Difficulty.ORACLE:
+			return _choose_oracle(playable_cards, self_player, opponent_player)
 		_:
 			return _choose_random(playable_cards)
 
@@ -273,6 +278,31 @@ func _choose_adaptive(playable_cards: Array[Card], self_player: Node, opponent_p
 	return best_card if best_card != null else _choose_greedy(playable_cards, self_player, opponent_player)
 
 
+func _choose_oracle(playable_cards: Array[Card], self_player: Node, opponent_player: Node) -> Card:
+	var context: Dictionary = _build_eval_context(self_player, opponent_player)
+	var ai_champions: int = _get_champion_count(self_player)
+	var played_factions: Dictionary = {}
+	if self_player != null and self_player.get("faction_counts_this_turn") != null:
+		played_factions = self_player.get("faction_counts_this_turn") as Dictionary
+
+	var best_card: Card = null
+	var best_score: float = -1.0
+	for card: Card in playable_cards:
+		var score: float = _score_card_oracle(card, context, played_factions, ai_champions)
+		var best_follow: float = 0.0
+		for follow_card: Card in _without_card(playable_cards, card):
+			best_follow = max(
+				best_follow,
+				evaluator.estimate_sequence_score([card, follow_card], context)
+			)
+		score += best_follow * ORACLE_FOLLOWUP_DISCOUNT
+		if score > best_score:
+			best_score = score
+			best_card = card
+
+	return best_card if best_card != null else _choose_adaptive(playable_cards, self_player, opponent_player)
+
+
 # Public synchronous card picker for use in headless simulations.
 # Filters the hand by mana (all Hero Realms cards have cost=0 so this is a no-op
 # in practice) and delegates to the configured strategy.
@@ -303,6 +333,8 @@ func choose_market_offer(offers: Array[Dictionary], gold_pool: int, context: Dic
 			return _choose_market_efficiency(offers, gold_pool)
 		Difficulty.ADAPTIVE:
 			return _choose_market_adaptive(offers, gold_pool, context)
+		Difficulty.ORACLE:
+			return _choose_market_oracle(offers, gold_pool, context)
 		_:
 			return _choose_market_random(offers, gold_pool)
 
@@ -760,6 +792,46 @@ func _choose_market_adaptive(offers: Array[Dictionary], gold_pool: int, context:
 	return best_idx if best_idx >= 0 else _choose_market_scored(offers, gold_pool, context)
 
 
+func _choose_market_oracle(offers: Array[Dictionary], gold_pool: int, context: Dictionary) -> int:
+	var ai_combat: int = int(context.get("ai_combat", 0))
+	var effective_opp: int = int(context.get("opponent_hp", 999)) + int(context.get("opponent_block", 0))
+	if effective_opp > 0 and (effective_opp - ai_combat) <= LETHAL_URGENCY_THRESHOLD:
+		return _choose_market_by_offer_field(offers, gold_pool, "combat")
+
+	var total_champions: int = int(context.get("ai_champions", 0)) + int(context.get("opponent_champions", 0))
+	var opponent_hp: int = int(context.get("opponent_hp", 50))
+	var second_card_discount: float = 0.82
+	if opponent_hp <= 28 or total_champions >= 5:
+		second_card_discount = 0.62
+	elif total_champions >= 2:
+		second_card_discount = 0.74
+
+	var best_idx: int = -1
+	var best_total: float = -1.0
+	for i: int in range(offers.size()):
+		if offers[i].is_empty():
+			continue
+		if int(offers[i].get("cost", 99)) > gold_pool:
+			continue
+
+		var first_score: float = _score_market_offer_oracle(offers[i], context)
+		var remaining_gold: int = gold_pool - int(offers[i].get("cost", 0))
+		var second_score: float = 0.0
+		for j: int in range(offers.size()):
+			if i == j or offers[j].is_empty():
+				continue
+			if int(offers[j].get("cost", 99)) > remaining_gold:
+				continue
+			second_score = max(second_score, _score_market_offer_oracle(offers[j], context))
+
+		var total_score: float = first_score + second_score * second_card_discount
+		if total_score > best_total:
+			best_total = total_score
+			best_idx = i
+
+	return best_idx if best_idx >= 0 else _choose_market_adaptive(offers, gold_pool, context)
+
+
 # Returns the faction string with the highest play-count this turn for the
 # given player node, or an empty string if none have been played yet.
 func _dominant_faction(player: Node) -> String:
@@ -776,3 +848,113 @@ func _dominant_faction(player: Node) -> String:
 			max_count = count
 			dominant = faction
 	return dominant
+
+
+func _score_card_adaptive(card: Card, context: Dictionary, ai_champions: int) -> float:
+	var score: float = evaluator.score_card(card, context)
+	var dominant_faction: String = String(context.get("ai_dominant_faction", ""))
+	var ai_hp: int = int(context.get("ai_hp", 50))
+	var ai_max_hp: int = max(int(context.get("ai_max_hp", 50)), 1)
+	var opponent_champions: int = int(context.get("opponent_champions", 0))
+
+	if not dominant_faction.is_empty() and _card_faction_name(card).to_lower() == dominant_faction.to_lower():
+		score += 0.10
+	if card is DataCard:
+		for effect: Dictionary in (card as DataCard).effects:
+			var effect_id: String = String(effect.get("id", ""))
+			match effect_id:
+				"champion_data":
+					score += 0.06
+				"ally_bonus":
+					score += 0.06
+				"stun_target_champion":
+					if opponent_champions > 0:
+						score += min(0.15, 0.05 * opponent_champions)
+				"gain_health", "gain_block":
+					if float(ai_hp) / float(ai_max_hp) < 0.4:
+						score += 0.05
+				"for_each_champion_gain_combat", "for_each_champion_gain_health", \
+				"for_each_other_champion_gain_combat", "for_each_other_guard_gain_combat", \
+				"for_each_other_wild_gain_combat":
+					if ai_champions > 0:
+						score += min(0.10, 0.02 * ai_champions)
+				_:
+					pass
+	return min(1.4, score)
+
+
+func _score_card_oracle(card: Card, context: Dictionary, played_factions: Dictionary, ai_champions: int) -> float:
+	var score: float = _score_card_adaptive(card, context, ai_champions)
+	var combo_value: int = evaluator.estimate_combo_value(card, played_factions, ai_champions)
+	score += clamp(float(combo_value) / 35.0, 0.0, 0.28)
+
+	var dominant_faction: String = String(context.get("ai_dominant_faction", ""))
+	var opponent_champions: int = int(context.get("opponent_champions", 0))
+	var ai_hp: int = int(context.get("ai_hp", 50))
+	var ai_max_hp: int = max(int(context.get("ai_max_hp", 50)), 1)
+	if not dominant_faction.is_empty() and _card_faction_name(card).to_lower() == dominant_faction.to_lower():
+		score += 0.08
+
+	if card is DataCard:
+		for effect: Dictionary in (card as DataCard).effects:
+			var effect_id: String = String(effect.get("id", ""))
+			match effect_id:
+				"champion_data":
+					score += 0.06
+				"stun_target_champion":
+					if opponent_champions > 0:
+						score += min(0.24, 0.08 * opponent_champions)
+				"recover_discard_to_topdeck":
+					score += 0.08
+				"next_acquire_to_topdeck_action", "next_acquire_to_topdeck_any":
+					score += 0.10
+				"gain_health":
+					if float(ai_hp) / float(ai_max_hp) < 0.4:
+						score += min(0.20, float(int(effect.get("value", 0))) / 12.0)
+				_:
+					pass
+
+	return min(1.8, score)
+
+
+func _score_market_offer_oracle(offer: Dictionary, context: Dictionary) -> float:
+	var score: float = _score_market_offer_adaptive(offer, context)
+	var dominant_faction: String = String(context.get("ai_dominant_faction", ""))
+	if not dominant_faction.is_empty() and String(offer.get("faction", "")).to_lower() == dominant_faction.to_lower():
+		score += 0.08
+	if String(offer.get("type", "")).to_lower().contains("champion"):
+		score += 0.06
+	if int(context.get("opponent_champions", 0)) > 0 and int(offer.get("stun_target_champion", 0)) > 0:
+		score += min(0.24, 0.08 * int(context.get("opponent_champions", 0)))
+	if int(offer.get("next_acquire_to_topdeck_action", 0)) > 0 or int(offer.get("next_acquire_to_topdeck_any", 0)) > 0:
+		score += 0.10
+	if int(offer.get("recover_discard_to_topdeck", 0)) > 0:
+		score += 0.08
+	var ai_hp: int = int(context.get("ai_hp", 50))
+	var ai_max_hp: int = max(int(context.get("ai_max_hp", 50)), 1)
+	if float(ai_hp) / float(ai_max_hp) < 0.4:
+		score += min(0.20, float(int(offer.get("health", 0))) / 12.0)
+	return min(ORACLE_MARKET_SCORE_CAP, score)
+
+
+func _score_market_offer_adaptive(offer: Dictionary, context: Dictionary) -> float:
+	var dominant: String = String(context.get("ai_dominant_faction", ""))
+	var score: float = score_market_offer(offer, context)
+	if String(offer.get("type", "")).to_lower().contains("champion"):
+		score += 0.05
+	if not dominant.is_empty() and String(offer.get("faction", "")).to_lower() == dominant.to_lower():
+		score += 0.08
+	var ally_total: int = int(offer.get("ally_combat", 0)) + int(offer.get("ally_gold", 0)) + int(offer.get("ally_health", 0))
+	if ally_total > 0:
+		score += 0.05
+	return score
+
+
+func _card_faction_name(card: Card) -> String:
+	if card is DataCard:
+		for effect: Dictionary in (card as DataCard).effects:
+			if String(effect.get("id", "")) == "set_faction":
+				return String(effect.get("faction", ""))
+	if card.get("faction") != null:
+		return String(card.get("faction"))
+	return ""

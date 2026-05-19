@@ -98,6 +98,7 @@ const _DIFFICULTY_ORDER: Array = [
 	AIOpponent.Difficulty.COMBO,
 	AIOpponent.Difficulty.EFFICIENCY,
 	AIOpponent.Difficulty.ADAPTIVE,
+	AIOpponent.Difficulty.ORACLE,
 ]
 
 
@@ -136,7 +137,7 @@ func _setup_difficulty_selector() -> void:
 	difficulty_option.clear()
 	var labels: Array[String] = [
 		"Random", "Greedy", "Lookahead", "Aggro",
-		"Econ", "Control", "Combo", "Efficiency", "Adaptive",
+		"Econ", "Control", "Combo", "Efficiency", "Adaptive", "Oracle",
 	]
 	for label: String in labels:
 		difficulty_option.add_item(label)
