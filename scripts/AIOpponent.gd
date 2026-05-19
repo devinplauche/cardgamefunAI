@@ -25,6 +25,14 @@ enum Difficulty {
 const LETHAL_URGENCY_THRESHOLD: int = 6
 const ORACLE_FOLLOWUP_DISCOUNT: float = 0.65
 const ORACLE_MARKET_SCORE_CAP: float = 1.8
+const ORACLE_PHASE_LATE_HP_THRESHOLD: int = 28
+const ORACLE_PHASE_LATE_CHAMPION_THRESHOLD: int = 5
+const ORACLE_PHASE_MID_CHAMPION_THRESHOLD: int = 2
+const ORACLE_SECOND_CARD_DISCOUNT_EARLY: float = 0.82
+const ORACLE_SECOND_CARD_DISCOUNT_MID: float = 0.74
+const ORACLE_SECOND_CARD_DISCOUNT_LATE: float = 0.62
+const ORACLE_COMBO_BONUS_DIVISOR: float = 35.0
+const ORACLE_COMBO_BONUS_CAP: float = 0.28
 
 var evaluator: CardEvaluator = CardEvaluator.new()
 
@@ -800,11 +808,11 @@ func _choose_market_oracle(offers: Array[Dictionary], gold_pool: int, context: D
 
 	var total_champions: int = int(context.get("ai_champions", 0)) + int(context.get("opponent_champions", 0))
 	var opponent_hp: int = int(context.get("opponent_hp", 50))
-	var second_card_discount: float = 0.82
-	if opponent_hp <= 28 or total_champions >= 5:
-		second_card_discount = 0.62
-	elif total_champions >= 2:
-		second_card_discount = 0.74
+	var second_card_discount: float = ORACLE_SECOND_CARD_DISCOUNT_EARLY
+	if opponent_hp <= ORACLE_PHASE_LATE_HP_THRESHOLD or total_champions >= ORACLE_PHASE_LATE_CHAMPION_THRESHOLD:
+		second_card_discount = ORACLE_SECOND_CARD_DISCOUNT_LATE
+	elif total_champions >= ORACLE_PHASE_MID_CHAMPION_THRESHOLD:
+		second_card_discount = ORACLE_SECOND_CARD_DISCOUNT_MID
 
 	var best_idx: int = -1
 	var best_total: float = -1.0
@@ -886,7 +894,9 @@ func _score_card_adaptive(card: Card, context: Dictionary, ai_champions: int) ->
 func _score_card_oracle(card: Card, context: Dictionary, played_factions: Dictionary, ai_champions: int) -> float:
 	var score: float = _score_card_adaptive(card, context, ai_champions)
 	var combo_value: int = evaluator.estimate_combo_value(card, played_factions, ai_champions)
-	score += clamp(float(combo_value) / 35.0, 0.0, 0.28)
+	# Normalize combo value into a bounded tactical bonus so synergy matters
+	# without overwhelming the base evaluator score.
+	score += clamp(float(combo_value) / ORACLE_COMBO_BONUS_DIVISOR, 0.0, ORACLE_COMBO_BONUS_CAP)
 
 	var opponent_champions: int = int(context.get("opponent_champions", 0))
 	var ai_hp: int = int(context.get("ai_hp", 50))
