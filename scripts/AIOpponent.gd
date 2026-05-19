@@ -265,21 +265,13 @@ func _choose_adaptive(playable_cards: Array[Card], self_player: Node, opponent_p
 		return _choose_aggro(playable_cards, self_player)
 
 	# Mid/early game: evaluator score + faction-combo bonuses.
-	# Using Greedy as the baseline ensures Adaptive is never worse than Greedy
-	# while still rewarding faction synergy when it is available.
+	# Use the shared adaptive scorer so Oracle and Adaptive tune the same
+	# baseline heuristics before Oracle layers on extra lookahead.
 	var context: Dictionary = _build_eval_context(self_player, opponent_player)
-	var played_factions: Dictionary = {}
-	if self_player != null and self_player.get("faction_counts_this_turn") != null:
-		played_factions = self_player.get("faction_counts_this_turn") as Dictionary
 	var best_card: Card = null
 	var best_score: float = -1.0
 	for card: Card in playable_cards:
-		var s: float = evaluator.score_card(card, context)
-		# Combo bonus: normalize estimate_combo_value (max ~10+ for high-synergy cards)
-		# into a 0–0.25 additive bonus so faction synergy never completely overrides
-		# evaluator score but is still meaningful when present.
-		var cv: int = evaluator.estimate_combo_value(card, played_factions, ai_champions)
-		s += clamp(float(cv) / 40.0, 0.0, 0.25)
+		var s: float = _score_card_adaptive(card, context, ai_champions)
 		if s > best_score:
 			best_score = s
 			best_card = card
@@ -747,7 +739,6 @@ func _choose_market_adaptive(offers: Array[Dictionary], gold_pool: int, context:
 	var ai_combat: int = int(context.get("ai_combat", 0))
 	var opponent_block: int = int(context.get("opponent_block", 0))
 	var effective_opp: int = opp_hp + opponent_block
-	var dominant: String = String(context.get("ai_dominant_faction", ""))
 
 	# Lethal urgency — buy the most combat-dense card to finish the opponent.
 	if effective_opp > 0 and (effective_opp - ai_combat) <= LETHAL_URGENCY_THRESHOLD:
@@ -783,17 +774,7 @@ func _choose_market_adaptive(offers: Array[Dictionary], gold_pool: int, context:
 			continue
 		if int(offers[i].get("cost", 99)) > gold_pool:
 			continue
-		var s: float = score_market_offer(offers[i], context)
-		# Champion bonus: persistent board presence.
-		if String(offers[i].get("type", "")).to_lower().contains("champion"):
-			s += 0.05
-		# Faction synergy bonus.
-		if not dominant.is_empty() and String(offers[i].get("faction", "")).to_lower() == dominant.to_lower():
-			s += 0.08
-		# Ally-text synergy bonus.
-		var ally_total: int = int(offers[i].get("ally_combat", 0)) + int(offers[i].get("ally_gold", 0)) + int(offers[i].get("ally_health", 0))
-		if ally_total > 0:
-			s += 0.05
+		var s: float = _score_market_offer_adaptive(offers[i], context)
 		if s > best_score:
 			best_score = s
 			best_idx = i
