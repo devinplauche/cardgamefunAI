@@ -888,22 +888,17 @@ func _score_card_oracle(card: Card, context: Dictionary, played_factions: Dictio
 	var combo_value: int = evaluator.estimate_combo_value(card, played_factions, ai_champions)
 	score += clamp(float(combo_value) / 35.0, 0.0, 0.28)
 
-	var dominant_faction: String = String(context.get("ai_dominant_faction", ""))
 	var opponent_champions: int = int(context.get("opponent_champions", 0))
 	var ai_hp: int = int(context.get("ai_hp", 50))
 	var ai_max_hp: int = max(int(context.get("ai_max_hp", 50)), 1)
-	if not dominant_faction.is_empty() and _card_faction_name(card).to_lower() == dominant_faction.to_lower():
-		score += 0.08
 
 	if card is DataCard:
 		for effect: Dictionary in (card as DataCard).effects:
 			var effect_id: String = String(effect.get("id", ""))
 			match effect_id:
-				"champion_data":
-					score += 0.06
 				"stun_target_champion":
 					if opponent_champions > 0:
-						score += min(0.24, 0.08 * opponent_champions)
+						score += min(0.09, 0.03 * opponent_champions)
 				"recover_discard_to_topdeck":
 					score += 0.08
 				"next_acquire_to_topdeck_action", "next_acquire_to_topdeck_any":
@@ -919,11 +914,6 @@ func _score_card_oracle(card: Card, context: Dictionary, played_factions: Dictio
 
 func _score_market_offer_oracle(offer: Dictionary, context: Dictionary) -> float:
 	var score: float = _score_market_offer_adaptive(offer, context)
-	var dominant_faction: String = String(context.get("ai_dominant_faction", ""))
-	if not dominant_faction.is_empty() and String(offer.get("faction", "")).to_lower() == dominant_faction.to_lower():
-		score += 0.08
-	if String(offer.get("type", "")).to_lower().contains("champion"):
-		score += 0.06
 	if int(context.get("opponent_champions", 0)) > 0 and int(offer.get("stun_target_champion", 0)) > 0:
 		score += min(0.24, 0.08 * int(context.get("opponent_champions", 0)))
 	if int(offer.get("next_acquire_to_topdeck_action", 0)) > 0 or int(offer.get("next_acquire_to_topdeck_any", 0)) > 0:
