@@ -24,7 +24,7 @@ class AlwaysCardStrategy:
         return self.card_value
 
     def reset(self) -> None:
-        return None
+        pass
 
 
 @dataclass
@@ -87,6 +87,7 @@ class MLStrategyTrainer:
                     their_card = opponent.choose_card()
                     total_score += self._score_round(action, their_card)
                 avg_score = total_score / episodes_per_action
+                # On ties, prefer the highest card value to maximize margin over weaker opponents.
                 if avg_score > best_avg_score or (avg_score == best_avg_score and action > best_action):
                     best_avg_score = avg_score
                     best_action = action
