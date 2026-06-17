@@ -16,6 +16,12 @@ class TestSimulationReport(unittest.TestCase):
         self.assertLessEqual(len(report["most_purchased_cards"]), 2)
         self.assertTrue(report["all_purchase_counts"])
 
+    def test_generate_report_rejects_non_positive_game_count(self):
+        with self.assertRaises(ValueError):
+            generate_report(num_games=0)
+        with self.assertRaises(ValueError):
+            generate_report(num_games=-5)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -20,12 +20,17 @@ CATALOG: Tuple[ShopCard, ...] = (
     ShopCard(name="Heavy Blow", cost=4, damage=4),
 )
 
+STARTING_ATTACK_DAMAGE = 1
+STARTING_DECK_SIZE = 5
+SAVE_RESOURCES_PROBABILITY = 0.2
+MAX_RESOURCES = 10
+
 
 class SimulatedAIPlayer:
     def __init__(self, hp: int = 20):
         self.hp = hp
         self.resources = 0
-        self.deck: List[int] = [1, 1, 1, 1, 1]
+        self.deck: List[int] = [STARTING_ATTACK_DAMAGE] * STARTING_DECK_SIZE
         self.discard: List[int] = []
 
     def draw_attack(self, rng: random.Random) -> int:
@@ -33,7 +38,7 @@ class SimulatedAIPlayer:
             if not self.discard:
                 return 0
             rng.shuffle(self.discard)
-            self.deck = self.discard
+            self.deck = self.discard[:]
             self.discard = []
         return self.deck.pop(0)
 
@@ -41,27 +46,39 @@ class SimulatedAIPlayer:
         affordable = [card for card in CATALOG if card.cost <= self.resources]
         if not affordable:
             return None
-        best_damage = max(card.damage for card in affordable)
-        best_options = [card for card in affordable if card.damage == best_damage]
-        return rng.choice(best_options)
+        # Occasionally save resources for stronger future buys.
+        if rng.random() < SAVE_RESOURCES_PROBABILITY:
+            return None
+        weights = [card.damage for card in affordable]
+        return rng.choices(affordable, weights=weights, k=1)[0]
 
     def buy_card(self, card: ShopCard) -> None:
         self.resources -= card.cost
         self.discard.append(card.damage)
 
 
-def run_single_game(rng: random.Random, max_turns: int = 60) -> Tuple[int, Counter]:
+def run_single_game(rng: random.Random, max_actions: int = 60) -> Tuple[int, Counter]:
+    """Run one AI-vs-AI game.
+
+    `max_actions` is the maximum number of player actions before forcing game end.
+
+    Returns a tuple of `(turn_count, purchases_counter)` where `turn_count` is
+    the number of actions taken before game end and `purchases_counter` maps
+    purchased card names to the number of purchases in this game.
+    """
     p1 = SimulatedAIPlayer()
     p2 = SimulatedAIPlayer()
     purchases: Counter = Counter()
     turn_count = 0
     active, opponent = p1, p2
 
-    while p1.hp > 0 and p2.hp > 0 and turn_count < max_turns:
+    while p1.hp > 0 and p2.hp > 0 and turn_count < max_actions:
         turn_count += 1
-        active.resources = min(10, active.resources + 1)
+        active.resources = min(MAX_RESOURCES, active.resources + 1)
 
         attack = active.draw_attack(rng)
+        if attack > 0:
+            active.discard.append(attack)
         opponent.hp -= attack
 
         card = active.choose_purchase(rng)
@@ -79,6 +96,17 @@ def generate_report(
     seed: int = 42,
     top_n: int = 3,
 ) -> Dict[str, object]:
+    """Generate aggregate purchase and game-length metrics from simulations.
+
+    Returns a dictionary with:
+    - `num_games`: number of games simulated.
+    - `average_game_length`: average actions per game.
+    - `most_purchased_cards`: top purchased cards as `(name, count)` tuples.
+    - `all_purchase_counts`: full card purchase frequency map.
+    """
+    if num_games <= 0:
+        raise ValueError("num_games must be greater than 0")
+
     rng = random.Random(seed)
     game_lengths: List[int] = []
     total_purchases: Counter = Counter()
@@ -88,7 +116,7 @@ def generate_report(
         game_lengths.append(game_length)
         total_purchases.update(purchases)
 
-    average_game_length = sum(game_lengths) / len(game_lengths) if game_lengths else 0.0
+    average_game_length = sum(game_lengths) / len(game_lengths)
 
     return {
         "num_games": num_games,
