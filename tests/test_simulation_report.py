@@ -1,5 +1,6 @@
 import unittest
 
+from src.card_file import SIMULATION_SHOP_CARDS
 from src.simulation import CATALOG, generate_report
 
 
@@ -8,6 +9,18 @@ class TestSimulationReport(unittest.TestCase):
         names = {card.name for card in CATALOG}
         self.assertIn("Profit", names)
         self.assertIn("Spark", names)
+
+    def test_catalog_is_sourced_from_card_file(self):
+        catalog_entries = [
+            {
+                "name": card.name,
+                "cost": card.cost,
+                "damage": card.damage,
+                "bonus_resources": card.bonus_resources,
+            }
+            for card in CATALOG
+        ]
+        self.assertEqual(catalog_entries, list(SIMULATION_SHOP_CARDS))
 
     def test_generate_report_has_expected_fields(self):
         report = generate_report(num_games=25, seed=1, top_n=2)

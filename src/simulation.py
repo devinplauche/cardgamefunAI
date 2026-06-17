@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import random
 from typing import Dict, List, Tuple
 
+from src.card_file import SIMULATION_SHOP_CARDS
+
 
 @dataclass(frozen=True)
 class ShopCard:
@@ -14,12 +16,14 @@ class ShopCard:
     bonus_resources: int = 0
 
 
-CATALOG: Tuple[ShopCard, ...] = (
-    ShopCard(name="Profit", cost=1, damage=0, bonus_resources=2),
-    ShopCard(name="Spark", cost=1, damage=1, bonus_resources=0),
-    ShopCard(name="Flare", cost=2, damage=2, bonus_resources=0),
-    ShopCard(name="Surge", cost=3, damage=3, bonus_resources=1),
-    ShopCard(name="Nova", cost=4, damage=5, bonus_resources=0),
+CATALOG: Tuple[ShopCard, ...] = tuple(
+    ShopCard(
+        name=card["name"],
+        cost=card["cost"],
+        damage=card["damage"],
+        bonus_resources=card["bonus_resources"],
+    )
+    for card in SIMULATION_SHOP_CARDS
 )
 
 STARTING_ATTACK_DAMAGE = 1
