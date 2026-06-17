@@ -11,18 +11,20 @@ class ShopCard:
     name: str
     cost: int
     damage: int
+    bonus_resources: int = 0
 
 
 CATALOG: Tuple[ShopCard, ...] = (
-    ShopCard(name="Dagger", cost=1, damage=1),
-    ShopCard(name="Strike", cost=2, damage=2),
-    ShopCard(name="Power Slash", cost=3, damage=3),
-    ShopCard(name="Heavy Blow", cost=4, damage=4),
+    ShopCard(name="Profit", cost=1, damage=0, bonus_resources=2),
+    ShopCard(name="Spark", cost=1, damage=1, bonus_resources=0),
+    ShopCard(name="Flare", cost=2, damage=2, bonus_resources=0),
+    ShopCard(name="Surge", cost=3, damage=3, bonus_resources=1),
+    ShopCard(name="Nova", cost=4, damage=5, bonus_resources=0),
 )
 
 STARTING_ATTACK_DAMAGE = 1
 STARTING_DECK_SIZE = 5
-SAVE_RESOURCES_PROBABILITY = 0.2
+SAVE_RESOURCES_PROBABILITY = 0.1
 MAX_RESOURCES = 10
 
 
@@ -49,12 +51,17 @@ class SimulatedAIPlayer:
         # Occasionally save resources for stronger future buys.
         if rng.random() < SAVE_RESOURCES_PROBABILITY:
             return None
-        weights = [card.damage for card in affordable]
+        weights = [
+            ((card.damage + (card.bonus_resources * 1.5) + 0.5) / card.cost) ** 2
+            for card in affordable
+        ]
         return rng.choices(affordable, weights=weights, k=1)[0]
 
     def buy_card(self, card: ShopCard) -> None:
         self.resources -= card.cost
-        self.discard.append(card.damage)
+        self.resources = min(MAX_RESOURCES, self.resources + card.bonus_resources)
+        if card.damage > 0:
+            self.discard.append(card.damage)
 
 
 def run_single_game(rng: random.Random, max_actions: int = 60) -> Tuple[int, Counter]:

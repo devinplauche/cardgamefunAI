@@ -1,9 +1,14 @@
 import unittest
 
-from src.simulation import generate_report
+from src.simulation import CATALOG, generate_report
 
 
 class TestSimulationReport(unittest.TestCase):
+    def test_catalog_includes_expected_low_cost_base_cards(self):
+        names = {card.name for card in CATALOG}
+        self.assertIn("Profit", names)
+        self.assertIn("Spark", names)
+
     def test_generate_report_has_expected_fields(self):
         report = generate_report(num_games=25, seed=1, top_n=2)
 
@@ -14,7 +19,9 @@ class TestSimulationReport(unittest.TestCase):
 
         self.assertGreater(report["average_game_length"], 0)
         self.assertLessEqual(len(report["most_purchased_cards"]), 2)
-        self.assertTrue(report["all_purchase_counts"])
+        self.assertGreater(len(report["all_purchase_counts"]), 0)
+        self.assertIn("Profit", report["all_purchase_counts"])
+        self.assertIn("Spark", report["all_purchase_counts"])
 
     def test_generate_report_rejects_non_positive_game_count(self):
         with self.assertRaises(ValueError):
