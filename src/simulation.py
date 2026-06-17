@@ -30,6 +30,9 @@ STARTING_ATTACK_DAMAGE = 1
 STARTING_DECK_SIZE = 5
 SAVE_RESOURCES_PROBABILITY = 0.1
 MAX_RESOURCES = 10
+BONUS_RESOURCE_WEIGHT = 1.5
+CARD_VALUE_BASE_OFFSET = 0.5
+DEFAULT_MAX_ACTIONS = 60
 
 
 class SimulatedAIPlayer:
@@ -56,7 +59,15 @@ class SimulatedAIPlayer:
         if rng.random() < SAVE_RESOURCES_PROBABILITY:
             return None
         weights = [
-            ((card.damage + (card.bonus_resources * 1.5) + 0.5) / card.cost) ** 2
+            (
+                (
+                    card.damage
+                    + (card.bonus_resources * BONUS_RESOURCE_WEIGHT)
+                    + CARD_VALUE_BASE_OFFSET
+                )
+                / card.cost
+            )
+            ** 2
             for card in affordable
         ]
         return rng.choices(affordable, weights=weights, k=1)[0]
@@ -68,7 +79,9 @@ class SimulatedAIPlayer:
             self.discard.append(card.damage)
 
 
-def run_single_game(rng: random.Random, max_actions: int = 60) -> Tuple[int, Counter]:
+def run_single_game(
+    rng: random.Random, max_actions: int = DEFAULT_MAX_ACTIONS
+) -> Tuple[int, Counter]:
     """Run one AI-vs-AI game.
 
     `max_actions` is the maximum number of player actions before forcing game end.
