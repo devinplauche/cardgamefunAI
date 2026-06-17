@@ -8,12 +8,32 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
+from src.card_file import BASE_STARTER_DECK_CARDS
 from src.engine import Card, Deck, Player
 import random
 
 
+def build_base_starter_deck(card_id_prefix: str):
+    cards = []
+    index = 0
+    for definition in BASE_STARTER_DECK_CARDS:
+        for _ in range(definition["count"]):
+            cards.append(
+                Card(
+                    id=f"{card_id_prefix}{index}",
+                    name=definition["name"],
+                    data={
+                        "damage": definition["damage"],
+                        "bonus_resources": definition["bonus_resources"],
+                    },
+                )
+            )
+            index += 1
+    return cards
+
+
 def make_sample_player():
-    cards = [Card(id=str(i), name=f"Strike {i+1}", data={"damage": 2 + i}) for i in range(8)]
+    cards = build_base_starter_deck("sample-")
     deck = Deck(cards[:])
     deck.shuffle()
     player = Player("You", deck=deck)
@@ -23,8 +43,8 @@ def make_sample_player():
 
 def make_two_players():
     # Player (bottom) and Opponent (top)
-    p_cards = [Card(id=f"p{i}", name=f"P{ i+1 }Strike", data={"damage": 2 + (i % 3)}) for i in range(10)]
-    o_cards = [Card(id=f"o{i}", name=f"O{i+1}Guard", data={"armor": 1 + (i % 2)}) for i in range(10)]
+    p_cards = build_base_starter_deck("p")
+    o_cards = build_base_starter_deck("o")
 
     p_deck = Deck(p_cards[:])
     o_deck = Deck(o_cards[:])
