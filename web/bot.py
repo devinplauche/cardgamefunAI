@@ -17,12 +17,16 @@ class Node:
     reward: float = 0.0
     children: list["Node"] = None
     untried_actions: list[dict[str, Any]] = None
+    # Seat that took `action`. Rewards are always stored from the bot's point of
+    # view, so opponent nodes have to be selected by minimising them.
+    actor: str = "bot"
 
     def __post_init__(self) -> None:
         self.children = [] if self.children is None else self.children
         self.untried_actions = [] if self.untried_actions is None else self.untried_actions
 
-    def uct_score(self, exploration: float = 1.35, lo: float = 0.0, hi: float = 1.0) -> float:
+    def uct_score(self, exploration: float = 1.35, lo: float = 0.0, hi: float = 1.0,
+                  maximize: bool = True) -> float:
         """UCT with the exploitation term normalised into [0, 1].
 
         The exploration constant is only meaningful against rewards on a unit
@@ -39,6 +43,11 @@ class Node:
         assert self.parent is not None
         span = hi - lo
         exploit = (self.reward / self.visits - lo) / span if span > 1e-9 else 0.5
+        # Minimax alternation: the opponent is not trying to help. Without this
+        # the tree picked the opponent's replies to maximise the bot's score, so
+        # deeper search planned against a cooperative opponent and got worse.
+        if not maximize:
+            exploit = 1.0 - exploit
         return exploit + exploration * math.sqrt(math.log(self.parent.visits + 1) / self.visits)
 
 
@@ -317,7 +326,11 @@ def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts") -> 
             viable = [c for c in node.children if _action_key(c.action) in legal]
             if not viable:
                 break
-            node = max(viable, key=lambda child: child.uct_score(lo=reward_lo, hi=reward_hi))
+            # All children of a node are moves from the same position, so they
+            # share an actor. The bot maximises; the opponent minimises.
+            maximize = sim.active_player == "bot"
+            node = max(viable, key=lambda child: child.uct_score(
+                lo=reward_lo, hi=reward_hi, maximize=maximize))
             apply_action(sim, node.action)
             path.append(node)
 
@@ -327,9 +340,11 @@ def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts") -> 
             # instead of discarding them.
             action = next((a for a in node.untried_actions if _action_key(a) in legal), None)
             if action is not None:
+                actor = sim.active_player
                 node.untried_actions.remove(action)
                 apply_action(sim, action)
-                child = Node(action=action, parent=node, untried_actions=_sorted_actions(legal_actions(sim)))
+                child = Node(action=action, parent=node, actor=actor,
+                             untried_actions=_sorted_actions(legal_actions(sim)))
                 node.children.append(child)
                 node = child
                 path.append(node)

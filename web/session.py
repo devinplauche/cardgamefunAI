@@ -9,6 +9,7 @@ import uuid
 from typing import Any
 
 from hero_engine import (
+    BoardChampion,
     HRCard,
     HRMarket,
     HRPlayer,
@@ -25,6 +26,46 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CARDS_PATH = REPO_ROOT / "data" / "hero_realms_cards.json"
 DEFAULT_CARDS = load_hero_cards(str(CARDS_PATH))
 PHASES = ("play", "champion", "buy", "combat")
+
+
+def _copy_champion(champion: BoardChampion) -> BoardChampion:
+    clone = BoardChampion.__new__(BoardChampion)
+    clone.card = champion.card  # HRCard is never mutated; share the reference
+    clone.current_health = champion.current_health
+    clone.exhausted = champion.exhausted
+    clone.guard = champion.guard
+    return clone
+
+
+def _copy_player(player: HRPlayer) -> HRPlayer:
+    clone = HRPlayer.__new__(HRPlayer)
+    clone.name = player.name
+    clone.hp = player.hp
+    clone.gold = player.gold
+    clone.combat = player.combat
+    # Card lists hold shared HRCard references, so the containers need copying
+    # but their contents do not. Starting decks are literally [GOLD] * 7 of the
+    # same object already.
+    clone.deck = player.deck[:]
+    clone.hand = player.hand[:]
+    clone.discard = player.discard[:]
+    clone.banish = player.banish[:]
+    clone.board = [_copy_champion(champion) for champion in player.board]
+    clone.actions_played = player.actions_played
+    clone.cards_bought = player.cards_bought
+    clone.next_buy_to_hand = player.next_buy_to_hand
+    clone.next_buy_to_top = player.next_buy_to_top
+    clone.next_buy_to_top_action_only = player.next_buy_to_top_action_only
+    return clone
+
+
+def _copy_market(market: HRMarket) -> HRMarket:
+    # __new__ rather than __init__: the constructor shuffles the pool.
+    clone = HRMarket.__new__(HRMarket)
+    clone.pool = market.pool[:]
+    clone.fire_gems_remaining = market.fire_gems_remaining
+    clone.row = market.row[:]
+    return clone
 
 
 def _card_view(card: HRCard) -> dict[str, Any]:
@@ -111,18 +152,38 @@ class GameSession:
         self.record_event("system", "Game created")
 
     def clone(self) -> "GameSession":
-        # history/log are presentation-only, and each history entry holds a full
-        # state snapshot. Deep-copying them dominated the MCTS search loop (8 ms
-        # per clone against a 60 ms budget, ~9 iterations per decision), so they
-        # are detached for simulation clones.
-        saved = (self.history, self.log, self.last_bot_insight)
-        self.history, self.log, self.last_bot_insight = [], [], None
-        try:
-            copy = deepcopy(self)
-        finally:
-            self.history, self.log, self.last_bot_insight = saved
-        copy.record_history = False
-        return copy
+        """Simulation copy: only the mutable game state, nothing else.
+
+        This is the MCTS inner loop, so it is hand-written rather than a
+        deepcopy. deepcopy walked every HRCard in both decks and the market pool
+        - none of which are ever mutated - plus history and log, where each
+        history entry holds a full state snapshot.
+
+        history/log/insight are presentation-only and are dropped: clones never
+        surface to a user, and record_history=False stops rollouts rebuilding
+        state snapshots on every action.
+
+        Covered by test_clone_copies_every_field, which fails if a new field is
+        added to GameSession and not handled here.
+        """
+        clone = GameSession.__new__(GameSession)
+        clone.session_id = self.session_id
+        clone.seed = self.seed
+        clone.algorithm = self.algorithm
+        clone.budget_ms = self.budget_ms
+        clone.cards = self.cards  # read-only card definitions, shared
+        clone.player = _copy_player(self.player)
+        clone.bot = _copy_player(self.bot)
+        clone.market = _copy_market(self.market)
+        clone.turn_number = self.turn_number
+        clone.active_player = self.active_player
+        clone.phase = self.phase
+        clone.winner = self.winner
+        clone.log = []
+        clone.history = []
+        clone.last_bot_insight = None
+        clone.record_history = False
+        return clone
 
     def _start_turn(self, player: HRPlayer) -> None:
         player.gold = 0

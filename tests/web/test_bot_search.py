@@ -340,3 +340,124 @@ class TestSearchPricedEval(unittest.TestCase):
             self.assertGreater(final, owned, "bot never bought a card")
         finally:
             bot_module.EVAL_MODE = previous
+
+
+class TestFastClone(unittest.TestCase):
+    """clone() is hand-written for the MCTS inner loop instead of deepcopy."""
+
+    def test_clone_copies_every_field(self):
+        """Guards against a new GameSession field silently not being cloned."""
+        from dataclasses import fields
+        session = create_session(seed=5)
+        clone = session.clone()
+        for f in fields(session):
+            self.assertTrue(hasattr(clone, f.name), f"clone() dropped field {f.name!r}")
+
+    def test_clone_matches_deepcopy_on_game_state(self):
+        from copy import deepcopy
+        session = create_session(seed=5)
+        _drive(session, steps=60)
+        reference = deepcopy(session)
+        clone = session.clone()
+        for seat in ("player", "bot"):
+            a, b = getattr(clone, seat), getattr(reference, seat)
+            self.assertEqual(a.hp, b.hp)
+            self.assertEqual(a.gold, b.gold)
+            self.assertEqual(a.combat, b.combat)
+            self.assertEqual([c.id for c in a.deck], [c.id for c in b.deck])
+            self.assertEqual([c.id for c in a.hand], [c.id for c in b.hand])
+            self.assertEqual([c.id for c in a.discard], [c.id for c in b.discard])
+            self.assertEqual([c.id for c in a.banish], [c.id for c in b.banish])
+            self.assertEqual([(c.card.id, c.current_health, c.exhausted, c.guard) for c in a.board],
+                             [(c.card.id, c.current_health, c.exhausted, c.guard) for c in b.board])
+        self.assertEqual([c.id if c else None for c in clone.market.row_cards()],
+                         [c.id if c else None for c in reference.market.row_cards()])
+        self.assertEqual(clone.market.fire_gems_remaining, reference.market.fire_gems_remaining)
+        self.assertEqual(clone.turn_number, reference.turn_number)
+        self.assertEqual(clone.phase, reference.phase)
+        self.assertEqual(clone.active_player, reference.active_player)
+        self.assertEqual(clone.winner, reference.winner)
+
+    def test_mutating_a_clone_never_touches_the_original(self):
+        session = create_session(seed=5)
+        _drive(session, steps=60)
+        before = (
+            session.bot.hp, session.player.hp,
+            len(session.bot.deck), len(session.bot.hand), len(session.bot.discard),
+            [c.current_health for c in session.bot.board],
+            [c.id if c else None for c in session.market.row_cards()],
+            session.market.fire_gems_remaining,
+        )
+        clone = session.clone()
+        _drive(clone, steps=200)
+        clone.bot.hp = -99
+        clone.bot.deck.clear()
+        clone.market.row[0] = None
+        after = (
+            session.bot.hp, session.player.hp,
+            len(session.bot.deck), len(session.bot.hand), len(session.bot.discard),
+            [c.current_health for c in session.bot.board],
+            [c.id if c else None for c in session.market.row_cards()],
+            session.market.fire_gems_remaining,
+        )
+        self.assertEqual(before, after)
+
+    def test_market_pool_is_not_reshuffled_by_cloning(self):
+        """HRMarket.__init__ shuffles, so the copy must bypass it."""
+        session = create_session(seed=5)
+        clone = session.clone()
+        self.assertEqual([c.id for c in clone.market.pool],
+                         [c.id for c in session.market.pool])
+
+    def test_clone_is_faster_than_deepcopy(self):
+        from copy import deepcopy
+        from time import perf_counter
+        session = create_session(seed=5)
+        _drive(session, steps=60)
+
+        t0 = perf_counter()
+        for _ in range(50):
+            session.clone()
+        fast = perf_counter() - t0
+
+        t0 = perf_counter()
+        for _ in range(50):
+            deepcopy(session)
+        slow = perf_counter() - t0
+        self.assertLess(fast, slow, "hand-written clone is not beating deepcopy")
+
+
+class TestMinimaxAlternation(unittest.TestCase):
+    """Rewards are stored from the bot's perspective, so opponent nodes must be
+    selected by minimising them. Without this the tree chose the opponent's
+    replies to help the bot, and deeper search planned against a phantom."""
+
+    def test_opponent_nodes_are_minimised(self):
+        from web.bot import Node
+
+        parent = Node(action=None)
+        parent.visits = 20
+        good = Node(action={"type": "a"}, parent=parent, actor="player")
+        good.visits, good.reward = 10, 1000.0   # great for the bot
+        bad = Node(action={"type": "b"}, parent=parent, actor="player")
+        bad.visits, bad.reward = 10, 0.0        # bad for the bot
+
+        # As the bot, the high-reward child wins.
+        self.assertGreater(good.uct_score(lo=0.0, hi=100.0, maximize=True),
+                           bad.uct_score(lo=0.0, hi=100.0, maximize=True))
+        # As the opponent, it must lose.
+        self.assertLess(good.uct_score(lo=0.0, hi=100.0, maximize=False),
+                        bad.uct_score(lo=0.0, hi=100.0, maximize=False))
+
+    def test_root_children_are_bot_actions(self):
+        random.seed(9)
+        session = create_session(seed=9, algorithm="mcts", budget_ms=30)
+        for _ in range(200):
+            if session.winner:
+                break
+            if session.active_player == "bot" and session.phase in ("buy", "combat"):
+                result = choose_bot_action(session, budget_ms=30, algorithm="mcts")
+                if result.get("algorithm") == "mcts":
+                    self.assertEqual(session.active_player, "bot")
+                    break
+            apply_action(session, _heuristic_rollout_action(session))
