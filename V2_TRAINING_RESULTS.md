@@ -1,3 +1,8 @@
+> **SUPERSEDED (2026-07-22).** The per-opponent win rates below were produced
+> with a broken evaluation harness: `HeroRealmsEnv` ignored the requested
+> `opponent_profile` and always played BalancedAI, so all four columns are the
+> same matchup relabelled. See [BASELINE.md](BASELINE.md) for verified numbers.
+
 # V2 Training Results - Complete Analysis
 
 ## 📊 Final Performance Metrics

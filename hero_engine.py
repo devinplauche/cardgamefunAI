@@ -174,7 +174,7 @@ class HRMarket:
     def __init__(self, cards: list[HRCard]):
         # Fire Gems are always in a separate side pile, not shuffled into market row.
         self.pool = [c for c in cards if c.name.lower() != "fire gem"]
-        self.fire_gems_remaining = 15
+        self.fire_gems_remaining = 16  # base set ships 16 Fire Gem cards
         random.shuffle(self.pool)
         self.row: list[Optional[HRCard]] = [None] * 5
         self._fill_row()

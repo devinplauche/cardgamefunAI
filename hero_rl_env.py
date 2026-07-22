@@ -69,8 +69,12 @@ class HeroRealmsEnv(gym.Env):
         self._requested_profile = (opponent_profile or "balanced").lower()
         if self._requested_profile not in OPPONENT_PROFILES and self._requested_profile != "random":
             self._requested_profile = "balanced"
-        self.opponent_profile_key = "balanced"
-        self._opponent_profile = OPPONENT_PROFILES["balanced"]
+        # "random" is re-rolled per episode in reset(); a named profile is fixed here.
+        # Defaulting to balanced unconditionally silently ignored the caller's
+        # request and made every per-opponent evaluation a BalancedAI match.
+        initial = "balanced" if self._requested_profile == "random" else self._requested_profile
+        self.opponent_profile_key = initial
+        self._opponent_profile = OPPONENT_PROFILES[initial]
         self.allow_fire_gem = allow_fire_gem
         self.fire_gem_penalty = fire_gem_penalty
 
