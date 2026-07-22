@@ -144,6 +144,22 @@ def _best_child(node: Node) -> Node:
     return max(node.children, key=lambda child: child.uct_score())
 
 
+def _action_key(action: dict[str, Any] | None) -> tuple:
+    if action is None:
+        return ()
+    return (
+        action.get("type"),
+        action.get("cardId"),
+        action.get("marketIndex"),
+        action.get("championId"),
+        action.get("target"),
+    )
+
+
+def _legal_keys(session) -> set[tuple]:
+    return {_action_key(action) for action in legal_actions(session)}
+
+
 def _root_candidates_from_children(root: Node) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for child in root.children:
@@ -185,18 +201,31 @@ def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts") -> 
         node = root
         path = [node]
 
+        # end_turn() draws 5 cards at random, so replaying the same action
+        # sequence does not reproduce the same state. Actions cached in the tree
+        # can therefore be illegal in this sample, which used to raise out of
+        # apply_action. Re-check legality against the sampled state at each step.
         while not node.untried_actions and node.children and not sim.winner:
-            node = _best_child(node)
+            legal = _legal_keys(sim)
+            viable = [c for c in node.children if _action_key(c.action) in legal]
+            if not viable:
+                break
+            node = max(viable, key=lambda child: child.uct_score())
             apply_action(sim, node.action)
             path.append(node)
 
         if node.untried_actions and not sim.winner:
-            action = node.untried_actions.pop(0)
-            apply_action(sim, action)
-            child = Node(action=action, parent=node, untried_actions=_sorted_actions(legal_actions(sim)))
-            node.children.append(child)
-            node = child
-            path.append(node)
+            legal = _legal_keys(sim)
+            # Leave actions that are illegal in this sample for a later one
+            # instead of discarding them.
+            action = next((a for a in node.untried_actions if _action_key(a) in legal), None)
+            if action is not None:
+                node.untried_actions.remove(action)
+                apply_action(sim, action)
+                child = Node(action=action, parent=node, untried_actions=_sorted_actions(legal_actions(sim)))
+                node.children.append(child)
+                node = child
+                path.append(node)
 
         reward = _rollout(sim)
         if reward > best_score and node.action is not None:

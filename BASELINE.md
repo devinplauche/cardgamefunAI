@@ -75,6 +75,66 @@ rate across all four opponents (21.0/20.5/20.0/21.0) indicates its policy is not
 conditioning on opponent state at all. Neither agent ever chooses to end its own
 turn — both rely on the env auto-resolving when a buy fails.
 
+## MCTS bot (web/bot.py)
+
+```bash
+python hero_mcts_bench.py --games 50 --budget 60
+```
+
+Different harness — the bot seat is the **second** player (draws 5) with the
+full action space, because `evaluate_state` scores from `session.bot`'s
+perspective. Not comparable to the table above; compare the two rows here.
+
+| algorithm | balanced | aggressive | economic | champion | **AVG** |
+|---|---|---|---|---|---|
+| mcts (60 ms) | 0.0% | 0.0% | 0.0% | 0.0% | **0.0%** |
+| heuristic (its own greedy fallback) | 48.0% | 46.0% | 40.0% | 42.0% | **44.0%** |
+
+**MCTS lost all 200 games.** It is strictly worse than the greedy fallback it
+ships alongside.
+
+### Root cause: the evaluation function punishes deckbuilding
+
+`evaluate_state` has no term for deck quality or acquired cards, but scores
+`(player.gold - opponent.gold) * 1.0`. So spending gold is pure loss and
+passing is always optimal. Measured at a real decision point with 4 gold:
+
+```
+buy Elven Curse (cost 3)  ->  delta -3.00
+advance_phase (pass)      ->  delta +0.00
+```
+
+It also scores `(len(player.hand) - len(opponent.hand)) * 0.75`, so *playing* a
+card is penalised too, and `market.fire_gems_remaining * 0.05` rewards not
+buying Fire Gems.
+
+The search is behaving correctly; the objective is wrong. Over a full game the
+bot played 3 cards, bought **nothing** (deck never left its starting 10 cards),
+never attacked (opponent finished on 50 HP), and advanced the phase 28 times.
+
+Fixing this means giving `evaluate_state` a deck-quality term — economy and
+board development have to outweigh the gold spent to get them. Until then the
+MCTS row is not a measure of search quality.
+
+### Three bugs fixed to make the benchmark runnable
+
+1. **`legal_actions()` offered illegal attacks.** Guard targets were listed
+   whenever guards existed, without checking `player.combat > 0`;
+   `attack_target_action` then raised `ValueError("No combat remaining")`.
+   This crashed the live web app too, not just the benchmark.
+2. **MCTS cached actions across stochastic redraws.** `end_turn()` draws 5
+   cards at random, so replaying an action sequence does not reproduce the
+   state, and cached tree actions went stale — an intermittent
+   `ValueError("Card not found in hand")` mid-search. Selection and expansion
+   now re-check legality against the sampled state.
+3. **Telemetry in the search hot loop.** `clone()` deep-copied `history` (80
+   entries, each holding a full state snapshot) and `log`, and `record_event`
+   re-serialised full state on every action inside rollouts. Clone cost went
+   8.0 ms -> 0.61 ms and search went 9.1 -> 28.0 iterations per decision at the
+   same 60 ms budget. Note even 28 iterations is far too few for a real MCTS.
+
+Covered by `tests/web/test_bot_search.py`.
+
 ## Known structural limits
 
 These cap what any amount of training can achieve here:

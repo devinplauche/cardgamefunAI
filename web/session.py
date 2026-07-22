@@ -95,6 +95,7 @@ class GameSession:
     log: list[dict[str, Any]] = field(default_factory=list)
     history: list[dict[str, Any]] = field(default_factory=list)
     last_bot_insight: dict[str, Any] | None = field(default=None)
+    record_history: bool = field(default=True)
 
     def __post_init__(self) -> None:
         if self.seed is not None:
@@ -110,7 +111,18 @@ class GameSession:
         self.record_event("system", "Game created")
 
     def clone(self) -> "GameSession":
-        return deepcopy(self)
+        # history/log are presentation-only, and each history entry holds a full
+        # state snapshot. Deep-copying them dominated the MCTS search loop (8 ms
+        # per clone against a 60 ms budget, ~9 iterations per decision), so they
+        # are detached for simulation clones.
+        saved = (self.history, self.log, self.last_bot_insight)
+        self.history, self.log, self.last_bot_insight = [], [], None
+        try:
+            copy = deepcopy(self)
+        finally:
+            self.history, self.log, self.last_bot_insight = saved
+        copy.record_history = False
+        return copy
 
     def _start_turn(self, player: HRPlayer) -> None:
         player.gold = 0
@@ -168,6 +180,10 @@ class GameSession:
         }
 
     def record_event(self, kind: str, label: str, bot_insight: dict[str, Any] | None = None) -> None:
+        # Simulation clones skip this entirely: every call serialises a full
+        # state snapshot, which is pure overhead inside an MCTS rollout.
+        if not self.record_history:
+            return
         insight = bot_insight if bot_insight is not None else self.last_bot_insight
         self.log_event(label, kind, bot_insight=insight)
         self.history.append(
@@ -235,26 +251,29 @@ class GameSession:
                 )
         elif self.phase == "combat":
             guards = [champion for champion in opponent.board if champion.guard and champion.alive]
-            if guards:
-                for champion in guards:
+            # Combat can only be assigned if there is combat to assign. Offering
+            # guard targets at 0 combat made attack_target_action raise.
+            if player.combat > 0:
+                if guards:
+                    for champion in guards:
+                        actions.append(
+                            {
+                                "type": "attack_target",
+                                "target": "champion",
+                                "championId": champion.card.id,
+                                "label": champion.card.name,
+                                "priority": 10 - champion.current_health,
+                            }
+                        )
+                else:
                     actions.append(
                         {
                             "type": "attack_target",
-                            "target": "champion",
-                            "championId": champion.card.id,
-                            "label": champion.card.name,
-                            "priority": 10 - champion.current_health,
+                            "target": "player",
+                            "label": opponent.name,
+                            "priority": player.combat,
                         }
                     )
-            elif player.combat > 0:
-                actions.append(
-                    {
-                        "type": "attack_target",
-                        "target": "player",
-                        "label": opponent.name,
-                        "priority": player.combat,
-                    }
-                )
 
         actions.append({"type": "advance_phase", "label": "Next Phase", "priority": -10})
         return sorted(actions, key=lambda item: item.get("priority", 0), reverse=True)
