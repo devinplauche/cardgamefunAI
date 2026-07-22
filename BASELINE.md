@@ -98,7 +98,7 @@ to reach the numbers above, and at this budget it is still worse than the greedy
 fallback it ships alongside. See the budget sweep below: at 960 ms it matches
 the heuristic.
 
-### Root cause: the evaluation function punishes deckbuilding
+### First root cause (fixed): the evaluation function punished deckbuilding
 
 `evaluate_state` has no term for deck quality or acquired cards, but scores
 `(player.gold - opponent.gold) * 1.0`. So spending gold is pure loss and
@@ -117,9 +117,13 @@ The search is behaving correctly; the objective is wrong. Over a full game the
 bot played 3 cards, bought **nothing** (deck never left its starting 10 cards),
 never attacked (opponent finished on 50 HP), and advanced the phase 28 times.
 
-Fixing this means giving `evaluate_state` a deck-quality term — economy and
-board development have to outweigh the gold spent to get them. Until then the
-MCTS row is not a measure of search quality.
+`_card_value` was defined in the same file and never called anywhere: the
+deck-valuation primitive existed and was simply never wired in.
+
+Fixed, but fixing it alone changed almost nothing (0.0% -> 0.8%), which is what
+eventually pointed at the four further bugs below. The lesson worth keeping: two
+very different objectives both produced ~0-3%, and that agreement was the signal
+that the objective was not what was broken.
 
 ### Search-priced vs shaped evaluation, by budget
 
