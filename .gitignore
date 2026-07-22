@@ -1,0 +1,21 @@
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# --- Node / frontend ---
+web/node_modules/
+web/dist/
+web/.vite/
+
+# --- ML artifacts (reproducible; ~97 MB of PPO checkpoints) ---
+# Kept out of git deliberately. Being listed here also protects them
+# from `git clean -fd`, which skips ignored paths.
+models/
+models_v*/
+logs/
+
+# --- Runtime junk ---
+web-*.log
+nul

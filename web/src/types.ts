@@ -1,0 +1,107 @@
+export type Phase = 'play' | 'champion' | 'buy' | 'combat';
+
+export interface CardView {
+  id: string;
+  name: string;
+  cost: number;
+  faction: string;
+  cardType: string;
+  guard: number;
+  health: number;
+  effects: Record<string, unknown>;
+  text: string;
+}
+
+export interface ChampionView extends CardView {
+  currentHealth: number;
+  exhausted: boolean;
+  alive: boolean;
+}
+
+export interface PlayerView {
+  name: string;
+  hp: number;
+  gold: number;
+  combat: number;
+  deckCount: number;
+  handCount: number;
+  discardCount: number;
+  banishCount: number;
+  nextBuyToHand: boolean;
+  nextBuyToTop: boolean;
+  nextBuyToTopActionOnly: boolean;
+  hand: CardView[];
+  board: ChampionView[];
+}
+
+export interface MarketView {
+  row: Array<CardView | null>;
+  fireGemsRemaining: number;
+}
+
+export interface LogEntry {
+  kind: string;
+  message: string;
+  turn: number;
+  phase: Phase;
+  activePlayer: 'player' | 'bot';
+  at: number;
+  botInsight?: BotInsight | null;
+}
+
+export interface BotInsight {
+  algorithm: string;
+  action?: string;
+  label?: string;
+  cardId?: string;
+  marketIndex?: number;
+  championId?: string;
+  target?: string;
+  score?: number;
+  iterations?: number;
+  elapsedMs?: number;
+  actions?: Array<Record<string, unknown>>;
+  lastAction?: Record<string, unknown> | null;
+  finalPhase?: string;
+  candidates?: Array<{
+    type?: string;
+    label?: string;
+    cardId?: string;
+    marketIndex?: number;
+    championId?: string;
+    target?: string;
+    score?: number;
+    visits?: number;
+    averageScore?: number;
+    priority?: number;
+  }>;
+}
+
+export interface GameStateCore {
+  sessionId: string;
+  turnNumber: number;
+  phase: Phase;
+  activePlayer: 'player' | 'bot';
+  winner: 'player' | 'bot' | 'draw' | null;
+  player: PlayerView;
+  bot: PlayerView;
+  market: MarketView;
+  legalActions: Array<Record<string, unknown>>;
+  log: LogEntry[];
+  botInsight: BotInsight | null;
+}
+
+export interface HistoryFrame {
+  id: string;
+  kind: string;
+  label: string;
+  turn: number;
+  phase: Phase;
+  activePlayer: 'player' | 'bot';
+  botInsight: BotInsight | null;
+  state: GameStateCore;
+}
+
+export interface GameState extends GameStateCore {
+  history: HistoryFrame[];
+}

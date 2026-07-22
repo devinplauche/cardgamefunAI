@@ -1,0 +1,1033 @@
+[
+  {
+    "id": "hr_001",
+    "name": "Arkus, Imperial Dragon",
+    "cost": 8,
+    "faction": "Imperial",
+    "type": "champion",
+    "subtypes": [
+      "Dragon"
+    ],
+    "guard": 1,
+    "health": 6,
+    "text": "{Expend}: {Gain 5 combat} Draw a card.\n<hr>\n{Imperial Ally}: {Gain 6 health}",
+    "effects": {
+      "combat": 5,
+      "draw": 1,
+      "ally_faction": "Imperial",
+      "ally_health": 6
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_002",
+    "name": "Close Ranks",
+    "cost": 3,
+    "faction": "Imperial",
+    "type": "action",
+    "subtypes": [],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 5 combat}\n+{2 combat} for each champion you have in play.\n<hr>\n{Imperial Ally}: {Gain 6 health}",
+    "effects": {
+      "combat": 5,
+      "per_champion_combat": 2,
+      "ally_faction": "Imperial",
+      "ally_health": 6
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_003",
+    "name": "Command",
+    "cost": 5,
+    "faction": "Imperial",
+    "type": "action",
+    "subtypes": [],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 2 gold} {Gain 3 combat} {Gain 4 health}\nDraw a card.",
+    "effects": {
+      "gold": 2,
+      "combat": 3,
+      "health": 4,
+      "draw": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_004",
+    "name": "Darian, War Mage",
+    "cost": 4,
+    "faction": "Imperial",
+    "type": "champion",
+    "subtypes": [
+      "Human Mage"
+    ],
+    "guard": 0,
+    "health": 5,
+    "text": "{Expend}: {Gain 3 combat} <i>or</i> {Gain 4 health}",
+    "effects": {
+      "combat": 3,
+      "health": 4,
+      "or_choice": ["combat", "health"]
+    }
+  },
+  {
+    "id": "hr_005",
+    "name": "Domination",
+    "cost": 7,
+    "faction": "Imperial",
+    "type": "action",
+    "subtypes": [],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 6 combat} {Gain 6 health}\nDraw a card.\n<hr>\n{Imperial Ally}: Prepare a champion.",
+    "effects": {
+      "combat": 6,
+      "health": 6,
+      "draw": 1,
+      "prepare": true,
+      "ally_faction": "Imperial"
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_006",
+    "name": "Cristov, the Just",
+    "cost": 5,
+    "faction": "Imperial",
+    "type": "champion",
+    "subtypes": [
+      "Human Paladin"
+    ],
+    "guard": 1,
+    "health": 5,
+    "text": "{Expend}: {Gain 2 combat} {Gain 3 health}\n<hr>\n{Imperial Ally}: Draw a card.",
+    "effects": {
+      "combat": 2,
+      "health": 3,
+      "ally_faction": "Imperial",
+      "ally_draw": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_007",
+    "name": "Kraka, High Priest",
+    "cost": 6,
+    "faction": "Imperial",
+    "type": "champion",
+    "subtypes": [
+      "Human Priest"
+    ],
+    "guard": 0,
+    "health": 6,
+    "text": "{Expend}: {Gain 2 health}\nDraw a card.\n<hr>\n{Imperial Ally}: Gain {2 health} for each champion you have in play.",
+    "effects": {
+      "health": 2,
+      "draw": 1,
+      "ally_faction": "Imperial",
+      "ally_per_champion_health": 2
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_008",
+    "name": "Man-at-Arms",
+    "cost": 3,
+    "faction": "Imperial",
+    "type": "champion",
+    "subtypes": [
+      "Human Warrior"
+    ],
+    "guard": 1,
+    "health": 4,
+    "text": "{Expend}: {Gain 2 combat} +{1 combat} for each other guard you have in play.",
+    "effects": {
+      "combat": 2,
+      "per_other_guard_combat": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_009",
+    "name": "Master Weyan",
+    "cost": 4,
+    "faction": "Imperial",
+    "type": "champion",
+    "subtypes": [
+      "Human Monk"
+    ],
+    "guard": 1,
+    "health": 4,
+    "text": "{Expend}: {Gain 3 combat} +{1 combat} for each other champion you have in play.",
+    "effects": {
+      "combat": 3,
+      "per_other_champion_combat": 1
+    }
+  },
+  {
+    "id": "hr_010",
+    "name": "Rally the Troops",
+    "cost": 4,
+    "faction": "Imperial",
+    "type": "action",
+    "subtypes": [],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 5 combat} {Gain 5 health}\n<hr>\n{Imperial Ally}: Prepare a champion.",
+    "effects": {
+      "combat": 5,
+      "health": 5,
+      "prepare": true,
+      "ally_faction": "Imperial"
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_011",
+    "name": "Recruit",
+    "cost": 2,
+    "faction": "Imperial",
+    "type": "action",
+    "subtypes": [],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 2 gold} {Gain 3 health}\n+{1 health} for each champion you have in play.\n<hr>\n{Imperial Ally}: {Gain 1 gold}",
+    "effects": {
+      "gold": 2,
+      "health": 3,
+      "per_champion_health": 1,
+      "ally_faction": "Imperial",
+      "ally_gold": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_012",
+    "name": "Tithe Priest",
+    "cost": 2,
+    "faction": "Imperial",
+    "type": "champion",
+    "subtypes": [
+      "Human Priest"
+    ],
+    "guard": 0,
+    "health": 3,
+    "text": "{Expend}: {Gain 1 gold}\n<i>or</i>\nGain {1 health} for each champion you have in play.",
+    "effects": {
+      "gold": 1,
+      "or_choice": ["gold", "per_champion_health"],
+      "per_champion_health": 1
+    }
+  },
+  {
+    "id": "hr_013",
+    "name": "Taxation",
+    "cost": 1,
+    "faction": "Imperial",
+    "type": "action",
+    "subtypes": [],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 2 gold}\n<hr>\n{Imperial Ally}: {Gain 6 health}",
+    "effects": {
+      "gold": 2,
+      "ally_faction": "Imperial",
+      "ally_health": 6
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_014",
+    "name": "Word of Power",
+    "cost": 6,
+    "faction": "Imperial",
+    "type": "action",
+    "subtypes": [
+      "Spell"
+    ],
+    "guard": 0,
+    "health": 0,
+    "text": "Draw two cards.\n<hr>\n{Imperial Ally}: {Gain 5 health}\n<hr>\n{Sacrifice}: {Gain 5 combat}",
+    "effects": {
+      "draw": 2,
+      "ally_faction": "Imperial",
+      "ally_health": 5,
+      "sacrifice_combat": 5
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_015",
+    "name": "Borg, Ogre Mercenary",
+    "cost": 6,
+    "faction": "Guild",
+    "type": "champion",
+    "subtypes": [
+      "Ogre Warrior"
+    ],
+    "guard": 1,
+    "health": 6,
+    "text": "{Expend}: {Gain 4 combat}",
+    "effects": {
+      "combat": 4
+    }
+  },
+  {
+    "id": "hr_016",
+    "name": "Bribe",
+    "cost": 3,
+    "faction": "Guild",
+    "type": "action",
+    "subtypes": [],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 3 gold}\n<hr>\n{Guild Ally}: Put the next action you acquire this turn on top of your deck.",
+    "effects": {
+      "gold": 3,
+      "top_of_deck": true,
+      "top_of_deck_action_only": true,
+      "ally_faction": "Guild"
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_017",
+    "name": "Death Threat",
+    "cost": 3,
+    "faction": "Guild",
+    "type": "action",
+    "subtypes": [
+      "Assassin"
+    ],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 1 combat}\nDraw a card.\n<hr>\n{Guild Ally}: Stun target champion.",
+    "effects": {
+      "combat": 1,
+      "draw": 1,
+      "stun": true,
+      "ally_faction": "Guild"
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_018",
+    "name": "Deception",
+    "cost": 5,
+    "faction": "Guild",
+    "type": "action",
+    "subtypes": [],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 2 gold}\nDraw a card.\n<hr>\n{Guild Ally}: Put the next card you acquire this turn into your hand.",
+    "effects": {
+      "gold": 2,
+      "draw": 1,
+      "to_hand": true,
+      "ally_faction": "Guild"
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_019",
+    "name": "Fire Bomb",
+    "cost": 8,
+    "faction": "Guild",
+    "type": "action",
+    "subtypes": [],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 8 combat}\nStun target champion. Draw a card.\n<hr>\n{Sacrifice}: {Gain 5 combat}",
+    "effects": {
+      "combat": 8,
+      "draw": 1,
+      "sacrifice_combat": 5,
+      "stun": true
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_020",
+    "name": "Hit Job",
+    "cost": 4,
+    "faction": "Guild",
+    "type": "action",
+    "subtypes": [
+      "Assassin"
+    ],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 7 combat}\n<hr>\n{Guild Ally}: Stun target champion.",
+    "effects": {
+      "combat": 7,
+      "stun": true,
+      "ally_faction": "Guild"
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_021",
+    "name": "Intimidation",
+    "cost": 2,
+    "faction": "Guild",
+    "type": "action",
+    "subtypes": [
+      "Rogue"
+    ],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 5 combat}\n<hr>\n{Guild Ally}: {Gain 2 gold}",
+    "effects": {
+      "combat": 5,
+      "ally_faction": "Guild",
+      "ally_gold": 2
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_022",
+    "name": "Myros, Guild Mage",
+    "cost": 5,
+    "faction": "Guild",
+    "type": "champion",
+    "subtypes": [
+      "Human Mage"
+    ],
+    "guard": 1,
+    "health": 3,
+    "text": "{Expend}: {Gain 3 gold}\n<hr>\n{Guild Ally}: {Gain 4 combat}",
+    "effects": {
+      "gold": 3,
+      "ally_faction": "Guild",
+      "ally_combat": 4
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_023",
+    "name": "Parov, the Enforcer",
+    "cost": 5,
+    "faction": "Guild",
+    "type": "champion",
+    "subtypes": [
+      "Human Rogue"
+    ],
+    "guard": 1,
+    "health": 5,
+    "text": "{Expend}: {Gain 3 combat}\n<hr>\n{Guild Ally}: Draw a card.",
+    "effects": {
+      "combat": 3,
+      "ally_faction": "Guild",
+      "ally_draw": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_024",
+    "name": "Profit",
+    "cost": 1,
+    "faction": "Guild",
+    "type": "action",
+    "subtypes": [],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 2 gold}\n<hr>\n{Guild Ally}: {Gain 4 combat}",
+    "effects": {
+      "gold": 2,
+      "ally_faction": "Guild",
+      "ally_combat": 4
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_025",
+    "name": "Rake, Master Assassin",
+    "cost": 7,
+    "faction": "Guild",
+    "type": "champion",
+    "subtypes": [
+      "Human Assassin"
+    ],
+    "guard": 0,
+    "health": 7,
+    "text": "{Expend}: {Gain 4 combat} You may stun target champion.",
+    "effects": {
+      "combat": 4,
+      "stun": true
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_026",
+    "name": "Rasmus, the Smuggler",
+    "cost": 4,
+    "faction": "Guild",
+    "type": "champion",
+    "subtypes": [
+      "Human Rogue"
+    ],
+    "guard": 0,
+    "health": 5,
+    "text": "{Expend}: {Gain 2 gold}\n<hr>\n{Guild Ally}: Put the next card you acquire this turn on top of your deck.",
+    "effects": {
+      "gold": 2,
+      "top_of_deck": true,
+      "ally_faction": "Guild"
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_027",
+    "name": "Smash and Grab",
+    "cost": 6,
+    "faction": "Guild",
+    "type": "action",
+    "subtypes": [
+      "Rogue"
+    ],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 6 combat}\nYou may put a card from your discard pile on top of your deck.",
+    "effects": {
+      "combat": 6,
+      "recycle": true
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_028",
+    "name": "Street Thug",
+    "cost": 3,
+    "faction": "Guild",
+    "type": "champion",
+    "subtypes": [
+      "Human Rogue"
+    ],
+    "guard": 0,
+    "health": 4,
+    "text": "{Expend}: {Gain 1 gold} <i>or</i> {Gain 2 combat}",
+    "effects": {
+      "gold": 1,
+      "combat": 2,
+      "or_choice": ["gold", "combat"]
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_029",
+    "name": "Cult Priest",
+    "cost": 3,
+    "faction": "Necros",
+    "type": "champion",
+    "subtypes": [
+      "Human"
+    ],
+    "guard": 0,
+    "health": 4,
+    "text": "{Expend}: {Gain 1 gold} <i>or</i> {Gain 1 combat}\n<hr>\n{Necros Ally}: {Gain 4 combat}",
+    "effects": {
+      "gold": 1,
+      "combat": 1,
+      "or_choice": ["gold", "combat"],
+      "ally_faction": "Necros",
+      "ally_combat": 4
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_030",
+    "name": "Dark Energy",
+    "cost": 4,
+    "faction": "Necros",
+    "type": "action",
+    "subtypes": [
+      "Spell"
+    ],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 7 combat}\n<hr>\n{Necros Ally}: Draw a card.",
+    "effects": {
+      "combat": 7,
+      "ally_faction": "Necros",
+      "ally_draw": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_031",
+    "name": "Dark Reward",
+    "cost": 5,
+    "faction": "Necros",
+    "type": "action",
+    "subtypes": [],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 3 gold}\nYou may sacrifice a card in your hand or discard pile.\n<hr>\n{Necros Ally}: {Gain 6 combat}",
+    "effects": {
+      "gold": 3,
+      "sacrifice_card": true,
+      "ally_faction": "Necros",
+      "ally_combat": 6
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_032",
+    "name": "Death Cultist",
+    "cost": 2,
+    "faction": "Necros",
+    "type": "champion",
+    "subtypes": [
+      "Human"
+    ],
+    "guard": 1,
+    "health": 3,
+    "text": "{Expend}: {Gain 2 combat}",
+    "effects": {
+      "combat": 2
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_033",
+    "name": "Death Touch",
+    "cost": 1,
+    "faction": "Necros",
+    "type": "action",
+    "subtypes": [
+      "Curse"
+    ],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 2 combat}\nYou may sacrifice a card in your hand or discard pile.\n<hr>\n{Necros Ally}: {Gain 2 combat}",
+    "effects": {
+      "combat": 2,
+      "sacrifice_card": true,
+      "ally_faction": "Necros",
+      "ally_combat": 2
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_034",
+    "name": "Rayla, Endweaver",
+    "cost": 4,
+    "faction": "Necros",
+    "type": "champion",
+    "subtypes": [
+      "Human Mage"
+    ],
+    "guard": 0,
+    "health": 4,
+    "text": "{Expend}: {Gain 3 combat}\n<hr>\n{Necros Ally}: Draw a card.",
+    "effects": {
+      "combat": 3,
+      "ally_faction": "Necros",
+      "ally_draw": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_035",
+    "name": "Influence",
+    "cost": 2,
+    "faction": "Necros",
+    "type": "action",
+    "subtypes": [],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 3 gold}\n<hr>\n{Sacrifice}: {Gain 3 combat}",
+    "effects": {
+      "gold": 3,
+      "sacrifice_combat": 3
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_036",
+    "name": "Krythos, Master Vampire",
+    "cost": 7,
+    "faction": "Necros",
+    "type": "champion",
+    "subtypes": [
+      "Vampire"
+    ],
+    "guard": 0,
+    "health": 6,
+    "text": "{Expend}: {Gain 3 combat}\nYou may sacrifice a card in your hand or discard pile.\nIf you do, gain an additional {3 combat}.",
+    "effects": {
+      "combat": 3,
+      "sacrifice_for_combat": 3
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_037",
+    "name": "Life Drain",
+    "cost": 6,
+    "faction": "Necros",
+    "type": "action",
+    "subtypes": [
+      "Curse"
+    ],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 8 combat}\nYou may sacrifice a card in your hand or discard pile.\n<hr>\n{Necros Ally}: Draw a card.",
+    "effects": {
+      "combat": 8,
+      "sacrifice_card": true,
+      "ally_faction": "Necros",
+      "ally_draw": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_038",
+    "name": "Lys, the Unseen",
+    "cost": 6,
+    "faction": "Necros",
+    "type": "champion",
+    "subtypes": [
+      "Vampire"
+    ],
+    "guard": 1,
+    "health": 5,
+    "text": "{Expend}: {Gain 2 combat}\nYou may sacrifice a card in your hand or discard pile.\nIf you do, gain an additional {2 combat}.",
+    "effects": {
+      "combat": 2,
+      "sacrifice_for_combat": 2
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_039",
+    "name": "The Rot",
+    "cost": 3,
+    "faction": "Necros",
+    "type": "action",
+    "subtypes": [
+      "Curse"
+    ],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 4 combat}\nYou may sacrifice a card in your hand or discard pile.\n<hr>\n{Necros Ally}: {Gain 3 combat}",
+    "effects": {
+      "combat": 4,
+      "sacrifice_card": true,
+      "ally_faction": "Necros",
+      "ally_combat": 3
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_040",
+    "name": "Tyrannor, the Devourer",
+    "cost": 8,
+    "faction": "Necros",
+    "type": "champion",
+    "subtypes": [
+      "Demon"
+    ],
+    "guard": 1,
+    "health": 6,
+    "text": "{Expend}: {Gain 4 combat}\nYou may sacrifice up to two cards in your hand and/or discard pile.\n<hr>\n{Necros Ally}: Draw a card.",
+    "effects": {
+      "combat": 4,
+      "sacrifice_up_to": 2,
+      "ally_faction": "Necros",
+      "ally_draw": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_041",
+    "name": "Varrick, the Necromancer",
+    "cost": 5,
+    "faction": "Necros",
+    "type": "champion",
+    "subtypes": [
+      "Human Necromancer"
+    ],
+    "guard": 0,
+    "health": 3,
+    "text": "{Expend}: Take a champion from your discard pile and put it on top of your deck.\n<hr>\n{Necros Ally}: Draw a card.",
+    "effects": {
+      "reanimate": true,
+      "ally_faction": "Necros",
+      "ally_draw": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_042",
+    "name": "Broelyn, Loreweaver",
+    "cost": 4,
+    "faction": "Wild",
+    "type": "champion",
+    "subtypes": [
+      "Elf Mage"
+    ],
+    "guard": 0,
+    "health": 6,
+    "text": "{Expend}: {Gain 2 gold}\n<hr>\n{Wild Ally}: Target opponent discards a card.",
+    "effects": {
+      "gold": 2,
+      "ally_faction": "Wild",
+      "ally_opponent_discard": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_043",
+    "name": "Cron, the Berserker",
+    "cost": 6,
+    "faction": "Wild",
+    "type": "champion",
+    "subtypes": [
+      "Human Warrior"
+    ],
+    "guard": 0,
+    "health": 6,
+    "text": "{Expend}: {Gain 5 combat}\n<hr>\n{Wild Ally}: Draw a card.",
+    "effects": {
+      "combat": 5,
+      "ally_faction": "Wild",
+      "ally_draw": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_044",
+    "name": "Dire Wolf",
+    "cost": 5,
+    "faction": "Wild",
+    "type": "champion",
+    "subtypes": [
+      "Giant Wolf"
+    ],
+    "guard": 1,
+    "health": 5,
+    "text": "{Expend}: {Gain 3 combat}\n<hr>\n{Wild Ally}: {Gain 4 combat}",
+    "effects": {
+      "combat": 3,
+      "ally_faction": "Wild",
+      "ally_combat": 4
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_045",
+    "name": "Elven Curse",
+    "cost": 3,
+    "faction": "Wild",
+    "type": "action",
+    "subtypes": [
+      "Elf Curse"
+    ],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 6 combat}\nTarget opponent discards a card.\n<hr>\n{Wild Ally}: {Gain 3 combat}",
+    "effects": {
+      "combat": 6,
+      "ally_faction": "Wild",
+      "ally_combat": 3,
+      "opponent_discard": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_046",
+    "name": "Elven Gift",
+    "cost": 2,
+    "faction": "Wild",
+    "type": "action",
+    "subtypes": [
+      "Elf"
+    ],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 2 gold}\nYou may draw a card. If you do, discard a card.\n<hr>\n{Wild Ally}: {Gain 4 combat}",
+    "effects": {
+      "gold": 2,
+      "discard": 1,
+      "ally_faction": "Wild",
+      "ally_combat": 4
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_047",
+    "name": "Grak, Storm Giant",
+    "cost": 8,
+    "faction": "Wild",
+    "type": "champion",
+    "subtypes": [
+      "Giant"
+    ],
+    "guard": 1,
+    "health": 7,
+    "text": "{Expend}: {Gain 6 combat}\nYou may draw a card. If you do, discard a card.\n<hr>\n{Wild Ally}: Draw a card, then discard a card.",
+    "effects": {
+      "combat": 6,
+      "draw": 1,
+      "discard": 1,
+      "ally_faction": "Wild",
+      "ally_draw": 1,
+      "ally_discard_drawn": true
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_048",
+    "name": "Nature's Bounty",
+    "cost": 4,
+    "faction": "Wild",
+    "type": "action",
+    "subtypes": [],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 4 gold}\n<hr>\n{Wild Ally}: Target opponent discards a card.\n<hr>\n{Sacrifice}: {Gain 4 combat}",
+    "effects": {
+      "gold": 4,
+      "sacrifice_combat": 4,
+      "ally_faction": "Wild",
+      "ally_opponent_discard": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_049",
+    "name": "Orc Grunt",
+    "cost": 3,
+    "faction": "Wild",
+    "type": "champion",
+    "subtypes": [
+      "Orc"
+    ],
+    "guard": 1,
+    "health": 3,
+    "text": "{Expend}: {Gain 2 combat}\n<hr>\n{Wild Ally}: Draw a card.",
+    "effects": {
+      "combat": 2,
+      "ally_faction": "Wild",
+      "ally_draw": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_050",
+    "name": "Rampage",
+    "cost": 6,
+    "faction": "Wild",
+    "type": "action",
+    "subtypes": [
+      "Orc"
+    ],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 6 combat}\nYou may draw up to two cards, then discard that many cards.",
+    "effects": {
+      "combat": 6,
+      "draw_up_to": 2,
+      "discard_drawn": true
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_051",
+    "name": "Torgen Rocksplitter",
+    "cost": 7,
+    "faction": "Wild",
+    "type": "champion",
+    "subtypes": [
+      "Troll Warrior"
+    ],
+    "guard": 1,
+    "health": 7,
+    "text": "{Expend}: {Gain 4 combat}\nTarget opponent discards a card.",
+    "effects": {
+      "combat": 4,
+      "opponent_discard": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_052",
+    "name": "Spark",
+    "cost": 1,
+    "faction": "Wild",
+    "type": "action",
+    "subtypes": [
+      "Spell"
+    ],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 3 combat}\nTarget opponent discards a card.\n<hr>\n{Wild Ally}: {Gain 2 combat}",
+    "effects": {
+      "combat": 3,
+      "ally_faction": "Wild",
+      "ally_combat": 2,
+      "opponent_discard": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_053",
+    "name": "Wolf Form",
+    "cost": 5,
+    "faction": "Wild",
+    "type": "action",
+    "subtypes": [
+      "Wolf"
+    ],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 8 combat}\nTarget opponent discards a card.\n<hr>\n{Sacrifice}: Target opponent discards a card.",
+    "effects": {
+      "combat": 8,
+      "opponent_discard": 1,
+      "sacrifice_opponent_discard": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_054",
+    "name": "Wolf Shaman",
+    "cost": 2,
+    "faction": "Wild",
+    "type": "champion",
+    "subtypes": [
+      "Human Priest"
+    ],
+    "guard": 0,
+    "health": 4,
+    "text": "{Expend}: {Gain 2 combat}\n+{1 combat} for each other {Wild} card you have in play.",
+    "effects": {
+      "combat": 2,
+      "per_other_wild_combat": 1
+    },
+    "location": ""
+  },
+  {
+    "id": "hr_055",
+    "name": "Fire Gem",
+    "cost": 2,
+    "faction": "",
+    "type": "item",
+    "subtypes": [
+      "Currency",
+      "Gem"
+    ],
+    "guard": 0,
+    "health": 0,
+    "text": "{Gain 2 gold}\n<hr>\n{Sacrifice}: {Gain 3 combat}",
+    "effects": {
+      "gold": 2,
+      "sacrifice_combat": 3
+    },
+    "location": ""
+  }
+]

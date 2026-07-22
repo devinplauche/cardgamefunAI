@@ -24,7 +24,8 @@ def make_sample_player():
 def make_two_players():
     # Player (bottom) and Opponent (top)
     p_cards = [Card(id=f"p{i}", name=f"P{ i+1 }Strike", data={"damage": 2 + (i % 3)}) for i in range(10)]
-    o_cards = [Card(id=f"o{i}", name=f"O{i+1}Guard", data={"armor": 1 + (i % 2)}) for i in range(10)]
+    # opponent should have playable damage cards so AI can act
+    o_cards = [Card(id=f"o{i}", name=f"O{i+1}Strike", data={"damage": 1 + (i % 3)}) for i in range(10)]
 
     p_deck = Deck(p_cards[:])
     o_deck = Deck(o_cards[:])
@@ -64,7 +65,8 @@ class CardWidget(tk.Frame):
 
     def on_play(self):
         if self.play_callback:
-            self.play_callback(self.card)
+            # pass self so caller can remove the widget
+            self.play_callback(self, self.card)
 
 
 def main():
@@ -73,9 +75,68 @@ def main():
     root = tk.Tk()
     root.title("Card Game — Two Player View")
 
+    # helper to load sample deck from data/cards.json
+    def load_sample_deck():
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        cards_path = os.path.join(repo_root, 'data', 'cards.json')
+        from src.engine import load_cards_from_file
+        cards = load_cards_from_file(cards_path)
+        if not cards:
+            messagebox.showwarning("Load Deck", "No cards found in data/cards.json")
+            return
+        # replace player's deck and redraw UI by restarting app (simple approach)
+        player.deck = Deck(cards[:])
+        player.hand = []
+        player.discard = []
+        player.draw(5)
+        # rebuild the window: for simplicity, destroy and re-run main
+        root.destroy()
+        main()
+
+
     # Opponent area (top)
     top_frame = tk.Frame(root)
     top_frame.pack(side="top", fill="x", pady=8)
+
+    # small control bar
+    ctrl = tk.Frame(root)
+    ctrl.pack()
+    tk.Button(ctrl, text="Load Sample Deck", command=load_sample_deck).pack(side="left", padx=6)
+    def ai_turn_action():
+        # let the opponent (AI) take a turn using the Game controller
+        from src.ai import SimpleAI
+        # ensure opponent draws at start of AI turn (draw phase)
+        try:
+            opponent.draw(1)
+        except Exception:
+            pass
+        # pick a card via AI heuristic
+        card = SimpleAI.choose_damage_card(opponent)
+        if card:
+            try:
+                game.play_card(opponent, card, target=player)
+                messagebox.showinfo("AI", f"AI played {card.name}")
+                # update player HP (after resolving)
+                game.resolve_stack()
+                try:
+                    p_hp_label.config(text=str(player.hp))
+                except NameError:
+                    pass
+                try:
+                    opp_deck_count.config(text=str(opponent.deck.count()))
+                except NameError:
+                    pass
+                # update opponent discard count display
+                try:
+                    opp_discard_label.config(text=str(len(opponent.discard)))
+                except NameError:
+                    pass
+            except Exception as e:
+                messagebox.showerror("AI Error", str(e))
+        else:
+            messagebox.showinfo("AI", "AI had no playable card")
+
+    tk.Button(ctrl, text="AI Turn", command=ai_turn_action).pack(side="left", padx=6)
 
     opp_label = tk.Label(top_frame, text=f"Opponent: {opponent.name}", font=("Arial", 14))
     opp_label.pack()
@@ -104,6 +165,12 @@ def main():
     tk.Label(opp_deck_frame, text="Deck:").pack()
     opp_deck_count = tk.Label(opp_deck_frame, text=str(opponent.deck.count()), font=("Arial", 12))
     opp_deck_count.pack()
+    tk.Label(opp_deck_frame, text="HP:").pack()
+    opp_hp_label = tk.Label(opp_deck_frame, text=str(opponent.hp), font=("Arial", 12))
+    opp_hp_label.pack()
+    tk.Label(opp_deck_frame, text="Discard:").pack()
+    opp_discard_label = tk.Label(opp_deck_frame, text=str(len(opponent.discard)), font=("Arial", 12))
+    opp_discard_label.pack()
 
     # Center play area
     center = tk.Frame(root, height=120)
@@ -119,20 +186,61 @@ def main():
     player_info = tk.Frame(bottom_frame)
     player_info.pack()
 
-    # player's deck count
+    # player's deck & discard counts
     p_deck_frame = tk.Frame(player_info)
     p_deck_frame.pack(side="right", padx=10)
     tk.Label(p_deck_frame, text="Deck:").pack()
     p_deck_count = tk.Label(p_deck_frame, text=str(player.deck.count()), font=("Arial", 12))
     p_deck_count.pack()
+    tk.Label(p_deck_frame, text="HP:").pack()
+    p_hp_label = tk.Label(p_deck_frame, text=str(player.hp), font=("Arial", 12))
+    p_hp_label.pack()
+    tk.Label(p_deck_frame, text="Discard:").pack()
+    p_discard_count = tk.Label(p_deck_frame, text=str(len(player.discard)), font=("Arial", 12))
+    p_discard_count.pack()
 
     # hand
     hand_frame = tk.Frame(player_info)
     hand_frame.pack(side="left", padx=10)
 
-    def play_card(card):
+    # create a game controller
+    from src.engine import Game
+    game = Game([player, opponent])
+
+    def play_card(widget, card):
+        try:
+            game.play_card(player, card, target=opponent)
+        except Exception as e:
+            messagebox.showerror("Play Error", f"Could not play card: {e}")
+            return
+
+        # show confirmation and move the visual card to the play area
         messagebox.showinfo("Play", f"You played {card.name} (data: {card.data})")
-        # after playing, remove from UI and update deck counts if needed
+        try:
+            # create a small visual representation in the center play area
+            pe = tk.Frame(center, bd=1, relief="sunken", padx=6, pady=4)
+            tk.Label(pe, text=card.name).pack()
+            pe.pack(side="left", padx=6)
+            # attach widget so we can remove later when resolved
+            widget.play_preview = pe
+            widget.destroy()
+        except Exception:
+            pass
+
+        # resolve immediately for now and update UI
+        try:
+            game.resolve_stack()
+        except Exception:
+            pass
+
+        # update UI labels after resolution
+        p_discard_count.config(text=str(len(player.discard)))
+        try:
+            opp_hp_label.config(text=str(opponent.hp))
+            opp_discard_label.config(text=str(len(opponent.discard)))
+            p_hp_label.config(text=str(player.hp))
+        except Exception:
+            pass
 
     for c in player.hand:
         cw = CardWidget(hand_frame, c, play_callback=play_card)
