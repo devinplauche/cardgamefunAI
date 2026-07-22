@@ -109,26 +109,40 @@ def main():
     ap.add_argument("--budget", type=int, default=60)
     ap.add_argument("--seed", type=int, default=1000)
     ap.add_argument("--algorithms", nargs="*", default=["mcts", "heuristic"])
+    ap.add_argument("--eval", choices=["search", "shaped"], default="search",
+                    help="search: rollouts price everything; shaped: static card weights")
+    ap.add_argument("--rollout-turns", type=int, default=None,
+                    help="seat-turns simulated per rollout (default: web.bot.ROLLOUT_TURNS)")
+    ap.add_argument("--profiles", nargs="*", default=list(PROFILE_WEIGHTS),
+                    choices=list(PROFILE_WEIGHTS))
     args = ap.parse_args()
+
+    import web.bot as bot_module
+    bot_module.EVAL_MODE = args.eval
+    if args.rollout_turns is not None:
+        bot_module.ROLLOUT_TURNS = args.rollout_turns
+    print(f"eval={args.eval} rollout_turns={bot_module.ROLLOUT_TURNS}")
 
     print(f"{args.games} seeded games per profile, MCTS budget {args.budget}ms")
     print("bot seat = second player (draws 5); see module docstring on comparability\n")
-    header = f"{'algorithm':<14}" + "".join(f"{p:>12}" for p in PROFILE_WEIGHTS) + f"{'AVG':>9}{'s/game':>9}"
+    header = f"{'algorithm':<14}" + "".join(f"{p:>12}" for p in args.profiles) + f"{'AVG':>9}{'s/game':>9}"
     print(header)
     print("-" * len(header))
 
     for algorithm in args.algorithms:
         rates, stalls = [], 0
         t0 = time.perf_counter()
-        for profile in PROFILE_WEIGHTS:
+        for profile in args.profiles:
             wins = 0
             for i in range(args.games):
                 winner, _, stalled = play_game(profile, algorithm, args.budget, args.seed + i)
                 wins += winner == "bot"
                 stalls += stalled
             rates.append(wins / args.games)
+            print(f"  [{algorithm}] {profile}: {wins}/{args.games}"
+                  f"  ({time.perf_counter() - t0:.0f}s elapsed)", flush=True)
         elapsed = time.perf_counter() - t0
-        per_game = elapsed / (args.games * len(PROFILE_WEIGHTS))
+        per_game = elapsed / (args.games * len(args.profiles))
         line = f"{algorithm:<14}" + "".join(f"{r:>11.1%} " for r in rates)
         print(f"{line}{sum(rates)/len(rates):>8.1%}{per_game:>9.2f}")
         if stalls:
