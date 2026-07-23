@@ -514,7 +514,15 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
             val = card.get("combat", 0)
             if val:
                 guards = [bc for bc in opponent.board if bc.guard and bc.alive and not bc.exhausted] if opponent else []
-                score = -10 if guards else val
+                if guards:
+                    # A veto regardless of magnitude was wrong: combat that
+                    # kills the weakest guard is still worth taking (removes a
+                    # persistent threat, and any excess spills over once no
+                    # guard remains), not merely wasted chip damage.
+                    weakest_guard_hp = min(g.current_health for g in guards)
+                    score = val if val >= weakest_guard_hp else -10
+                else:
+                    score = val
                 options.append(("combat", val, score))
         if "gold" in or_choice:
             val = card.get("gold", 0)
@@ -524,14 +532,20 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
         if "health" in or_choice:
             val = card.get("health", 0)
             if val:
-                score = val + (3 if player.hp <= 25 else -3 if player.hp >= 45 else 0)
+                # A flat hp>=45 threshold didn't reflect how much of the heal
+                # actually lands once close to the cap. Score the real amount
+                # gained instead, so a heal already mostly wasted competes on
+                # its true value rather than an arbitrary cutoff.
+                actual_heal = min(val, HRGame.STARTING_HP - player.hp)
+                score = actual_heal + (3 if player.hp <= 25 else 0)
                 options.append(("health", val, score))
         if "per_champion_health" in or_choice:
             val = card.get("per_champion_health", 0)
             if val:
                 count = len([c for c in player.board if c.alive])
                 total = val * count
-                score = total + (3 if player.hp <= 25 else -3 if player.hp >= 45 else 0)
+                actual_heal = min(total, HRGame.STARTING_HP - player.hp)
+                score = actual_heal + (3 if player.hp <= 25 else 0)
                 options.append(("health", total, score))
         if options:
             best = max(options, key=lambda x: x[2])
