@@ -76,6 +76,13 @@ class HRPlayer:
         self.discard: list[HRCard] = []
         self.banish: list[HRCard] = []  # cards removed from game (sacrificed)
         self.board: list[BoardChampion] = []  # champions in play
+        # Non-champion cards played this turn. Per the official rules an ally
+        # ability triggers "as soon as you have another card of that faction in
+        # play", and Actions/Items stay in play until the Discard Phase - so
+        # two Guild actions played in the same turn trigger each other's ally.
+        # Champions are not tracked here; they live on `board`, which has its
+        # own self-exclusion check in has_ally.
+        self.played_this_turn: list[HRCard] = []
         self.actions_played: int = 0
         self.cards_bought: int = 0
         self.next_buy_to_hand: bool = False  # Deception ally: next bought card goes to hand
@@ -393,6 +400,7 @@ class HRGame:
         player.gold = 0
         player.combat = 0
         player.actions_played = 0
+        player.played_this_turn.clear()
         player.cards_bought = 0
         player.next_buy_to_hand = False
         player.next_buy_to_top = False
@@ -458,6 +466,13 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
         bc = BoardChampion(card)
         player.board.append(bc)
         return True
+
+    # In play until the Discard Phase, so it can trigger a later card's ally
+    # this turn. Tracked separately from `discard` (where the card also ends
+    # up below) so that reshuffling, sacrifice sources and deck counts are all
+    # unaffected by this.
+    if card.faction:
+        player.played_this_turn.append(card)
 
     # ---- Base effects (non-champion cards only) ----
     player.gold += card.get("gold", 0)
@@ -821,13 +836,21 @@ def buy_card(player: HRPlayer, market: HRMarket, index: int) -> bool:
 
 def has_ally(card: HRCard, player: HRPlayer) -> bool:
     """Check if player gets ally bonus for this card.
-    
+
     The card itself does NOT count — you need ANOTHER card of the same faction
     in play (per official rules: 'as soon as you have another card of that faction').
+
+    "In play" covers champions on the board *and* Actions/Items played earlier
+    this turn, which stay in play until the Discard Phase. Checking only the
+    board meant 21 of the 36 ally cards - every non-champion one - could never
+    trigger each other, so faction-stacking with actions (playing two Guild
+    actions in a turn) silently did nothing.
     """
     ally_faction = card.effects.get("ally_faction", "")
     if not ally_faction:
         return False
-    # Need another card (different object) of same faction on the board
-    return any(bc.card.faction == ally_faction and bc.card is not card
-               for bc in player.board)
+    if any(bc.card.faction == ally_faction and bc.card is not card
+           for bc in player.board):
+        return True
+    return any(c.faction == ally_faction and c is not card
+               for c in player.played_this_turn)

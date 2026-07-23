@@ -82,6 +82,7 @@ def _copy_player(player: HRPlayer) -> HRPlayer:
     clone.discard = player.discard[:]
     clone.banish = player.banish[:]
     clone.board = [_copy_champion(champion) for champion in player.board]
+    clone.played_this_turn = player.played_this_turn[:]
     clone.actions_played = player.actions_played
     clone.cards_bought = player.cards_bought
     clone.next_buy_to_hand = player.next_buy_to_hand
@@ -220,6 +221,7 @@ class GameSession:
         player.gold = 0
         player.combat = 0
         player.actions_played = 0
+        player.played_this_turn.clear()
         player.cards_bought = 0
         player.next_buy_to_hand = False
         player.next_buy_to_top = False

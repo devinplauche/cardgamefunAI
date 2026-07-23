@@ -127,6 +127,12 @@ GOLD_DISCOUNT_SCALE = STARTING_GOLD_DENSITY * 4.0
 # thinning *of*.
 _STARTING_JUNK_IDS = {"gold", "shortsword", "dagger", "ruby"}
 
+# Floor for ally value when the buyer owns no card of that faction yet. Not
+# zero: buying the first card of a faction is how a faction stack starts, and
+# ally-bearing cards are a third of the pool, so pricing them at their base
+# effects alone would never let a stack get going.
+_ALLY_FLOOR = 0.15
+
 
 def _junk_count(player) -> int:
     cards = player.deck + player.hand + player.discard
@@ -182,7 +188,56 @@ def _ally_certainty(session, seat: str, card) -> float:
     if not faction:
         return 0.0
     buyer = session.bot if seat == "bot" else session.player
-    return 1.0 if faction in buyer.allies() else 0.4
+
+    # A champion of that faction on the board is permanent: the ally is
+    # guaranteed to be live every turn this card is drawn.
+    if faction in buyer.allies():
+        return 1.0
+
+    # Otherwise the ally only fires if another card of the same faction turns
+    # up in play alongside it, so the value depends on how concentrated the
+    # deck is in that faction - the actual synergy signal. A flat constant
+    # here priced a first Necros card the same as a seventh, which is what
+    # made faction-stacking invisible to the buy policy.
+    #
+    # A turn draws 5 cards, so approximate the chance that at least one of the
+    # other 4 is the same faction. This matters more now that the engine
+    # triggers action-to-action allies correctly (see has_ally).
+    owned = buyer.deck + buyer.hand + buyer.discard
+    if not owned:
+        return _ALLY_FLOOR
+    same = sum(1 for c in owned if c.faction == faction)
+    if not same:
+        return _ALLY_FLOOR
+    chance = 1.0 - (1.0 - same / len(owned)) ** 4
+    return min(1.0, max(_ALLY_FLOOR, chance))
+
+
+def _thinning_value(player, count: int) -> float:
+    """Value of permanently removing the `count` worst cards from a deck.
+
+    Priced as the actual improvement in _deck_quality (mean value of the cards
+    you draw from), on the same DECK_QUALITY_WEIGHT scale everything else
+    uses, rather than a flat per-card constant. Thinning is the one effect
+    whose value is *entirely* about what is left behind: removing a Gold from
+    a 10-card starting deck is a large permanent gain, and removing the same
+    Gold from a 30-card deck that has already been thinned is a small one. A
+    constant could not express that, and undervalued the first sacrifice
+    outlet - which in practice is the card that makes a deck work.
+
+    Compounding is deliberately not modelled: this prices one activation, not
+    the repeatable engine a sacrifice *champion* provides every turn.
+    """
+    cards = player.deck + player.hand + player.discard
+    if not cards or count <= 0:
+        return 0.0
+    values = sorted(_card_value(c) for c in cards)
+    kept = values[count:]
+    if not kept:
+        return 0.0
+    before = sum(values) / len(values)
+    after = sum(kept) / len(kept)
+    return max(0.0, after - before) * DECK_QUALITY_WEIGHT
 
 
 def _sacrifice_bonus(session, seat: str, card, weights: dict[str, float] | None = None) -> float:
@@ -234,9 +289,7 @@ def _sacrifice_bonus(session, seat: str, card, weights: dict[str, float] | None 
         sac_count = card.get("sacrifice_up_to", 0)
 
     if sac_count:
-        junk = _junk_count(buyer)
-        thinned = min(sac_count, junk) if junk else sac_count * 0.3
-        bonus += thinned * 2.0
+        bonus += _thinning_value(buyer, sac_count)
     return bonus
 
 

@@ -353,6 +353,40 @@ class TestFastClone(unittest.TestCase):
         for f in fields(session):
             self.assertTrue(hasattr(clone, f.name), f"clone() dropped field {f.name!r}")
 
+    def test_clone_copies_every_player_attribute(self):
+        """_copy_player builds via HRPlayer.__new__, so an attribute added to
+        HRPlayer and not handled there is missing entirely on clones - an
+        AttributeError deep inside a rollout, not a wrong value. The
+        GameSession-field check above does not cover this: it only walks the
+        session's own dataclass fields. (Caught exactly this when
+        played_this_turn was added for ally tracking.)"""
+        session = create_session(seed=5)
+        _drive(session, steps=30)
+        clone = session.clone()
+        for seat in ("player", "bot"):
+            original = getattr(session, seat)
+            copied = getattr(clone, seat)
+            for name in vars(original):
+                self.assertTrue(
+                    hasattr(copied, name),
+                    f"_copy_player dropped HRPlayer attribute {name!r}",
+                )
+
+    def test_clone_player_lists_are_independent(self):
+        """Copied list attributes must be new lists, not shared references."""
+        session = create_session(seed=5)
+        _drive(session, steps=30)
+        clone = session.clone()
+        for seat in ("player", "bot"):
+            original = getattr(session, seat)
+            copied = getattr(clone, seat)
+            for name, value in vars(original).items():
+                if isinstance(value, list):
+                    self.assertIsNot(
+                        getattr(copied, name), value,
+                        f"_copy_player shares the {name!r} list with the original",
+                    )
+
     def test_clone_matches_deepcopy_on_game_state(self):
         from copy import deepcopy
         session = create_session(seed=5)
@@ -728,3 +762,97 @@ class TestOrChoicePerChampionHealth(unittest.TestCase):
 
         self.assertGreater(with_champs, without_champs,
                            "per_champion_health must scale with board size, not be ignored")
+
+
+class TestAllyConcentration(unittest.TestCase):
+    """_ally_certainty used a flat 0.4 whenever no champion of the faction was
+    on board, so a first Necros card was priced identically to a seventh -
+    faction stacking was invisible to the buy policy. It now scales with how
+    concentrated the deck is in that faction."""
+
+    @staticmethod
+    def _necros_action():
+        from hero_engine import load_hero_cards
+        cards = load_hero_cards("data/hero_realms_cards.json")
+        return next(c for c in cards if c.faction == "Necros" and c.card_type == "action")
+
+    def test_certainty_rises_with_faction_concentration(self):
+        from web.bot import _ally_certainty
+
+        card = self._necros_action()
+        scores = []
+        for n in (0, 1, 3, 6, 10):
+            session = create_session(seed=1)
+            session.bot.deck.extend([card] * n)
+            scores.append(_ally_certainty(session, "bot", card))
+        self.assertEqual(scores, sorted(scores))
+        self.assertLess(scores[0], scores[-1])
+
+    def test_champion_on_board_is_full_certainty(self):
+        from hero_engine import BoardChampion, load_hero_cards
+        from web.bot import _ally_certainty
+
+        cards = load_hero_cards("data/hero_realms_cards.json")
+        card = self._necros_action()
+        champ = next(c for c in cards if c.faction == "Necros" and c.card_type == "champion")
+        session = create_session(seed=1)
+        session.bot.board.append(BoardChampion(champ))
+        self.assertEqual(_ally_certainty(session, "bot", card), 1.0)
+
+    def test_a_card_with_no_ally_faction_scores_zero(self):
+        from hero_engine import HRCard
+        from web.bot import _ally_certainty
+
+        plain = HRCard(id="plain", name="Plain", cost=1, faction="", card_type="action",
+                       effects={"combat": 2})
+        self.assertEqual(_ally_certainty(create_session(seed=1), "bot", plain), 0.0)
+
+    def test_owning_none_of_the_faction_still_has_a_floor(self):
+        """Buying the first card of a faction is how a stack starts, so this
+        must not be zero."""
+        from web.bot import _ally_certainty
+
+        session = create_session(seed=1)
+        self.assertGreater(_ally_certainty(session, "bot", self._necros_action()), 0.0)
+
+
+class TestThinningValue(unittest.TestCase):
+    """Thinning was a flat 2.0 per card removed, unconnected to how much the
+    deck actually improves."""
+
+    def test_thinning_more_cards_is_worth_more(self):
+        from web.bot import _thinning_value
+
+        session = create_session(seed=1)
+        one = _thinning_value(session.bot, 1)
+        two = _thinning_value(session.bot, 2)
+        self.assertGreater(two, one)
+
+    def test_thinning_is_worth_more_when_junk_dilutes_real_cards(self):
+        """The whole point of thinning is concentrating what is left, so it
+        should be worth more once the deck has quality being diluted."""
+        from hero_engine import load_hero_cards
+        from web.bot import _thinning_value
+
+        cards = load_hero_cards("data/hero_realms_cards.json")
+        strong = next(c for c in cards if c.cost >= 6)
+        bare = create_session(seed=1)
+        stacked = create_session(seed=1)
+        stacked.bot.deck.extend([strong] * 20)
+        self.assertGreater(_thinning_value(stacked.bot, 1), _thinning_value(bare.bot, 1))
+
+    def test_thinning_an_empty_deck_is_zero(self):
+        from web.bot import _thinning_value
+
+        session = create_session(seed=1)
+        session.bot.deck = []
+        session.bot.hand = []
+        session.bot.discard = []
+        self.assertEqual(_thinning_value(session.bot, 1), 0.0)
+
+    def test_thinning_is_never_negative(self):
+        from web.bot import _thinning_value
+
+        session = create_session(seed=1)
+        for count in (0, 1, 5, 50):
+            self.assertGreaterEqual(_thinning_value(session.bot, count), 0.0)
