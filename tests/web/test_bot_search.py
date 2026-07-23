@@ -132,8 +132,13 @@ class TestRootSelection(unittest.TestCase):
         return None
 
     def test_attacks_instead_of_passing_with_combat_in_hand(self):
+        # Widened from the original (21, 6, 14): after champion damage stopped
+        # carrying over between turns and stunned champions started returning
+        # to discard (both real rules fixes), guards now survive far more
+        # often at these specific seeds/turn counts, so more seeds are needed
+        # to reliably land on a guard-free state to test against.
         checked = 0
-        for seed in (21, 6, 14):
+        for seed in range(20):
             session = self._combat_state(seed)
             if session is None:
                 continue
