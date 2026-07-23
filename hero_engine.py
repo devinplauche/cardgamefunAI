@@ -88,6 +88,10 @@ class HRPlayer:
         # are retroactive, so these are re-checked whenever a faction card
         # enters play.
         self.pending_ally: list[HRCard] = []
+        # Played actions with a per_champion_* bonus, topped up when a
+        # champion enters play later the same turn - see
+        # _apply_per_champion_bonus / _resolve_pending_per_champion.
+        self.pending_per_champion: list[dict] = []
         self.pending_stun_targets: list[tuple[HRCard, Optional[BoardChampion]]] = []
         self.actions_played: int = 0
         self.cards_bought: int = 0
@@ -433,6 +437,7 @@ class HRGame:
         player.actions_played = 0
         player.discard_played_cards()
         player.pending_ally.clear()
+        player.pending_per_champion.clear()
         player.pending_stun_targets.clear()
         player.cards_bought = 0
         player.next_buy_to_hand = False
@@ -517,8 +522,9 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
         bc = BoardChampion(card)
         player.board.append(bc)
         # A champion entering play can complete a faction pair for an action
-        # played earlier this turn.
+        # played earlier this turn, and tops up any queued per-champion bonus.
         _resolve_pending_allies(player, opponent)
+        _resolve_pending_per_champion(player)
         return True
 
     # Non-champions remain in play until the Discard Phase. Keeping every such
@@ -547,15 +553,13 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
         player.draw(actual_draw_up_to)
 
     # ---- Per-champion effects for actions ----
-    champion_count = len([bc for bc in player.board if bc.alive])
-    per_champion_combat = card.get("per_champion_combat", 0)
-    if per_champion_combat:
-        player.combat += per_champion_combat * champion_count
-    per_champion_health = card.get("per_champion_health", 0)
-    if per_champion_health:
-        heal = per_champion_health * champion_count
-        if heal:
-            player.hp = min(player.hp + heal, HRGame.STARTING_HP)
+    # Priced at the current champion count and queued: per the table
+    # experience behind this fix, "for each champion you have in play" on a
+    # played action (Close Ranks, Recruit) tops up retroactively if a champion
+    # enters play later the same turn, the same way ally abilities do for the
+    # action itself staying in play until the Discard Phase.
+    _apply_per_champion_bonus(player, card, "per_champion_combat", "combat")
+    _apply_per_champion_bonus(player, card, "per_champion_health", "health")
 
     # ---- Ally bonus ----
     # Applied now if a partner is already in play, otherwise queued: the ally
@@ -909,6 +913,49 @@ def _apply_ally_effects(player: HRPlayer, card: HRCard, opponent: Optional[HRPla
         _force_opponent_discard(opponent, ally_od, player)
     if card.get("stun", False) and opponent:
         _stun_champion(opponent, stun_target)
+
+
+def _apply_per_champion_bonus(player: HRPlayer, card: HRCard, effect_key: str, resource: str):
+    """Apply a "for each champion you have in play" bonus on a played action
+    card (per_champion_combat / per_champion_health), and queue it to keep
+    growing if more champions enter play later the same turn.
+
+    Scoped to played actions only, not champion expend abilities
+    (per_other_champion_combat and friends) - an expend is a discrete,
+    one-time triggered action rather than a card that stays in a zone the way
+    ally-bearing actions do, so there is nothing for a later champion to
+    retroactively add to. If that scoping turns out to be too narrow, this is
+    the function to widen.
+    """
+    per_unit = card.get(effect_key, 0)
+    if not per_unit:
+        return
+    count = len([bc for bc in player.board if bc.alive])
+    _grant_resource(player, resource, per_unit * count)
+    player.pending_per_champion.append({"card": card, "resource": resource,
+                                        "per_unit": per_unit, "credited": count})
+
+
+def _grant_resource(player: HRPlayer, resource: str, amount: int):
+    if not amount:
+        return
+    if resource == "combat":
+        player.combat += amount
+    elif resource == "health":
+        player.hp = min(player.hp + amount, HRGame.STARTING_HP)
+
+
+def _resolve_pending_per_champion(player: HRPlayer):
+    """Top up every queued per-champion bonus to the current champion count.
+    Called whenever a champion enters play."""
+    if not player.pending_per_champion:
+        return
+    count = len([bc for bc in player.board if bc.alive])
+    for entry in player.pending_per_champion:
+        delta = count - entry["credited"]
+        if delta > 0:
+            _grant_resource(player, entry["resource"], entry["per_unit"] * delta)
+            entry["credited"] = count
 
 
 def _resolve_pending_allies(player: HRPlayer, opponent: Optional[HRPlayer] = None):

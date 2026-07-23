@@ -198,3 +198,136 @@ class TestChampionDamageDoesNotCarryOver(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRetroactivePerChampionBonus(unittest.TestCase):
+    """"For each champion you have in play" on a played action (Close Ranks,
+    Recruit) tops up retroactively if a champion enters play later the same
+    turn - per table experience, not a citable rules text, unlike allies
+    (which the base rulebook explicitly confirms). Mirrors the pending_ally
+    mechanism: priced at the current count, queued, and topped up to the new
+    count whenever a champion joins the board.
+
+    Scoped to played actions only, not champion expend abilities
+    (per_other_champion_combat and friends): an expend is a discrete,
+    one-time triggered action, not a card sitting in a zone the way an
+    ally-bearing action does, so there is nothing for a later champion to
+    retroactively add to.
+    """
+
+    @staticmethod
+    def _non_imperial_champion():
+        # Avoid accidentally triggering Close Ranks' own Imperial ally line.
+        return next(c for c in CARDS if c.card_type == "champion" and c.faction != "Imperial")
+
+    def test_close_ranks_combat_grows_when_a_champion_is_played_after(self):
+        from hero_engine import HRMarket, play_card
+
+        close_ranks = next(c for c in CARDS if c.name == "Close Ranks")
+        champ = self._non_imperial_champion()
+        player = HRPlayer("P")
+        player.hand = [close_ranks, champ]
+        market = HRMarket(CARDS)
+
+        play_card(player, close_ranks, market, opponent=None)
+        self.assertEqual(player.combat, 5, "no champions in play yet")
+
+        play_card(player, champ, market, opponent=None)
+        self.assertEqual(player.combat, 7, "should top up by 2 for the new champion")
+
+    def test_recruit_health_grows_when_a_champion_is_played_after(self):
+        from hero_engine import HRMarket, play_card
+
+        recruit = next(c for c in CARDS if c.name == "Recruit")
+        champ = self._non_imperial_champion()
+        player = HRPlayer("P")
+        player.hp = 10
+        player.hand = [recruit, champ]
+        market = HRMarket(CARDS)
+
+        play_card(player, recruit, market, opponent=None)
+        hp_after_recruit = player.hp
+        play_card(player, champ, market, opponent=None)
+        self.assertGreater(player.hp, hp_after_recruit, "should heal further once a champion joins")
+
+    def test_does_not_grow_from_champions_already_in_play(self):
+        """Only NEW champions entering later top it up; the count at play
+        time is already priced in once."""
+        from hero_engine import BoardChampion, HRMarket, play_card
+
+        close_ranks = next(c for c in CARDS if c.name == "Close Ranks")
+        champ = self._non_imperial_champion()
+        player = HRPlayer("P")
+        player.board.append(BoardChampion(champ))
+        player.hand = [close_ranks]
+        market = HRMarket(CARDS)
+
+        play_card(player, close_ranks, market, opponent=None)
+        self.assertEqual(player.combat, 7, "base 5 + 2 for the one already-present champion")
+
+    def test_top_up_only_applies_once_per_new_champion(self):
+        from hero_engine import HRMarket, play_card
+
+        close_ranks = next(c for c in CARDS if c.name == "Close Ranks")
+        champ = self._non_imperial_champion()
+        champ2 = next(c for c in CARDS if c.card_type == "champion" and c.faction != "Imperial"
+                     and c.name != champ.name)
+        player = HRPlayer("P")
+        player.hand = [close_ranks, champ, champ2]
+        market = HRMarket(CARDS)
+
+        play_card(player, close_ranks, market, opponent=None)
+        play_card(player, champ, market, opponent=None)
+        after_first = player.combat
+        play_card(player, champ2, market, opponent=None)
+        self.assertEqual(player.combat, after_first + 2, "second champion should also top up by 2")
+
+    def test_pending_per_champion_does_not_leak_across_turns(self):
+        from hero_engine import HRMarket, play_card
+        from web.session import create_session
+
+        close_ranks = next(c for c in CARDS if c.name == "Close Ranks")
+        session = create_session(seed=5)
+        session.bot.hand = [close_ranks]
+        session.active_player = "bot"
+        session.phase = "play"
+        session.play_card(close_ranks.id)
+        self.assertTrue(session.bot.pending_per_champion)
+
+        session._start_turn(session.bot)
+        self.assertEqual(session.bot.pending_per_champion, [])
+
+    def test_pending_per_champion_survives_a_clone(self):
+        from web.session import create_session
+
+        close_ranks = next(c for c in CARDS if c.name == "Close Ranks")
+        session = create_session(seed=5)
+        session.bot.hand = [close_ranks]
+        session.active_player = "bot"
+        session.phase = "play"
+        session.play_card(close_ranks.id)
+
+        clone = session.clone()
+        self.assertEqual(len(clone.bot.pending_per_champion), 1)
+        clone.bot.pending_per_champion.clear()
+        self.assertTrue(session.bot.pending_per_champion, "clone must not share the list")
+
+    def test_champion_expend_per_other_effects_are_not_retroactive(self):
+        """Scoping check: expend abilities resolve once, at time of use, not
+        queued for later top-up."""
+        from hero_engine import BoardChampion, expend_champion
+
+        master_weyan = next(c for c in CARDS if c.name == "Master Weyan")
+        other_champ = self._non_imperial_champion()
+        player = HRPlayer("P")
+        bc = BoardChampion(master_weyan)
+        player.board.append(bc)
+
+        expend_champion(player, bc, opponent=None)
+        combat_after_expend = player.combat
+        self.assertEqual(player.pending_per_champion, [],
+                         "expend abilities must not be queued for retroactive top-up")
+
+        player.board.append(BoardChampion(other_champ))
+        self.assertEqual(player.combat, combat_after_expend,
+                         "a later champion must not retroactively boost an already-resolved expend")

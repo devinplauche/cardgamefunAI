@@ -86,6 +86,7 @@ def _copy_player(player: HRPlayer, rng: random.Random) -> HRPlayer:
     clone.board = [_copy_champion(champion) for champion in player.board]
     clone.played_this_turn = player.played_this_turn[:]
     clone.pending_ally = player.pending_ally[:]
+    clone.pending_per_champion = [dict(e) for e in player.pending_per_champion]
     clone.pending_stun_targets = player.pending_stun_targets[:]
     clone.actions_played = player.actions_played
     clone.cards_bought = player.cards_bought
@@ -229,6 +230,7 @@ class GameSession:
         player.actions_played = 0
         player.discard_played_cards()
         player.pending_ally.clear()
+        player.pending_per_champion.clear()
         player.pending_stun_targets.clear()
         player.cards_bought = 0
         player.next_buy_to_hand = False

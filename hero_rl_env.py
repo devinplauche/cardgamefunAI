@@ -146,7 +146,7 @@ class HeroRealmsEnv(gym.Env):
         opp.combat = 0
         opp.actions_played = 0
         opp.played_this_turn.clear()
-        opp.pending_ally.clear()
+        opp.pending_per_champion.clear()
         opp.cards_bought = 0
         for bc in opp.board:
             bc.exhausted = False
@@ -200,7 +200,7 @@ class HeroRealmsEnv(gym.Env):
         p.combat = 0
         p.actions_played = 0
         p.played_this_turn.clear()
-        p.pending_ally.clear()
+        p.pending_per_champion.clear()
         p.cards_bought = 0
         for bc in p.board:
             bc.exhausted = False
