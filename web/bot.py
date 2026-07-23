@@ -9,6 +9,7 @@ from typing import Any
 from hero_engine import (
     FIRE_GEM,
     HRGame,
+    _deck_gold_density,
     _should_self_sacrifice,
     has_ally,
     play_card,
@@ -106,22 +107,6 @@ def _deck_quality(player) -> float:
     if not cards:
         return 0.0
     return sum(_card_value(card) for card in cards) / len(cards)
-
-
-def _deck_gold_density(player) -> float:
-    """Average gold produced per card the player already owns.
-
-    This has to measure gold specifically, not overall _deck_quality. A deck
-    flooded with plain Gold actually *lowers* mean card value (Gold scores
-    below the starting deck's own average), which would make a quality-based
-    discount reward buying still more Gold - the opposite of the diminishing
-    returns it is meant to express. Verified directly: flooding a starting
-    deck with 40 Gold moved _deck_quality 2.77 -> 2.55.
-    """
-    cards = player.deck + player.hand + player.discard
-    if not cards:
-        return 0.0
-    return sum(card.get("gold", 0) for card in cards) / len(cards)
 
 
 # Starting deck gold density (7 Gold among 10 cards, 1 gold each) is 0.7. The

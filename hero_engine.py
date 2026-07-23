@@ -132,29 +132,121 @@ def _card_score(card: HRCard) -> int:
             (card.health if card.card_type == "champion" else 0) * 2)
 
 
-def _find_worst_idx(cards: list) -> int:
-    """Index of the lowest-value card (for sacrificing/discarding)."""
+def _deck_gold_density(player: HRPlayer) -> float:
+    """Average gold produced per card the player already owns.
+
+    Has to measure gold specifically, not overall card quality. A deck
+    flooded with plain Gold actually *lowers* mean card value (Gold scores
+    below a typical deck's own average), which would make a quality-based
+    discount reward keeping still more Gold - the opposite of the diminishing
+    returns it is meant to express.
+    """
+    cards = player.deck + player.hand + player.discard
+    if not cards:
+        return 0.0
+    return sum(card.get("gold", 0) for card in cards) / len(cards)
+
+
+# Reference scale for the gold-diminishing-returns discount below: the
+# starting deck's own gold density (7 Gold among 10 cards) is 0.7, and this
+# is 4x that so a fresh deck sits at a mild discount (~0.8) rather than a
+# severe one - matches GOLD_DISCOUNT_SCALE in web/bot.py, which discounts the
+# *buying* side of this same tradeoff.
+_GOLD_DENSITY_DISCOUNT_SCALE = 0.7 * 4.0
+
+
+def _contextual_card_value(card: HRCard, player: HRPlayer,
+                           opponent: Optional[HRPlayer] = None) -> float:
+    """Value of a card the player already owns, for deciding which to keep
+    when the engine has to discard or sacrifice one.
+
+    _card_score alone is a fixed per-card number - cost and raw stats, with
+    no idea whether the player is racing for lethal, needs healing, already
+    has plenty of gold, or has an ally on board that makes this specific
+    card's ally_* fields real rather than dead text. That is the same kind
+    of blind spot _holistic_card_score (web/bot.py) fixes for buy decisions.
+    This is the discard/sacrifice-side counterpart, and it lives in the
+    engine itself rather than the bot layer, because _find_worst_idx and
+    _find_best_idx are called from every simulated game - RL training,
+    heuristic AI opponents, and the MCTS bot alike - not just the MCTS bot's
+    own purchases.
+
+    The four starting cards are deliberately exempt from every adjustment
+    below: they are junk under any circumstances and must stay the default
+    discard/sacrifice target regardless of context, exactly as
+    _worth_sacrificing already assumes.
+    """
+    score = float(_card_score(card))
+    if card.id in ("gold", "shortsword", "dagger", "ruby"):
+        return score
+
+    if opponent is not None:
+        opp_hp_ratio = min(max(opponent.hp, 0), HRGame.STARTING_HP) / HRGame.STARTING_HP
+        # Combat is worth more to keep the closer the opponent is to dead -
+        # closing out a game beats incremental damage at full health. Same
+        # shape as the combat weight _holistic_card_score uses for buying.
+        score += card.get("combat", 0) * (1.0 - opp_hp_ratio) * 3.0
+
+    own_hp_ratio = min(max(player.hp, 0), HRGame.STARTING_HP) / HRGame.STARTING_HP
+    # A heal is worth more to keep the more urgently the player needs it.
+    score += card.get("health", 0) * (1.0 - own_hp_ratio) * 4.0
+
+    ally_faction = card.effects.get("ally_faction", "")
+    if ally_faction:
+        ally_value = (
+            card.get("ally_combat", 0) * 4
+            + card.get("ally_gold", 0) * 3
+            + card.get("ally_draw", 0) * 5
+            + card.get("ally_health", 0) * 3
+        )
+        if ally_value:
+            # Full credit once the matching faction is actually on board (the
+            # bonus is real right now); a small, non-zero credit otherwise,
+            # since ally_faction is common enough that ignoring it outright
+            # would systematically undervalue these cards even when the ally
+            # is one purchase away.
+            score += ally_value if ally_faction in player.allies() else ally_value * 0.2
+
+    if card.get("gold", 0) > 0:
+        # Diminishing returns on gold specifically, mirroring the buy-side
+        # discount: another gold card is worth less to keep once the deck
+        # already produces plenty of it.
+        discount = 1.0 / (1.0 + _deck_gold_density(player) / _GOLD_DENSITY_DISCOUNT_SCALE)
+        score -= card.get("gold", 0) * 3 * (1.0 - discount)
+
+    return score
+
+
+def _find_worst_idx(cards: list, player: Optional[HRPlayer] = None,
+                    opponent: Optional[HRPlayer] = None) -> int:
+    """Index of the lowest-value card (for sacrificing/discarding).
+
+    Uses the situational _contextual_card_value when the owning player is
+    known, falling back to the fixed _card_score otherwise.
+    """
     best_i, best_s = 0, float("inf")
     for i, c in enumerate(cards):
-        s = _card_score(c)
+        s = _contextual_card_value(c, player, opponent) if player is not None else _card_score(c)
         if s < best_s:
             best_s = s
             best_i = i
     return best_i
 
 
-def _find_best_idx(cards: list) -> int:
+def _find_best_idx(cards: list, player: Optional[HRPlayer] = None,
+                   opponent: Optional[HRPlayer] = None) -> int:
     """Index of the highest-value card (for returning from discard)."""
     best_i, best_s = 0, float("-inf")
     for i, c in enumerate(cards):
-        s = _card_score(c)
+        s = _contextual_card_value(c, player, opponent) if player is not None else _card_score(c)
         if s > best_s:
             best_s = s
             best_i = i
     return best_i
 
 
-def _worth_sacrificing(card: HRCard) -> bool:
+def _worth_sacrificing(card: HRCard, player: Optional[HRPlayer] = None,
+                       opponent: Optional[HRPlayer] = None) -> bool:
     """Whether a hand/discard card is worth an optional sacrifice.
 
     Every printed sacrifice effect in this card set reads "you may sacrifice"
@@ -164,11 +256,16 @@ def _worth_sacrificing(card: HRCard) -> bool:
     builds toward) had no bad cards left to decline sacrificing, and was
     forced to burn a genuinely useful card instead.
 
-    Reuses _card_score's own scale: the four starting cards score strongly
-    negative (-50 to -100) and every real market card scores positive
-    (cost*10 alone is already >=10 for any purchased card), so this cleanly
-    separates "starting junk" from "anything actually worth keeping."
+    With player context, uses _contextual_card_value instead of the fixed
+    _card_score, so a redundant purchased card can also become worth
+    sacrificing once the deck already has plenty of what it offers (e.g. a
+    cheap economy card once gold density is high) - not only the four
+    starting cards. Without context (or for those four, which
+    _contextual_card_value always scores identically to _card_score), the
+    original -50 to -100 vs. cost*10+ split still applies.
     """
+    if player is not None:
+        return _contextual_card_value(card, player, opponent) < 0
     return _card_score(card) < 0
 
 
@@ -204,19 +301,21 @@ def _should_self_sacrifice(player: HRPlayer, opponent: Optional[HRPlayer] = None
     return owned_economy >= 2
 
 
-def _discard_from_hand(player: HRPlayer, n: int):
+def _discard_from_hand(player: HRPlayer, n: int, opponent: Optional[HRPlayer] = None):
     """Discard n lowest-value cards from hand (self-discard: keep best)."""
     n = min(n, len(player.hand))
     for _ in range(n):
-        idx = _find_worst_idx(player.hand)
+        idx = _find_worst_idx(player.hand, player, opponent)
         player.discard.append(player.hand.pop(idx))
 
 
-def _force_opponent_discard(opponent: HRPlayer, n: int = 1):
-    """Opponent discards n of their worst cards (opponent chooses to minimize harm)."""
+def _force_opponent_discard(opponent: HRPlayer, n: int = 1, forcing_player: Optional[HRPlayer] = None):
+    """Opponent discards n of their worst cards (opponent chooses to minimize
+    harm to themselves - from their own perspective, `forcing_player` is
+    their opponent)."""
     n = min(n, len(opponent.hand))
     for _ in range(n):
-        idx = _find_worst_idx(opponent.hand)
+        idx = _find_worst_idx(opponent.hand, opponent, forcing_player)
         opponent.discard.append(opponent.hand.pop(idx))
 
 
@@ -400,7 +499,7 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
         if ally_draw:
             player.draw(ally_draw)
             if card.get("ally_discard_drawn", False):
-                _discard_from_hand(player, ally_draw)
+                _discard_from_hand(player, ally_draw, opponent)
 
     total_base_draws = draws + actual_draw_up_to + (card.get("ally_draw", 0) if ally_bonus else 0)
 
@@ -409,11 +508,11 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
     if discard_n > 0:
         if total_base_draws == 0:
             player.draw(discard_n)
-        _discard_from_hand(player, discard_n)
+        _discard_from_hand(player, discard_n, opponent)
 
     # ---- Filter-draw (discard_drawn: draw X then discard X) ----
     if card.get("discard_drawn", False) and total_base_draws > 0:
-        _discard_from_hand(player, total_base_draws)
+        _discard_from_hand(player, total_base_draws, opponent)
 
     # ---- Self-sacrifice (sacrifice THIS card for bonus effects) ----
     # Optional per the printed text ("{Sacrifice}:" / "you may sacrifice") -
@@ -426,13 +525,13 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
         sacrificed = True
     sac_od = card.get("sacrifice_opponent_discard", 0)
     if sac_od > 0 and opponent and _should_self_sacrifice(player, opponent):
-        _force_opponent_discard(opponent, sac_od)
+        _force_opponent_discard(opponent, sac_od, player)
         sacrificed = True
 
     # ---- Opponent discard (always, if card has it) ----
     od = card.get("opponent_discard", 0)
     if od > 0 and opponent:
-        _force_opponent_discard(opponent, od)
+        _force_opponent_discard(opponent, od, player)
 
     # ---- Generic sacrifice from hand/discard (Dark Reward, Death Touch, etc.) ----
     # Optional ("you may sacrifice a card in your hand or discard pile") -
@@ -445,8 +544,8 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
         elif player.discard:
             source = player.discard
         if source:
-            idx = _find_worst_idx(source)
-            if _worth_sacrificing(source[idx]):
+            idx = _find_worst_idx(source, player, opponent)
+            if _worth_sacrificing(source[idx], player, opponent):
                 player.banish.append(source.pop(idx))
 
     # ---- Stun (primary for non-ally cards like Fire Bomb; ally-only if ally_faction set) ----
@@ -480,13 +579,13 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
         # Ally opponent discard (Broelyn, Nature's Bounty)
         ally_od = card.get("ally_opponent_discard", 0)
         if ally_od > 0 and opponent:
-            _force_opponent_discard(opponent, ally_od)
+            _force_opponent_discard(opponent, ally_od, player)
 
     # ---- Non-ally effects (always apply) ----
 
     # Recycle (discard to top of deck) (Smash and Grab - no ally needed)
     if card.get("recycle", False) and player.discard:
-        idx = _find_best_idx(player.discard)
+        idx = _find_best_idx(player.discard, player, opponent)
         player.deck.insert(0, player.discard.pop(idx))
 
     # Reanimate (champion from discard to top of deck) (Varrick)
@@ -591,10 +690,10 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
     if discard_n > 0:
         if draws == 0:
             player.draw(discard_n)
-        _discard_from_hand(player, discard_n)
+        _discard_from_hand(player, discard_n, opponent)
 
     if card.get("discard_drawn", False) and draws > 0:
-        _discard_from_hand(player, draws)
+        _discard_from_hand(player, draws, opponent)
 
     # ---- Sacrifice a card from hand/discard for bonus combat (Krythos, Lys) ----
     # "You may sacrifice a card... If you do, gain an additional combat" - the
@@ -608,8 +707,8 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
         elif player.discard:
             source = player.discard
         if source:
-            idx = _find_worst_idx(source)
-            if _worth_sacrificing(source[idx]):
+            idx = _find_worst_idx(source, player, opponent)
+            if _worth_sacrificing(source[idx], player, opponent):
                 player.banish.append(source.pop(idx))
                 player.combat += sac_for_combat
 
@@ -626,8 +725,8 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
                 source = player.discard
             if not source:
                 break
-            idx = _find_worst_idx(source)
-            if not _worth_sacrificing(source[idx]):
+            idx = _find_worst_idx(source, player, opponent)
+            if not _worth_sacrificing(source[idx], player, opponent):
                 break
             player.banish.append(source.pop(idx))
 
@@ -641,7 +740,7 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
     # ---- Opponent discard on expend (Torgen Rocksplitter) ----
     od = card.get("opponent_discard", 0)
     if od > 0 and opponent:
-        _force_opponent_discard(opponent, od)
+        _force_opponent_discard(opponent, od, player)
 
     # ---- Ally effects on expend ----
     if has_ally(card, player):
@@ -660,7 +759,7 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
         if ally_draw:
             player.draw(ally_draw)
             if card.get("ally_discard_drawn", False):
-                _discard_from_hand(player, ally_draw)
+                _discard_from_hand(player, ally_draw, opponent)
 
         # Champion ally top_of_deck (Rasmus: next bought card goes on top; Bribe: action only)
         if card.get("top_of_deck", False):
@@ -671,7 +770,7 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
         # Champion ally opponent discard (Broelyn)
         ally_od = card.get("ally_opponent_discard", 0)
         if ally_od > 0 and opponent:
-            _force_opponent_discard(opponent, ally_od)
+            _force_opponent_discard(opponent, ally_od, player)
 
     return True
 

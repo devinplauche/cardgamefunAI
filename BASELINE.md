@@ -177,6 +177,55 @@ than the interactive budget currently allows.
 
 Covered by `tests/web/test_bot_search.py`.
 
+## Discard/sacrifice targeting was context-free (fixed)
+
+`_find_worst_idx`/`_find_best_idx` in `hero_engine.py` decide which card gets
+discarded, sacrificed, or returned from discard — real decisions in Hero
+Realms, alongside buying and `or_choice`. They used a single fixed
+`_card_score` (cost and raw stats only), with no idea whether the player
+needs healing, is racing to close out a game, already has plenty of gold, or
+has an ally on board that makes a card's `ally_*` fields real. This is an
+engine-level fix, not an AI valuation nuance: these functions run in every
+simulated game — RL training, heuristic AI opponents, and the MCTS bot alike.
+
+Added `_contextual_card_value(card, player, opponent)`, which starts from
+`_card_score` and adjusts for:
+
+- **Combat**, scaled up as the opponent nears death (closing out beats chip
+  damage at full HP).
+- **Healing**, scaled up as the player's own HP drops.
+- **Ally certainty** — full credit for `ally_*` fields once the matching
+  faction is actually on the player's board, 0.2x credit otherwise, rather
+  than the 0 credit `_card_score` gave every ally-dependent card regardless
+  of board state.
+- **Gold, diminishing returns** — discounted by the player's own gold
+  density, mirroring the buy-side discount in `web/bot.py`.
+
+The four starting cards (Gold/Shortsword/Dagger/Ruby) are exempt from every
+adjustment and stay the default target under any circumstances, matching
+`_worth_sacrificing`'s existing assumption.
+
+`_worth_sacrificing` now accepts the same context and generalizes beyond only
+the four starting cards: a redundant purchased card (e.g. a fifth economy
+card in a gold-saturated deck) can become worth sacrificing too, not only
+starting junk.
+
+Verified against real cards before writing tests (the same discipline the
+buy-side fixes needed twice): a combat card with no heal effect correctly
+becomes the worst card to keep once the player is critically low, a gold card
+correctly loses value as deck gold density rises while a non-gold card in the
+same hand is unaffected, and an ally card gains value only once the matching
+faction is actually on board. Covered by `tests/test_discard_targeting.py`.
+
+**Open question, not yet resolved:** a 20-games/profile spot check right after
+this landed (search eval, situational buy policy, 60ms) measured mcts 6.2% /
+heuristic 33.8%, down from the 20.0% / 30.8% recorded earlier at the same
+settings. At n=20 that is noisy (~+/-11pp per cell), and the or_choice and
+sacrifice-optionality fixes landed between those two measurements too, so this
+is not a controlled A/B and the drop cannot be attributed to this change
+specifically. Needs a dedicated sweep (holding buy_policy/eval fixed, isolating
+just this change) before drawing a conclusion either way.
+
 ## Known structural limits
 
 These cap what any amount of training can achieve here:
