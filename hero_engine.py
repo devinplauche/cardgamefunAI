@@ -187,7 +187,14 @@ def _should_self_sacrifice(player: HRPlayer, opponent: Optional[HRPlayer] = None
     guaranteed bonus now.
     """
     if requires_open_combat and opponent:
-        guards = [bc for bc in opponent.board if bc.guard and bc.alive]
+        # Matches the guard check the neighbouring or_choice combat branch
+        # uses below, for the same "is this guard currently a threat"
+        # question. Note _resolve_combat's own guard check (used for real
+        # combat resolution) does not filter by exhausted at all, so whether
+        # exhaustion should affect guard-blocking here is itself an open
+        # question - out of scope for this fix, which is only about the two
+        # call sites agreeing with each other.
+        guards = [bc for bc in opponent.board if bc.guard and bc.alive and not bc.exhausted]
         if guards:
             return False
     owned_economy = sum(

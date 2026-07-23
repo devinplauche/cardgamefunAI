@@ -698,3 +698,33 @@ class TestHolisticBuyScoring(unittest.TestCase):
         action = _heuristic_rollout_action(session)
         self.assertEqual(action["type"], "buy_card")
         self.assertEqual(int(action["marketIndex"]), 1)
+
+
+class TestOrChoicePerChampionHealth(unittest.TestCase):
+    """Regression: the or_choice max() computed weights.get(kind, 0.0) for
+    every branch, but weights has no "per_champion_health" key, so that
+    branch was silently dropped from consideration for every card that lists
+    it (e.g. Tithe Priest), regardless of how many champions were on board."""
+
+    def test_per_champion_health_branch_is_not_silently_dropped(self):
+        from hero_engine import load_hero_cards, BoardChampion, HRCard
+        from web.bot import _holistic_card_score
+
+        cards = load_hero_cards("data/hero_realms_cards.json")
+        tithe_priest = next(c for c in cards if c.name == "Tithe Priest")
+        self.assertIn("per_champion_health", tithe_priest.effects.get("or_choice", []))
+
+        session = create_session(seed=1)
+        session.bot.hp = 10  # low, so healing is worth taking over 1 gold
+        without_champs = _holistic_card_score(session, "bot", tithe_priest)
+
+        # Adding champions should raise the per_champion_health branch's value
+        # enough to start beating the flat 1-gold branch.
+        champ_card = HRCard(id="filler_champ", name="Filler", cost=1, faction="",
+                            card_type="champion", health=3, effects={})
+        for _ in range(4):
+            session.bot.board.append(BoardChampion(champ_card))
+        with_champs = _holistic_card_score(session, "bot", tithe_priest)
+
+        self.assertGreater(with_champs, without_champs,
+                           "per_champion_health must scale with board size, not be ignored")

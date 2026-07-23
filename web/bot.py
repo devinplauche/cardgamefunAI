@@ -273,10 +273,19 @@ def _holistic_card_score(session, seat: str, card) -> float:
         # expend_champion's or_choice handling in hero_engine.py), so summing
         # every listed field double-counts value that can never all be
         # realised in one activation. Take the best available branch instead.
-        score += max(
-            (card.get(kind, 0) * weights.get(kind, 0.0) for kind in or_choice if kind in weights),
-            default=0.0,
-        )
+        #
+        # per_champion_health is scored separately rather than through
+        # weights.get(kind, 0.0): weights has no such key, so folding it into
+        # the same lookup silently dropped it from every or_choice comparison
+        # (e.g. Tithe Priest's {gold:1, or_choice:['gold','per_champion_health'],
+        # per_champion_health:1} always scored as gold-only, regardless of how
+        # many champions were on board).
+        buyer = session.bot if seat == "bot" else session.player
+        champ_count = len([bc for bc in buyer.board if bc.alive])
+        branch_scores = [card.get(kind, 0) * weights[kind] for kind in or_choice if kind in weights]
+        if "per_champion_health" in or_choice:
+            branch_scores.append(card.get("per_champion_health", 0) * champ_count * weights["health"])
+        score += max(branch_scores, default=0.0)
     else:
         score += card.get("combat", 0) * weights["combat"]
         score += card.get("gold", 0) * weights["gold"]
@@ -475,10 +484,6 @@ def _rollout(session, turn_limit: int | None = None, action_cap: int = 400) -> f
         apply_action(session, _heuristic_rollout_action(session))
         actions += 1
     return _leaf_value(session)
-
-
-def _best_child(node: Node, lo: float = 0.0, hi: float = 1.0) -> Node:
-    return max(node.children, key=lambda child: child.uct_score(lo=lo, hi=hi))
 
 
 def _action_key(action: dict[str, Any] | None) -> tuple:
