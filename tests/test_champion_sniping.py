@@ -62,7 +62,8 @@ class TestSessionLevelSniping(unittest.TestCase):
         from web.session import create_session
 
         session = create_session(seed=7)
-        session.bot.board = [BoardChampion(champ), BoardChampion(guard)]
+        guard_bc = BoardChampion(guard)
+        session.bot.board = [BoardChampion(champ), guard_bc]
         session.active_player = "player"
         session.phase = "combat"
         session.player.combat = 3
@@ -70,7 +71,8 @@ class TestSessionLevelSniping(unittest.TestCase):
         actions = session.legal_actions()
         champion_ids = {a["championId"] for a in actions if a["type"] == "attack_target"
                         and a.get("target") == "champion"}
-        self.assertEqual(champion_ids, {guard.id}, "only the guard should be a legal target")
+        self.assertEqual(champion_ids, {str(guard_bc.instance_id)},
+                         "only the guard should be a legal target")
         self.assertNotIn(("attack_target", "player"),
                          {(a["type"], a.get("target")) for a in actions})
 
@@ -84,7 +86,7 @@ class TestSessionLevelSniping(unittest.TestCase):
         session.phase = "combat"
         session.player.combat = champ.health + 4
 
-        session.attack_target_action("champion", champ.id)
+        session.attack_target_action("champion", str(session.bot.board[0].instance_id))
 
         self.assertEqual(session.bot.board, [])
         self.assertIn(champ, session.bot.discard)
@@ -102,7 +104,7 @@ class TestSessionLevelSniping(unittest.TestCase):
         session.phase = "combat"
         session.player.combat = champ.health + 4
 
-        session.attack_target_action("champion", champ.id)
+        session.attack_target_action("champion", str(session.bot.board[0].instance_id))
 
         self.assertEqual(session.player.combat, 4)
         self.assertEqual(session.bot.hp, 50)
@@ -118,7 +120,7 @@ class TestSessionLevelSniping(unittest.TestCase):
         session.phase = "combat"
         session.player.combat = champ.health + 4
 
-        session.attack_target_action("champion", champ.id)
+        session.attack_target_action("champion", str(session.bot.board[0].instance_id))
         session.attack_target_action("player")
 
         self.assertEqual(session.bot.hp, 46)
@@ -137,7 +139,7 @@ class TestSessionLevelSniping(unittest.TestCase):
         session.phase = "combat"
         session.player.combat = 2
 
-        session.attack_target_action("champion", champ.id)
+        session.attack_target_action("champion", str(session.bot.board[0].instance_id))
 
         self.assertTrue(session.bot.board)
         self.assertEqual(session.bot.board[0].current_health, champ.health - 2)

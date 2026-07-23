@@ -1,6 +1,7 @@
 """Hero Realms game engine — deck-building card game simulation."""
 
 from __future__ import annotations
+import itertools
 import json
 import random
 from dataclasses import dataclass, field
@@ -25,6 +26,20 @@ class HRCard:
 
 
 def load_hero_cards(path: str) -> list[HRCard]:
+    """Load every card, expanded to the correct number of physical copies.
+
+    The card data used to have exactly one entry per unique card, so a market
+    deck built from it had 54 cards where the base set ships 80 (26 of the 55
+    cards are printed in 2 or 3 copies - Taxation and Profit at 3x each,
+    Man-at-Arms and Wolf Shaman at 2x, and so on). Every simulated game -
+    RL training, benchmarks, MCTS, the web app - drew from a market skewed
+    toward treating every card as equally rare, when the physical game does
+    not: a 3x common should show up roughly 3x as often as a 1x rare.
+
+    Duplicate copies share the same HRCard instance (matching the existing
+    convention for GOLD/SHORTSWORD/DAGGER/RUBY, which are already `[GOLD] *
+    7` etc.), safe because HRCard is never mutated anywhere in the engine.
+    """
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     cards = []
@@ -32,7 +47,9 @@ def load_hero_cards(path: str) -> list[HRCard]:
         c["card_type"] = c.pop("type", "action")
         c.pop("location", None)
         c.pop("subtypes", None)
-        cards.append(HRCard(**c))
+        quantity = c.pop("quantity", 1)
+        card = HRCard(**c)
+        cards.extend([card] * quantity)
     return cards
 
 
@@ -49,12 +66,24 @@ FIRE_GEM = HRCard(id="fire_gem", name="Fire Gem", cost=2, faction="",
                   card_type="item", effects={"gold": 2, "sacrifice_combat": 3})
 
 
+_board_champion_ids = itertools.count()
+
+
 class BoardChampion:
     def __init__(self, card: HRCard):
         self.card = card
         self.current_health = card.health
         self.exhausted = False  # true if expended this turn
         self.guard = card.guard
+        # Some cards are printed in 2-3 copies (see load_hero_cards), so two
+        # champions on the same board can share card.id. web/session.py used
+        # to identify a BoardChampion by card.id alone; with a duplicate on
+        # the board, that lookup always resolved to whichever copy came first
+        # in the list, so an already-exhausted first copy made the second,
+        # genuinely available copy unreachable - "Champion could not be
+        # expended" even with a legal one sitting right there. instance_id
+        # disambiguates copies of the same card from each other.
+        self.instance_id = next(_board_champion_ids)
 
     @property
     def name(self):

@@ -66,6 +66,11 @@ def _copy_champion(champion: BoardChampion) -> BoardChampion:
     clone.current_health = champion.current_health
     clone.exhausted = champion.exhausted
     clone.guard = champion.guard
+    # Preserved, not regenerated: this clone represents the same logical
+    # champion instance across a simulation, and the counter that assigns
+    # instance_id is process-global, so re-deriving it here would both
+    # diverge from the original and burn extra ids needlessly.
+    clone.instance_id = champion.instance_id
     return clone
 
 
@@ -126,6 +131,10 @@ def _champion_view(champion) -> dict[str, Any]:
             "currentHealth": champion.current_health,
             "exhausted": champion.exhausted,
             "alive": champion.alive,
+            # Distinguishes two board champions sharing the same card.id
+            # (a card printed in 2-3 copies can appear twice on one board).
+            # Matches the championId used in legal_actions/expend/attack.
+            "instanceId": str(champion.instance_id),
         }
     )
     return base
@@ -357,14 +366,14 @@ class GameSession:
                     if stun_targets:
                         for target_index, target in enumerate(stun_targets):
                             actions.append({
-                                "type": "expend_champion", "championId": champion.card.id,
+                                "type": "expend_champion", "championId": str(champion.instance_id),
                                 "stunTargetIndex": target_index,
                                 "label": f"{champion.card.name} → {target.name}",
                                 "priority": champion.card.cost + champion.card.health,
                             })
                     else:
                         actions.append({
-                            "type": "expend_champion", "championId": champion.card.id,
+                            "type": "expend_champion", "championId": str(champion.instance_id),
                             "label": champion.card.name,
                             "priority": champion.card.cost + champion.card.health,
                         })
@@ -399,7 +408,7 @@ class GameSession:
                         {
                             "type": "attack_target",
                             "target": "champion",
-                            "championId": champion.card.id,
+                            "championId": str(champion.instance_id),
                             "label": champion.card.name,
                             "priority": 10 - champion.current_health,
                         }
@@ -444,7 +453,7 @@ class GameSession:
         opponent = self._opponent()
         if self.phase != "champion":
             raise ValueError("Champions can only be expended during the champion phase")
-        champion = next((item for item in player.board if item.card.id == champion_id), None)
+        champion = next((item for item in player.board if str(item.instance_id) == champion_id), None)
         if champion is None:
             raise ValueError("Champion not found")
         stun_target = self._stun_target(opponent, stun_target_index) if champion.card.get("stun", False) else None
@@ -494,7 +503,7 @@ class GameSession:
             self._check_winner()
             return self.get_state()
 
-        champion = next((item for item in targets if item.card.id == champion_id), None)
+        champion = next((item for item in targets if str(item.instance_id) == champion_id), None)
         if champion is None:
             raise ValueError("Champion not found or not a legal target")
 

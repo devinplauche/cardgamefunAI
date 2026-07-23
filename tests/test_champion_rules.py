@@ -138,7 +138,7 @@ class TestStunnedChampionsGoToDiscard(unittest.TestCase):
         session.phase = "combat"
         session.bot.combat = GUARD.health
 
-        session.attack_target_action("champion", GUARD.id)
+        session.attack_target_action("champion", str(champion.instance_id))
 
         self.assertEqual(session.player.board, [])
         self.assertIn(GUARD, session.player.discard)
@@ -169,7 +169,7 @@ class TestChampionDamageDoesNotCarryOver(unittest.TestCase):
         session.phase = "combat"
         session.bot.combat = 1
 
-        session.attack_target_action("champion", GUARD.id)
+        session.attack_target_action("champion", str(champion.instance_id))
 
         self.assertEqual(champion.current_health, GUARD.health - 1)
         self.assertTrue(champion.alive)
