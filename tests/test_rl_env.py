@@ -55,7 +55,8 @@ class TestSetupRules(unittest.TestCase):
         env = HeroRealmsEnv(CARDS)
         env.reset(seed=3)
         # Agent's hand is post-auto-play, so assert on total cards accounted for.
-        agent_total = len(env.agent.hand) + len(env.agent.deck) + len(env.agent.discard)
+        agent_total = (len(env.agent.hand) + len(env.agent.deck)
+                       + len(env.agent.discard) + len(env.agent.played_this_turn))
         self.assertEqual(agent_total, 10)
         self.assertEqual(len(env.opponent.hand), 5)
 

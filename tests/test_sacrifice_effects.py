@@ -58,7 +58,8 @@ class TestSelfSacrifice(unittest.TestCase):
         play_card(player, FIRE_GEM_CARD, market, opponent=opponent)
 
         self.assertEqual(player.combat, 0, "combat gained despite an open guard")
-        self.assertIn(FIRE_GEM_CARD, player.discard, "card should not be banished if not sacrificed")
+        self.assertIn(FIRE_GEM_CARD, player.played_this_turn,
+                      "card should remain in play when it is not sacrificed")
         self.assertNotIn(FIRE_GEM_CARD, player.banish)
         self.assertEqual(player.gold, 2, "the non-sacrifice base effect still applies")
 
@@ -70,7 +71,7 @@ class TestSelfSacrifice(unittest.TestCase):
         play_card(player, FIRE_GEM_CARD, market, opponent=None)
 
         self.assertEqual(player.combat, 0)
-        self.assertIn(FIRE_GEM_CARD, player.discard)
+        self.assertIn(FIRE_GEM_CARD, player.played_this_turn)
 
     def test_takes_it_once_economy_is_established_and_no_guard_blocks(self):
         player = _player_with_hand(FIRE_GEM_CARD)

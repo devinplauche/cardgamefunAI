@@ -56,6 +56,7 @@ export interface BotInsight {
   cardId?: string;
   marketIndex?: number;
   championId?: string;
+  stunTargetIndex?: number;
   target?: string;
   score?: number;
   iterations?: number;
@@ -69,6 +70,7 @@ export interface BotInsight {
     cardId?: string;
     marketIndex?: number;
     championId?: string;
+    stunTargetIndex?: number;
     target?: string;
     score?: number;
     visits?: number;

@@ -16,9 +16,12 @@ import unittest
 
 from hero_engine import (
     BoardChampion,
+    HRMarket,
     HRPlayer,
     load_hero_cards,
     remove_stunned_champions,
+    play_card,
+    expend_champion,
 )
 
 CARDS = load_hero_cards("data/hero_realms_cards.json")
@@ -27,6 +30,48 @@ CHAMP = next(c for c in CARDS if c.card_type == "champion" and c.health >= 3)
 
 
 class TestStunnedChampionsGoToDiscard(unittest.TestCase):
+    def test_session_stun_requires_a_guard_target_when_guards_are_present(self):
+        from web.session import create_session
+
+        fire_bomb = next(c for c in CARDS if c.name == "Fire Bomb")
+        non_guard_card = next(c for c in CARDS if c.card_type == "champion" and not c.guard)
+        non_guard = BoardChampion(non_guard_card)
+        guard = BoardChampion(GUARD)
+        session = create_session(seed=7)
+        session.player.hand = [fire_bomb]
+        session.bot.board = [non_guard, guard]
+
+        session.play_card(fire_bomb.id, stun_target_index=0)
+
+        self.assertIn(non_guard, session.bot.board)
+        self.assertNotIn(guard, session.bot.board)
+        self.assertIn(GUARD, session.bot.discard)
+
+    def test_action_stun_destroys_the_target_champion(self):
+        fire_bomb = next(c for c in CARDS if c.name == "Fire Bomb")
+        attacker = HRPlayer("A")
+        defender = HRPlayer("D")
+        defender.board.append(BoardChampion(GUARD))
+        attacker.hand = [fire_bomb]
+
+        play_card(attacker, fire_bomb, HRMarket(CARDS), opponent=defender)
+
+        self.assertEqual(defender.board, [])
+        self.assertIn(GUARD, defender.discard)
+
+    def test_champion_expend_stun_destroys_the_target_champion(self):
+        rake = next(c for c in CARDS if c.name == "Rake, Master Assassin")
+        attacker = HRPlayer("A")
+        defender = HRPlayer("D")
+        attacker_champion = BoardChampion(rake)
+        attacker.board.append(attacker_champion)
+        defender.board.append(BoardChampion(GUARD))
+
+        expend_champion(attacker, attacker_champion, defender)
+
+        self.assertEqual(defender.board, [])
+        self.assertIn(GUARD, defender.discard)
+
     def test_stunned_champion_lands_in_its_owners_discard(self):
         player = HRPlayer("P")
         champion = BoardChampion(GUARD)

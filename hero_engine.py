@@ -66,8 +66,9 @@ class BoardChampion:
 
 
 class HRPlayer:
-    def __init__(self, name: str):
+    def __init__(self, name: str, rng=None):
         self.name = name
+        self._rng = rng if rng is not None else random
         self.hp = 50
         self.gold = 0
         self.combat = 0
@@ -76,17 +77,18 @@ class HRPlayer:
         self.discard: list[HRCard] = []
         self.banish: list[HRCard] = []  # cards removed from game (sacrificed)
         self.board: list[BoardChampion] = []  # champions in play
-        # Non-champion cards played this turn. Per the official rules an ally
-        # ability triggers "as soon as you have another card of that faction in
-        # play", and Actions/Items stay in play until the Discard Phase - so
-        # two Guild actions played in the same turn trigger each other's ally.
-        # Champions are not tracked here; they live on `board`, which has its
-        # own self-exclusion check in has_ally.
+        # Non-champion cards in play this turn. Actions, items, and treasures
+        # do not enter the discard pile until the Discard Phase, so they cannot
+        # be reshuffled and played again during the same turn. Faction cards in
+        # this zone can trigger each other's ally abilities. Champions are not
+        # tracked here; they live on `board`, which has its own self-exclusion
+        # check in has_ally.
         self.played_this_turn: list[HRCard] = []
         # Cards played this turn whose ally ability has not fired yet; allies
         # are retroactive, so these are re-checked whenever a faction card
         # enters play.
         self.pending_ally: list[HRCard] = []
+        self.pending_stun_targets: list[tuple[HRCard, Optional[BoardChampion]]] = []
         self.actions_played: int = 0
         self.cards_bought: int = 0
         self.next_buy_to_hand: bool = False  # Deception ally: next bought card goes to hand
@@ -95,7 +97,7 @@ class HRPlayer:
 
     def setup_starting_deck(self):
         self.deck = [GOLD] * 7 + [SHORTSWORD] + [DAGGER] + [RUBY]
-        random.shuffle(self.deck)
+        self._rng.shuffle(self.deck)
 
     def draw(self, n: int = 1):
         drawn = []
@@ -113,10 +115,15 @@ class HRPlayer:
             return
         self.deck = self.discard[:]
         self.discard.clear()
-        random.shuffle(self.deck)
+        self._rng.shuffle(self.deck)
 
     def hand_size(self):
         return len(self.hand)
+
+    def discard_played_cards(self) -> None:
+        """Move this turn's non-champion cards to discard at the Discard Phase."""
+        self.discard.extend(self.played_this_turn)
+        self.played_this_turn.clear()
 
     def allies(self) -> set[str]:
         factions = set()
@@ -351,11 +358,11 @@ def _force_opponent_discard(opponent: HRPlayer, n: int = 1, forcing_player: Opti
 
 
 class HRMarket:
-    def __init__(self, cards: list[HRCard]):
+    def __init__(self, cards: list[HRCard], rng=None):
         # Fire Gems are always in a separate side pile, not shuffled into market row.
         self.pool = [c for c in cards if c.name.lower() != "fire gem"]
         self.fire_gems_remaining = 16  # base set ships 16 Fire Gem cards
-        random.shuffle(self.pool)
+        (rng if rng is not None else random).shuffle(self.pool)
         self.row: list[Optional[HRCard]] = [None] * 5
         self._fill_row()
 
@@ -424,8 +431,9 @@ class HRGame:
         player.gold = 0
         player.combat = 0
         player.actions_played = 0
-        player.played_this_turn.clear()
+        player.discard_played_cards()
         player.pending_ally.clear()
+        player.pending_stun_targets.clear()
         player.cards_bought = 0
         player.next_buy_to_hand = False
         player.next_buy_to_top = False
@@ -470,14 +478,31 @@ class HRGame:
         opponent.hp -= dmg
 
     def _cleanup(self, player: HRPlayer):
+        player.discard_played_cards()
         for c in player.hand:
             player.discard.append(c)
         player.hand.clear()
         player.draw(5)
 
 
+def _stun_champion(opponent: HRPlayer, target: Optional[BoardChampion] = None) -> bool:
+    """Stun a selected opposing champion, prioritising guards when present."""
+    living = [champion for champion in opponent.board if champion.alive]
+    guards = [champion for champion in living if champion.guard]
+    candidates = guards or living
+    if not candidates:
+        return False
+    target = target or candidates[0]  # Non-interactive engine callers use the first legal target.
+    if target not in candidates:
+        return False
+    target.current_health = 0
+    remove_stunned_champions(opponent)
+    return True
+
+
 def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
-              ally_bonus: bool = False, opponent: HRPlayer = None):
+              ally_bonus: bool = False, opponent: HRPlayer = None,
+              stun_target: Optional[BoardChampion] = None):
     """Play a card from hand, applying all its effects.
 
     Champions: effects are from their {Expend} ability, NOT on-play.
@@ -496,12 +521,11 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
         _resolve_pending_allies(player, opponent)
         return True
 
-    # In play until the Discard Phase, so it can trigger a later card's ally
-    # this turn. Tracked separately from `discard` (where the card also ends
-    # up below) so that reshuffling, sacrifice sources and deck counts are all
-    # unaffected by this.
+    # Non-champions remain in play until the Discard Phase. Keeping every such
+    # card out of `discard` prevents a draw effect from reshuffling and
+    # replaying a card during the same turn.
+    player.played_this_turn.append(card)
     if card.faction:
-        player.played_this_turn.append(card)
         _resolve_pending_allies(player, opponent)
 
     # ---- Base effects (non-champion cards only) ----
@@ -537,9 +561,11 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
     # Applied now if a partner is already in play, otherwise queued: the ally
     # fires retroactively the moment a second card of the faction arrives.
     if ally_bonus:
-        _apply_ally_effects(player, card, opponent)
+        _apply_ally_effects(player, card, opponent, stun_target=stun_target)
     elif _has_ally_payload(card):
         player.pending_ally.append(card)
+        if card.get("stun", False):
+            player.pending_stun_targets.append((card, stun_target))
 
     total_base_draws = draws + actual_draw_up_to + (card.get("ally_draw", 0) if ally_bonus else 0)
 
@@ -589,13 +615,8 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
                 player.banish.append(source.pop(idx))
 
     # ---- Stun (primary for non-ally cards like Fire Bomb; ally-only if ally_faction set) ----
-    if card.get("stun", False) and opponent:
-        ally_faction = card.get("ally_faction", "")
-        if not ally_faction or ally_bonus:
-            for bc in opponent.board:
-                if bc.alive:
-                    bc.exhausted = True
-                    break
+    if card.get("stun", False) and opponent and not card.get("ally_faction", ""):
+        _stun_champion(opponent, stun_target)
 
     # (prepare / to_hand / top_of_deck / ally_opponent_discard are applied by
     # _apply_ally_effects, so they fire retroactively too.)
@@ -614,16 +635,17 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
                 player.deck.insert(0, player.discard.pop(i))
                 break
 
-    # ---- Non-champion cards go to banish (if sacrificed) or discard ----
+    # ---- A self-sacrificed card leaves play immediately; every other
+    # non-champion remains in played_this_turn until the Discard Phase. ----
     if sacrificed:
+        player.played_this_turn.remove(card)
         player.banish.append(card)
-    else:
-        player.discard.append(card)
 
     return True
 
 
-def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = None) -> bool:
+def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = None,
+                    stun_target: Optional[BoardChampion] = None) -> bool:
     """Use a champion's expend ability. Applies the card's effects again."""
     if bc.exhausted or not bc.alive:
         return False
@@ -758,7 +780,7 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
     if card.get("stun", False) and opponent:
         for c in opponent.board:
             if c.alive:
-                c.exhausted = True
+                _stun_champion(opponent, stun_target)
                 break
 
     # ---- Opponent discard on expend (Torgen Rocksplitter) ----
@@ -815,7 +837,7 @@ def buy_card(player: HRPlayer, market: HRMarket, index: int) -> bool:
         if bought is None:
             return False
         player.gold -= FIRE_GEM.cost
-    else:
+    elif 0 <= index < 5:
         card = market.row[index]
         if card is None:
             return False
@@ -823,6 +845,8 @@ def buy_card(player: HRPlayer, market: HRMarket, index: int) -> bool:
             return False
         player.gold -= card.cost
         bought = market.buy(index)
+    else:
+        return False
 
     if bought:
         if player.next_buy_to_hand:
@@ -844,7 +868,7 @@ def buy_card(player: HRPlayer, market: HRMarket, index: int) -> bool:
 
 
 _ALLY_EFFECT_KEYS = ("ally_combat", "ally_gold", "ally_health", "ally_draw",
-                     "ally_opponent_discard", "prepare", "to_hand", "top_of_deck")
+                     "ally_opponent_discard", "prepare", "to_hand", "top_of_deck", "stun")
 
 
 def _has_ally_payload(card: HRCard) -> bool:
@@ -854,7 +878,8 @@ def _has_ally_payload(card: HRCard) -> bool:
     return any(card.effects.get(k) for k in _ALLY_EFFECT_KEYS)
 
 
-def _apply_ally_effects(player: HRPlayer, card: HRCard, opponent: Optional[HRPlayer] = None):
+def _apply_ally_effects(player: HRPlayer, card: HRCard, opponent: Optional[HRPlayer] = None,
+                        stun_target: Optional[BoardChampion] = None):
     """Apply a card's ally-gated effects. Split out of play_card so it can also
     fire retroactively - see _resolve_pending_allies."""
     player.combat += card.get("ally_combat", 0)
@@ -882,6 +907,8 @@ def _apply_ally_effects(player: HRPlayer, card: HRCard, opponent: Optional[HRPla
     ally_od = card.get("ally_opponent_discard", 0)
     if ally_od > 0 and opponent:
         _force_opponent_discard(opponent, ally_od, player)
+    if card.get("stun", False) and opponent:
+        _stun_champion(opponent, stun_target)
 
 
 def _resolve_pending_allies(player: HRPlayer, opponent: Optional[HRPlayer] = None):
@@ -899,7 +926,12 @@ def _resolve_pending_allies(player: HRPlayer, opponent: Optional[HRPlayer] = Non
     still_pending = []
     for pending in player.pending_ally:
         if has_ally(pending, player):
-            _apply_ally_effects(player, pending, opponent)
+            stun_target = next((target for card, target in player.pending_stun_targets
+                                if card is pending), None)
+            _apply_ally_effects(player, pending, opponent, stun_target=stun_target)
+            player.pending_stun_targets = [
+                (card, target) for card, target in player.pending_stun_targets if card is not pending
+            ]
         else:
             still_pending.append(pending)
     player.pending_ally = still_pending

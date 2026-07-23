@@ -98,9 +98,9 @@ class Handler(BaseHTTPRequestHandler):
             route = parts[3]
             try:
                 if route == "play-card":
-                    payload = session.play_card(body["cardId"])
+                    payload = session.play_card(body["cardId"], body.get("stunTargetIndex"))
                 elif route == "expend-champion":
-                    payload = session.expend_champion_action(body["championId"])
+                    payload = session.expend_champion_action(body["championId"], body.get("stunTargetIndex"))
                 elif route == "buy-card":
                     payload = session.buy_card_action(int(body["marketIndex"]))
                 elif route == "attack":

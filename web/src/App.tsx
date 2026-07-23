@@ -338,6 +338,7 @@ function BoardColumn({
   onPlay,
   onExpend,
   onAttack,
+  stunTargets,
   hiddenHand = false,
   role,
 }: {
@@ -345,14 +346,29 @@ function BoardColumn({
   player: PlayerView;
   phase: Phase;
   activePlayer: 'player' | 'bot';
-  onPlay?: (cardId: string) => Promise<void>;
-  onExpend?: (championId: string) => Promise<void>;
+  onPlay?: (cardId: string, stunTargetIndex?: number) => Promise<void>;
+  onExpend?: (championId: string, stunTargetIndex?: number) => Promise<void>;
   onAttack?: (target: 'player' | 'champion', championId?: string) => Promise<void>;
+  stunTargets: ChampionView[];
   hiddenHand?: boolean;
   role: 'player' | 'bot';
 }) {
   const isHumanTurn = activePlayer === 'player';
   const canInteract = isHumanTurn;
+  const chooseStunTarget = (card: CardView): number | null | undefined => {
+    if (!card.effects.stun || stunTargets.length === 0) return undefined;
+    const guards = stunTargets.filter((champion) => champion.guard > 0);
+    const candidates = guards.length > 0 ? guards : stunTargets;
+    const options = candidates.map((champion, index) => `${index + 1}: ${champion.name}`).join('\n');
+    const answer = window.prompt(`Choose a champion to stun${guards.length ? ' (a guard must be chosen)' : ''}:\n${options}`, '1');
+    if (answer === null) return null;
+    const choice = Number.parseInt(answer, 10) - 1;
+    if (!Number.isInteger(choice) || choice < 0 || choice >= candidates.length) {
+      window.alert('Choose one of the listed champions.');
+      return null;
+    }
+    return choice;
+  };
 
   return (
     <Panel title={title} subtitle={hiddenHand ? 'Hand hidden, board visible.' : 'Your cards and board.'}>
@@ -383,7 +399,8 @@ function BoardColumn({
               }
               onAction={() => {
                 if (role === 'player') {
-                  if (onExpend) void onExpend(champion.id);
+                  const targetIndex = chooseStunTarget(champion);
+                  if (targetIndex !== null && onExpend) void onExpend(champion.id, targetIndex);
                 } else if (onAttack) {
                   void onAttack('champion', champion.id);
                 }
@@ -414,7 +431,8 @@ function BoardColumn({
                 actionLabel={phase === 'play' && canInteract && onPlay ? 'Play' : 'Locked'}
                 actionDisabled={phase !== 'play' || !canInteract || !onPlay}
                 onAction={() => {
-                  if (onPlay) void onPlay(card.id);
+                  const targetIndex = chooseStunTarget(card);
+                  if (targetIndex !== null && onPlay) void onPlay(card.id, targetIndex);
                 }}
               />
             ))
@@ -484,14 +502,14 @@ function App() {
     return next;
   }
 
-  async function handlePlay(cardId: string) {
+  async function handlePlay(cardId: string, stunTargetIndex?: number) {
     if (!session || isReplayMode) return;
-    await refreshFrom(playCard(session.sessionId, cardId));
+    await refreshFrom(playCard(session.sessionId, cardId, stunTargetIndex));
   }
 
-  async function handleExpend(championId: string) {
+  async function handleExpend(championId: string, stunTargetIndex?: number) {
     if (!session || isReplayMode) return;
-    await refreshFrom(expendChampion(session.sessionId, championId));
+    await refreshFrom(expendChampion(session.sessionId, championId, stunTargetIndex));
   }
 
   async function handleBuy(index: number) {
@@ -600,6 +618,7 @@ function App() {
                 onPlay={handlePlay}
                 onExpend={handleExpend}
                 onAttack={handleAttack}
+                stunTargets={displayState.bot.board}
                 role="player"
               />
             ) : null}
@@ -637,6 +656,7 @@ function App() {
                 activePlayer={activePlayer}
                 hiddenHand
                 onAttack={handleAttack}
+                stunTargets={[]}
                 role="bot"
               />
             ) : null}

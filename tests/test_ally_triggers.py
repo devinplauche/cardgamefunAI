@@ -11,6 +11,7 @@ nothing.
 import unittest
 
 from hero_engine import (
+    BoardChampion,
     HRMarket,
     HRPlayer,
     has_ally,
@@ -70,6 +71,21 @@ class TestActionToActionAlly(unittest.TestCase):
 
 
 class TestAllyZoneLifetime(unittest.TestCase):
+    def test_played_card_cannot_be_reshuffled_and_replayed_this_turn(self):
+        """Actions stay in play until cleanup, even when a later draw empties the deck."""
+        profit = _card("Profit")
+        death_threat = _card("Death Threat")
+        player = HRPlayer("P")
+        player.hand = [profit, death_threat]
+        market = _fresh_market()
+
+        play_card(player, profit, market, ally_bonus=has_ally(profit, player))
+        play_card(player, death_threat, market, ally_bonus=has_ally(death_threat, player))
+
+        self.assertNotIn(profit, player.hand)
+        self.assertIn(profit, player.played_this_turn)
+        self.assertNotIn(profit, player.discard)
+
     def test_played_cards_do_not_carry_over_to_the_next_turn(self):
         """Actions leave play at the Discard Phase, so they must not still be
         triggering allies on a later turn."""
@@ -126,6 +142,24 @@ class TestClonePreservesAllyZone(unittest.TestCase):
 
 
 class TestRetroactiveAlly(unittest.TestCase):
+    def test_retroactive_ally_stun_uses_the_selected_target(self):
+        death_threat = _card("Death Threat")
+        profit = _card("Profit")
+        guard = next(c for c in CARDS if c.card_type == "champion" and c.guard)
+        player = HRPlayer("P")
+        opponent = HRPlayer("O")
+        target = BoardChampion(guard)
+        opponent.board.append(target)
+        player.hand = [death_threat, profit]
+        market = _fresh_market()
+
+        play_card(player, death_threat, market, ally_bonus=has_ally(death_threat, player),
+                  opponent=opponent, stun_target=target)
+        play_card(player, profit, market, ally_bonus=has_ally(profit, player), opponent=opponent)
+
+        self.assertEqual(opponent.board, [])
+        self.assertIn(guard, opponent.discard)
+
     """Per the rules: "The order in which you play your cards does not matter.
     As soon as you have two or more cards of the same faction in play, you may
     trigger all relevant Ally Abilities."

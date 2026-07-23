@@ -38,3 +38,18 @@ def test_session_history_and_log_capture_bot_candidates():
     assert state["history"]
     assert state["history"][-1]["state"]["botInsight"] is not None
     assert any((entry.get("botInsight") or {}).get("candidates") for entry in state["log"])
+
+
+def test_invalid_buy_index_does_not_spend_gold():
+    session = create_session(seed=7)
+    session.phase = "buy"
+    session.player.gold = 4
+
+    try:
+        session.buy_card_action(-1)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("negative market index should be rejected")
+
+    assert session.player.gold == 4

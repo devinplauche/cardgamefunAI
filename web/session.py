@@ -69,9 +69,10 @@ def _copy_champion(champion: BoardChampion) -> BoardChampion:
     return clone
 
 
-def _copy_player(player: HRPlayer) -> HRPlayer:
+def _copy_player(player: HRPlayer, rng: random.Random) -> HRPlayer:
     clone = HRPlayer.__new__(HRPlayer)
     clone.name = player.name
+    clone._rng = rng
     clone.hp = player.hp
     clone.gold = player.gold
     clone.combat = player.combat
@@ -85,6 +86,7 @@ def _copy_player(player: HRPlayer) -> HRPlayer:
     clone.board = [_copy_champion(champion) for champion in player.board]
     clone.played_this_turn = player.played_this_turn[:]
     clone.pending_ally = player.pending_ally[:]
+    clone.pending_stun_targets = player.pending_stun_targets[:]
     clone.actions_played = player.actions_played
     clone.cards_bought = player.cards_bought
     clone.next_buy_to_hand = player.next_buy_to_hand
@@ -93,7 +95,7 @@ def _copy_player(player: HRPlayer) -> HRPlayer:
     return clone
 
 
-def _copy_market(market: HRMarket) -> HRMarket:
+def _copy_market(market: HRMarket, rng: random.Random) -> HRMarket:
     # __new__ rather than __init__: the constructor shuffles the pool.
     clone = HRMarket.__new__(HRMarket)
     clone.pool = market.pool[:]
@@ -171,17 +173,17 @@ class GameSession:
     history: list[dict[str, Any]] = field(default_factory=list)
     last_bot_insight: dict[str, Any] | None = field(default=None)
     record_history: bool = field(default=True)
+    rng: random.Random = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if self.seed is not None:
-            random.seed(self.seed)
-        self.player = HRPlayer("Player")
-        self.bot = HRPlayer("Bot")
+        self.rng = random.Random(self.seed)
+        self.player = HRPlayer("Player", self.rng)
+        self.bot = HRPlayer("Bot", self.rng)
         self.player.setup_starting_deck()
         self.bot.setup_starting_deck()
         self.player.draw(3)
         self.bot.draw(5)
-        self.market = HRMarket(self.cards)
+        self.market = HRMarket(self.cards, self.rng)
         self._start_turn(self.player)
         self.record_event("system", "Game created")
 
@@ -206,9 +208,11 @@ class GameSession:
         clone.algorithm = self.algorithm
         clone.budget_ms = self.budget_ms
         clone.cards = self.cards  # read-only card definitions, shared
-        clone.player = _copy_player(self.player)
-        clone.bot = _copy_player(self.bot)
-        clone.market = _copy_market(self.market)
+        clone.rng = random.Random()
+        clone.rng.setstate(self.rng.getstate())
+        clone.player = _copy_player(self.player, clone.rng)
+        clone.bot = _copy_player(self.bot, clone.rng)
+        clone.market = _copy_market(self.market, clone.rng)
         clone.turn_number = self.turn_number
         clone.active_player = self.active_player
         clone.phase = self.phase
@@ -223,8 +227,9 @@ class GameSession:
         player.gold = 0
         player.combat = 0
         player.actions_played = 0
-        player.played_this_turn.clear()
+        player.discard_played_cards()
         player.pending_ally.clear()
+        player.pending_stun_targets.clear()
         player.cards_bought = 0
         player.next_buy_to_hand = False
         player.next_buy_to_top = False
@@ -239,6 +244,21 @@ class GameSession:
 
     def _opponent(self) -> HRPlayer:
         return self.bot if self.active_player == "player" else self.player
+
+    def _stun_targets(self, opponent: HRPlayer) -> list[BoardChampion]:
+        living = [champion for champion in opponent.board if champion.alive]
+        guards = [champion for champion in living if champion.guard]
+        return guards or living
+
+    def _stun_target(self, opponent: HRPlayer, target_index: int | None) -> BoardChampion | None:
+        targets = self._stun_targets(opponent)
+        if not targets:
+            return None
+        if target_index is None:
+            raise ValueError("Choose a champion to stun; guards must be stunned first")
+        if not isinstance(target_index, int) or not 0 <= target_index < len(targets):
+            raise ValueError("Invalid stun target")
+        return targets[target_index]
 
     def _check_winner(self) -> None:
         if self.player.hp <= 0 and self.bot.hp <= 0:
@@ -309,25 +329,39 @@ class GameSession:
 
         if self.phase == "play":
             for card in player.hand:
-                actions.append(
-                    {
-                        "type": "play_card",
-                        "cardId": card.id,
-                        "label": card.name,
-                        "priority": _play_priority(card),
-                    }
-                )
+                needs_stun_target = card.get("stun", False)
+                stun_targets = self._stun_targets(opponent) if needs_stun_target else []
+                if stun_targets:
+                    for target_index, target in enumerate(stun_targets):
+                        actions.append({
+                            "type": "play_card", "cardId": card.id,
+                            "stunTargetIndex": target_index,
+                            "label": f"{card.name} → {target.name}",
+                            "priority": _play_priority(card),
+                        })
+                else:
+                    actions.append({
+                        "type": "play_card", "cardId": card.id,
+                        "label": card.name, "priority": _play_priority(card),
+                    })
         elif self.phase == "champion":
             for champion in player.board:
                 if champion.alive and not champion.exhausted:
-                    actions.append(
-                        {
-                            "type": "expend_champion",
-                            "championId": champion.card.id,
+                    stun_targets = self._stun_targets(opponent) if champion.card.get("stun", False) else []
+                    if stun_targets:
+                        for target_index, target in enumerate(stun_targets):
+                            actions.append({
+                                "type": "expend_champion", "championId": champion.card.id,
+                                "stunTargetIndex": target_index,
+                                "label": f"{champion.card.name} → {target.name}",
+                                "priority": champion.card.cost + champion.card.health,
+                            })
+                    else:
+                        actions.append({
+                            "type": "expend_champion", "championId": champion.card.id,
                             "label": champion.card.name,
                             "priority": champion.card.cost + champion.card.health,
-                        }
-                    )
+                        })
         elif self.phase == "buy":
             for idx, card in enumerate(self.market.row_cards()):
                 if card and card.cost <= player.gold:
@@ -377,7 +411,7 @@ class GameSession:
         actions.append({"type": "advance_phase", "label": "Next Phase", "priority": -10})
         return sorted(actions, key=lambda item: item.get("priority", 0), reverse=True)
 
-    def play_card(self, card_id: str) -> dict[str, Any]:
+    def play_card(self, card_id: str, stun_target_index: int | None = None) -> dict[str, Any]:
         player = self._current()
         opponent = self._opponent()
         if self.phase != "play":
@@ -386,12 +420,17 @@ class GameSession:
         if card is None:
             raise ValueError("Card not found in hand")
 
-        play_card(player, card, self.market, ally_bonus=has_ally(card, player), opponent=opponent)
+        ally_bonus = has_ally(card, player)
+        needs_stun_target = card.get("stun", False)
+        stun_target = self._stun_target(opponent, stun_target_index) if needs_stun_target else None
+        play_card(player, card, self.market, ally_bonus=ally_bonus, opponent=opponent,
+                  stun_target=stun_target)
         self.record_event("play", f"Played {card.name}")
         self._check_winner()
         return self.get_state()
 
-    def expend_champion_action(self, champion_id: str) -> dict[str, Any]:
+    def expend_champion_action(self, champion_id: str,
+                                stun_target_index: int | None = None) -> dict[str, Any]:
         player = self._current()
         opponent = self._opponent()
         if self.phase != "champion":
@@ -399,7 +438,8 @@ class GameSession:
         champion = next((item for item in player.board if item.card.id == champion_id), None)
         if champion is None:
             raise ValueError("Champion not found")
-        if not expend_champion(player, champion, opponent):
+        stun_target = self._stun_target(opponent, stun_target_index) if champion.card.get("stun", False) else None
+        if not expend_champion(player, champion, opponent, stun_target=stun_target):
             raise ValueError("Champion could not be expended")
 
         self.record_event("expend", f"Expended {champion.card.name}")
@@ -410,6 +450,8 @@ class GameSession:
         player = self._current()
         if self.phase != "buy":
             raise ValueError("Cards can only be bought during the buy phase")
+        if not isinstance(market_index, int) or not 0 <= market_index <= 5:
+            raise ValueError("Invalid market index")
         label = "Fire Gem"
         if market_index != 5:
             current_card = self.market.row_cards()[market_index]
@@ -488,6 +530,7 @@ class GameSession:
             return self.get_state()
 
         current = self._current()
+        current.discard_played_cards()
         for card in list(current.hand):
             current.discard.append(card)
         current.hand.clear()

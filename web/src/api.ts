@@ -34,17 +34,17 @@ export async function loadSession(sessionId: string): Promise<GameState> {
   return requestJson<GameState>(`/api/sessions/${sessionId}`);
 }
 
-export async function playCard(sessionId: string, cardId: string): Promise<GameState> {
+export async function playCard(sessionId: string, cardId: string, stunTargetIndex?: number): Promise<GameState> {
   return requestJson<GameState>(`/api/sessions/${sessionId}/play-card`, {
     method: 'POST',
-    body: JSON.stringify({ cardId }),
+    body: JSON.stringify({ cardId, stunTargetIndex }),
   });
 }
 
-export async function expendChampion(sessionId: string, championId: string): Promise<GameState> {
+export async function expendChampion(sessionId: string, championId: string, stunTargetIndex?: number): Promise<GameState> {
   return requestJson<GameState>(`/api/sessions/${sessionId}/expend-champion`, {
     method: 'POST',
-    body: JSON.stringify({ championId }),
+    body: JSON.stringify({ championId, stunTargetIndex }),
   });
 }
 
@@ -82,4 +82,3 @@ export async function runBotTurn(sessionId: string, algorithm: string, budgetMs:
     body: JSON.stringify({ algorithm, budgetMs }),
   });
 }
-

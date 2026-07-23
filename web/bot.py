@@ -524,9 +524,9 @@ def legal_actions(session) -> list[dict[str, Any]]:
 def apply_action(session, action: dict[str, Any]) -> None:
     action_type = action["type"]
     if action_type == "play_card":
-        session.play_card(action["cardId"])
+        session.play_card(action["cardId"], action.get("stunTargetIndex"))
     elif action_type == "expend_champion":
-        session.expend_champion_action(action["championId"])
+        session.expend_champion_action(action["championId"], action.get("stunTargetIndex"))
     elif action_type == "buy_card":
         session.buy_card_action(int(action["marketIndex"]))
     elif action_type == "attack_target":
@@ -548,6 +548,7 @@ def _action_summary(action: dict[str, Any]) -> dict[str, Any]:
         "cardId": action.get("cardId"),
         "marketIndex": action.get("marketIndex"),
         "championId": action.get("championId"),
+        "stunTargetIndex": action.get("stunTargetIndex"),
         "target": action.get("target"),
     }
     for key in ("score", "visits", "averageScore", "priority"):
@@ -626,6 +627,7 @@ def _action_key(action: dict[str, Any] | None) -> tuple:
         action.get("cardId"),
         action.get("marketIndex"),
         action.get("championId"),
+        action.get("stunTargetIndex"),
         action.get("target"),
     )
 
