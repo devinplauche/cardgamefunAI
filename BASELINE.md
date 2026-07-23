@@ -226,6 +226,51 @@ is not a controlled A/B and the drop cannot be attributed to this change
 specifically. Needs a dedicated sweep (holding buy_policy/eval fixed, isolating
 just this change) before drawing a conclusion either way.
 
+## Ally abilities never triggered off actions (fixed)
+
+Per the official rules an ally ability triggers "as soon as you have another
+card of that faction in play", and Actions/Items stay in play until the
+Discard Phase. `has_ally` only checked `player.board`, which holds champions
+only. **21 of the 36 ally cards are actions**, so none of them could ever
+trigger another: playing Profit then Intimidation (both Guild) in one turn
+did nothing. Faction-stacking with actions - a core strategy - was
+non-functional in every game this engine has simulated, RL training included.
+
+Measured impact over 60 games, counting every ally check:
+
+```
+triggered under the old board-only rule:   102 / 1023  (10.0%)
+triggered under the correct rule:          201 / 1023  (19.6%)
+```
+
+**Half of all ally bonuses in the game were being silently lost.** Fixed via
+`HRPlayer.played_this_turn`, cleared at every per-turn reset, checked by
+`has_ally` alongside the board. Covered by `tests/test_ally_triggers.py`.
+
+## The holistic buy valuation makes the bot *worse* (default reverted)
+
+Three matched-seed A/Bs, and the gap widens as the scorer gets more
+sophisticated:
+
+| run | static | situational (`_holistic_card_score`) |
+|---|---|---|
+| pre-engine-fixes | 20.0% | 18.8% |
+| post-engine-fixes | 20.6% | 18.1% |
+| current HEAD | **22.5%** | 15.8% |
+
+`BUY_POLICY` now defaults to `"static"`.
+
+This is the known MCTS result that a stronger rollout policy does not imply a
+stronger search: a more deterministic, greedier default policy narrows the
+distribution of simulated outcomes and biases the value estimates, and that
+costs more than the better play buys. Worth remembering before adding
+"smarter" logic to a rollout again.
+
+`_holistic_card_score` is not wasted - it decomposes into named, explainable
+terms (opponent-HP urgency, ally certainty, thinning value, sacrifice bonus),
+which is exactly what a coach needs to justify a recommendation. It belongs in
+the explanation layer, not in the rollout.
+
 ## Known structural limits
 
 These cap what any amount of training can achieve here:

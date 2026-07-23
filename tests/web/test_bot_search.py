@@ -522,6 +522,16 @@ class TestHolisticBuyScoring(unittest.TestCase):
         session.market.fire_gems_remaining = 0
         return session
 
+    def setUp(self):
+        # These tests exercise _holistic_card_score, including the two that
+        # reach it through _heuristic_rollout_action. BUY_POLICY defaults to
+        # "static" (see web/bot.py for the A/B evidence), which bypasses the
+        # scorer entirely, so pin the policy under test here.
+        import web.bot as bot_module
+        self._prev_policy = bot_module.BUY_POLICY
+        bot_module.BUY_POLICY = "situational"
+        self.addCleanup(setattr, bot_module, "BUY_POLICY", self._prev_policy)
+
     def test_combat_weight_rises_as_opponent_health_drops(self):
         from web.bot import _holistic_card_score
 

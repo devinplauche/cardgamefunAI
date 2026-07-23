@@ -407,10 +407,26 @@ EVAL_MODE = "search"
 # greedily; see the note in choose_bot_action.
 SEARCHED_PHASES = ("buy", "combat")
 
-# "situational" uses _holistic_card_score; "static" is the original policy
-# (highest legal_actions priority: cost + combat*2 + gold*2 + draw*2, fixed
-# regardless of game state). Kept switchable to A/B them under matched seeds.
-BUY_POLICY = "situational"
+# "static" is the original policy (highest legal_actions priority:
+# cost + combat*2 + gold*2 + draw*2, fixed regardless of game state);
+# "situational" uses _holistic_card_score.
+#
+# Default is "static" because three matched-seed A/Bs all favour it, and the
+# gap widened as _holistic_card_score got more sophisticated:
+#
+#   pre-engine-fixes    static 20.0%  situational 18.8%
+#   post-engine-fixes   static 20.6%  situational 18.1%
+#   current            static 22.5%  situational 15.8%
+#
+# This is the known MCTS result that a *stronger* rollout policy does not
+# imply a stronger search: a more deterministic, more greedy default policy
+# narrows the distribution of simulated outcomes and biases the value
+# estimates, and that costs more than the better play buys. _holistic_card_score
+# is not wasted - it decomposes into named, explainable terms (opponent-HP
+# urgency, ally certainty, thinning value), which is what a coach needs to
+# justify a recommendation. It belongs in the explanation layer, not in the
+# rollout.
+BUY_POLICY = "static"
 
 
 def evaluate_state(session) -> float:
