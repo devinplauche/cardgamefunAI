@@ -115,13 +115,17 @@ def main():
                     help="seat-turns simulated per rollout (default: web.bot.ROLLOUT_TURNS)")
     ap.add_argument("--profiles", nargs="*", default=list(PROFILE_WEIGHTS),
                     choices=list(PROFILE_WEIGHTS))
+    ap.add_argument("--buy-policy", choices=["situational", "static"], default="situational",
+                    help="situational: gold/combat priced against opponent HP and gold density; "
+                         "static: original fixed-weight priority order")
     args = ap.parse_args()
 
     import web.bot as bot_module
     bot_module.EVAL_MODE = args.eval
+    bot_module.BUY_POLICY = args.buy_policy
     if args.rollout_turns is not None:
         bot_module.ROLLOUT_TURNS = args.rollout_turns
-    print(f"eval={args.eval} rollout_turns={bot_module.ROLLOUT_TURNS}")
+    print(f"eval={args.eval} rollout_turns={bot_module.ROLLOUT_TURNS} buy_policy={args.buy_policy}")
 
     print(f"{args.games} seeded games per profile, MCTS budget {args.budget}ms")
     print("bot seat = second player (draws 5); see module docstring on comparability\n")

@@ -154,6 +154,49 @@ def _find_best_idx(cards: list) -> int:
     return best_i
 
 
+def _worth_sacrificing(card: HRCard) -> bool:
+    """Whether a hand/discard card is worth an optional sacrifice.
+
+    Every printed sacrifice effect in this card set reads "you may sacrifice"
+    (or uses the {Sacrifice}: keyword, which means the same thing) - it is
+    never mandatory. The engine used to apply these unconditionally, which
+    meant a lean, thinned deck (exactly what a sacrifice-focused strategy
+    builds toward) had no bad cards left to decline sacrificing, and was
+    forced to burn a genuinely useful card instead.
+
+    Reuses _card_score's own scale: the four starting cards score strongly
+    negative (-50 to -100) and every real market card scores positive
+    (cost*10 alone is already >=10 for any purchased card), so this cleanly
+    separates "starting junk" from "anything actually worth keeping."
+    """
+    return _card_score(card) < 0
+
+
+def _should_self_sacrifice(player: HRPlayer, opponent: Optional[HRPlayer] = None,
+                           requires_open_combat: bool = False) -> bool:
+    """Whether to take an optional self-sacrifice (Fire Gem's "{Sacrifice}:
+    gain 3 combat" and similar): burn the just-played card itself for a
+    one-time bonus, trading away its own future recurring value.
+
+    Declines when the bonus is combat and a guard would absorb it for
+    nothing (the same reasoning the or_choice combat branch below already
+    uses), and otherwise takes it once the player already owns a couple of
+    non-starting economy cards: keeping the first copies of a gold source is
+    usually worth more than one early burst of combat, but by the time a
+    further copy would arrive the marginal card is worth less than a
+    guaranteed bonus now.
+    """
+    if requires_open_combat and opponent:
+        guards = [bc for bc in opponent.board if bc.guard and bc.alive]
+        if guards:
+            return False
+    owned_economy = sum(
+        1 for c in player.deck + player.hand + player.discard
+        if c.get("gold", 0) > 0 and c.id != "gold"
+    )
+    return owned_economy >= 2
+
+
 def _discard_from_hand(player: HRPlayer, n: int):
     """Discard n lowest-value cards from hand (self-discard: keep best)."""
     n = min(n, len(player.hand))
@@ -366,13 +409,16 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
         _discard_from_hand(player, total_base_draws)
 
     # ---- Self-sacrifice (sacrifice THIS card for bonus effects) ----
+    # Optional per the printed text ("{Sacrifice}:" / "you may sacrifice") -
+    # see _should_self_sacrifice's docstring for why this can no longer be
+    # unconditional.
     sacrificed = False
     sac_combat = card.get("sacrifice_combat", 0)
-    if sac_combat > 0:
+    if sac_combat > 0 and _should_self_sacrifice(player, opponent, requires_open_combat=True):
         player.combat += sac_combat
         sacrificed = True
     sac_od = card.get("sacrifice_opponent_discard", 0)
-    if sac_od > 0 and opponent:
+    if sac_od > 0 and opponent and _should_self_sacrifice(player, opponent):
         _force_opponent_discard(opponent, sac_od)
         sacrificed = True
 
@@ -382,6 +428,9 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
         _force_opponent_discard(opponent, od)
 
     # ---- Generic sacrifice from hand/discard (Dark Reward, Death Touch, etc.) ----
+    # Optional ("you may sacrifice a card in your hand or discard pile") -
+    # only take it if the worst available card is actually junk; see
+    # _worth_sacrificing.
     if card.effects.get("sacrifice_card", False):
         source = None
         if player.hand:
@@ -390,7 +439,8 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
             source = player.discard
         if source:
             idx = _find_worst_idx(source)
-            player.banish.append(source.pop(idx))
+            if _worth_sacrificing(source[idx]):
+                player.banish.append(source.pop(idx))
 
     # ---- Stun (primary for non-ally cards like Fire Bomb; ally-only if ally_faction set) ----
     if card.get("stun", False) and opponent:
@@ -526,6 +576,9 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
         _discard_from_hand(player, draws)
 
     # ---- Sacrifice a card from hand/discard for bonus combat (Krythos, Lys) ----
+    # "You may sacrifice a card... If you do, gain an additional combat" - the
+    # bonus is conditional on actually sacrificing, so both are skipped
+    # together once the worst available card isn't junk (_worth_sacrificing).
     sac_for_combat = card.get("sacrifice_for_combat", 0)
     if sac_for_combat > 0:
         source = None
@@ -535,25 +588,27 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
             source = player.discard
         if source:
             idx = _find_worst_idx(source)
-            player.banish.append(source.pop(idx))
-            player.combat += sac_for_combat
+            if _worth_sacrificing(source[idx]):
+                player.banish.append(source.pop(idx))
+                player.combat += sac_for_combat
 
     # ---- Sacrifice up to X cards from hand/discard (Tyrannor) ----
+    # "You may sacrifice up to two cards" - stops as soon as nothing left
+    # qualifies as junk, rather than always forcing all X.
     sacrifice_up_to = card.get("sacrifice_up_to", 0)
     if sacrifice_up_to > 0:
-        available = list(player.hand) + list(player.discard)
-        to_sacrifice = min(sacrifice_up_to, len(available))
-        if to_sacrifice > 0:
-            # AI sacrifices the worst cards (prefers hand over discard, worst first)
-            for _ in range(to_sacrifice):
-                source = None
-                if player.hand:
-                    source = player.hand
-                elif player.discard:
-                    source = player.discard
-                if source:
-                    idx = _find_worst_idx(source)
-                    player.banish.append(source.pop(idx))
+        for _ in range(sacrifice_up_to):
+            source = None
+            if player.hand:
+                source = player.hand
+            elif player.discard:
+                source = player.discard
+            if not source:
+                break
+            idx = _find_worst_idx(source)
+            if not _worth_sacrificing(source[idx]):
+                break
+            player.banish.append(source.pop(idx))
 
     # ---- Stun on expend (Rake, Master Assassin) ----
     if card.get("stun", False) and opponent:

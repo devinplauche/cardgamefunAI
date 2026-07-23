@@ -461,3 +461,240 @@ class TestMinimaxAlternation(unittest.TestCase):
                     self.assertEqual(session.active_player, "bot")
                     break
             apply_action(session, _heuristic_rollout_action(session))
+
+
+class TestHolisticBuyScoring(unittest.TestCase):
+    """The rollout's default buy policy prices the whole effect surface, not
+    just gold vs combat: ally certainty, healing urgency, and mandatory
+    sacrifice/thinning effects all factor in, scaled by opponent health, the
+    buyer's own health, and the buyer's own gold density."""
+
+    @staticmethod
+    def _cards():
+        from hero_engine import HRCard
+        # gold=3 rather than 2: at gold_weight 3.0 vs combat_weight 2.0, a
+        # 2-gold/3-combat pair ties exactly (2*3.0 == 3*2.0) by coincidence of
+        # these specific weights, which made an early version of this test
+        # pass on a tiebreak rather than a real preference.
+        gold_card = HRCard(id="test_gold", name="Test Gold", cost=1, faction="",
+                           card_type="action", effects={"gold": 3})
+        combat_card = HRCard(id="test_combat", name="Test Combat", cost=1, faction="",
+                             card_type="action", effects={"combat": 3})
+        return gold_card, combat_card
+
+    @staticmethod
+    def _no_fire_gem(session):
+        # Isolate the gold-vs-combat comparison from a third live option.
+        session.market.fire_gems_remaining = 0
+        return session
+
+    def test_combat_weight_rises_as_opponent_health_drops(self):
+        from web.bot import _holistic_card_score
+
+        _, combat_card = self._cards()
+        session = create_session(seed=1)
+        scores = []
+        for hp in (50, 25, 5):
+            session.player.hp = hp
+            scores.append(_holistic_card_score(session, "bot", combat_card))
+        # hp descends in iteration order, so score must ascend.
+        self.assertEqual(scores, sorted(scores))
+
+    def test_gold_weight_falls_as_opponent_health_drops(self):
+        from web.bot import _holistic_card_score
+
+        gold_card, _ = self._cards()
+        session = create_session(seed=1)
+        scores = []
+        for hp in (50, 25, 5):
+            session.player.hp = hp
+            scores.append(_holistic_card_score(session, "bot", gold_card))
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_combat_overtakes_gold_as_opponent_nears_death(self):
+        from web.bot import _holistic_card_score
+
+        gold_card, combat_card = self._cards()
+        session = create_session(seed=1)
+        session.player.hp = 50
+        before = (_holistic_card_score(session, "bot", combat_card)
+                 - _holistic_card_score(session, "bot", gold_card))
+        session.player.hp = 5
+        after = (_holistic_card_score(session, "bot", combat_card)
+                - _holistic_card_score(session, "bot", gold_card))
+        self.assertGreater(after, before, "combat's edge over gold must widen as the opponent nears death")
+
+    def test_gold_is_discounted_by_the_buyers_own_gold_density(self):
+        """Regression: an earlier version discounted by overall _deck_quality,
+        which Gold cards score below average, so flooding a deck with Gold
+        *lowered* mean quality and perversely reduced the discount -- rewarding
+        still more Gold. Verified directly: it moved _deck_quality 2.77 -> 2.55."""
+        from hero_engine import GOLD
+        from web.bot import _holistic_card_score
+
+        gold_card, _ = self._cards()
+        session = create_session(seed=1)
+        session.player.hp = 50
+        before = _holistic_card_score(session, "bot", gold_card)
+        session.bot.discard.extend([GOLD] * 40)
+        after = _holistic_card_score(session, "bot", gold_card)
+        self.assertLess(after, before)
+
+    def test_gold_discount_stays_mild_at_the_starting_deck_baseline(self):
+        """Regression: the first cut divided by the raw starting gold density,
+        which halved gold's weight before a single purchase and, against a
+        combat weight in the same range, made a 1-cost 3-combat card
+        (Spark) outscore a 1-cost 2-gold card (Taxation) at full opponent
+        health with real cards. The discount scale is now 4x wider so a fresh
+        deck sits at a mild ~0.8 discount instead of ~0.5."""
+        from hero_engine import load_hero_cards
+        from web.bot import _holistic_card_score
+
+        cards = load_hero_cards("data/hero_realms_cards.json")
+        taxation = next(c for c in cards if c.name == "Taxation")
+        spark = next(c for c in cards if c.name == "Spark")
+        session = create_session(seed=1)
+        session.player.hp = 50
+        gap = (_holistic_card_score(session, "bot", spark)
+              - _holistic_card_score(session, "bot", taxation))
+        self.assertLess(gap, 2.5, "combat should not dominate an economy card by a wide margin at full HP")
+
+    def test_or_choice_takes_the_best_branch_not_the_sum(self):
+        """Regression: or_choice branches are mutually exclusive at resolution
+        time (see expend_champion in hero_engine.py), so a champion listing
+        both combat and health via or_choice must not be scored as if it
+        grants both every activation."""
+        from hero_engine import HRCard
+        from web.bot import _holistic_card_score
+
+        both = HRCard(id="t3", name="Or Choice", cost=1, faction="",
+                     card_type="action", effects={"combat": 3, "health": 4, "or_choice": ["combat", "health"]})
+        combat_only = HRCard(id="t4", name="Combat Only", cost=1, faction="",
+                             card_type="action", effects={"combat": 3})
+        health_only = HRCard(id="t5", name="Health Only", cost=1, faction="",
+                             card_type="action", effects={"health": 4})
+        session = create_session(seed=1)
+        both_score = _holistic_card_score(session, "bot", both)
+        self.assertLessEqual(both_score, max(
+            _holistic_card_score(session, "bot", combat_only),
+            _holistic_card_score(session, "bot", health_only),
+        ) + 1e-6)
+
+    def test_healing_weight_rises_as_the_buyers_own_health_drops(self):
+        from hero_engine import HRCard
+        from web.bot import _holistic_card_score
+
+        heal_card = HRCard(id="t6", name="Heal", cost=1, faction="", card_type="action", effects={"health": 4})
+        session = create_session(seed=1)
+        scores = []
+        for hp in (50, 25, 5):
+            session.bot.hp = hp
+            scores.append(_holistic_card_score(session, "bot", heal_card))
+        # hp descends in iteration order, so score must ascend.
+        self.assertEqual(scores, sorted(scores))
+
+    def test_ally_bonus_counts_fully_once_the_faction_is_on_board(self):
+        from hero_engine import BoardChampion, HRCard
+        from web.bot import _holistic_card_score
+
+        card = HRCard(id="t7", name="Ally Card", cost=1, faction="", card_type="action",
+                     effects={"combat": 1, "ally_faction": "Wild", "ally_combat": 5})
+        session = create_session(seed=1)
+        without_ally = _holistic_card_score(session, "bot", card)
+        champ = HRCard(id="t8", name="Wild Champ", cost=1, faction="Wild",
+                      card_type="champion", health=3, effects={})
+        session.bot.board.append(BoardChampion(champ))
+        with_ally = _holistic_card_score(session, "bot", card)
+        self.assertGreater(with_ally, without_ally)
+
+    def test_sacrifice_combat_is_priced_when_worth_taking(self):
+        """sacrifice_combat is optional in this engine (see
+        _should_self_sacrifice in hero_engine.py: every printed instance reads
+        "you may" / uses the {Sacrifice}: keyword), so a card whose only
+        listed effect is sacrifice_combat must score above a do-nothing card
+        once the buyer's state makes the sacrifice worth taking - which the
+        original _card_value entirely missed regardless (Fire Gem's 3 free
+        combat was worth 0 there in every state, taken or not)."""
+        from hero_engine import FIRE_GEM, HRCard
+        from web.bot import _holistic_card_score
+
+        sac_card = HRCard(id="t9", name="Sac Only", cost=1, faction="",
+                          card_type="action", effects={"sacrifice_combat": 3})
+        blank_card = HRCard(id="t10", name="Blank", cost=1, faction="", card_type="action", effects={})
+        session = create_session(seed=1)
+        session.bot.deck = [c for c in session.bot.deck if c.id != "gold"]
+        session.bot.deck.extend([FIRE_GEM] * 3)  # >= 2 owned non-starting economy cards
+        self.assertGreater(
+            _holistic_card_score(session, "bot", sac_card),
+            _holistic_card_score(session, "bot", blank_card),
+        )
+
+    def test_sacrifice_combat_is_not_priced_when_not_worth_taking(self):
+        """A fresh deck (no established economy yet) should not credit the
+        sacrifice bonus, matching _should_self_sacrifice's own decision."""
+        from hero_engine import HRCard
+        from web.bot import _holistic_card_score
+
+        sac_card = HRCard(id="t9b", name="Sac Only", cost=1, faction="",
+                          card_type="action", effects={"sacrifice_combat": 3})
+        blank_card = HRCard(id="t10b", name="Blank", cost=1, faction="", card_type="action", effects={})
+        session = create_session(seed=1)  # fresh starting deck
+        self.assertEqual(
+            _holistic_card_score(session, "bot", sac_card),
+            _holistic_card_score(session, "bot", blank_card),
+        )
+
+    def test_thinning_bonus_shrinks_once_starting_junk_is_gone(self):
+        """A sacrifice/thin effect should be worth less once there is no more
+        starting junk (Gold/Shortsword/Dagger/Ruby) left to remove."""
+        from hero_engine import HRCard
+        from web.bot import _holistic_card_score
+
+        thin_card = HRCard(id="t11", name="Thin", cost=1, faction="",
+                           card_type="action", effects={"sacrifice_for_combat": 2})
+        # Shortsword is itself one of the four starting-junk ids, so filling the
+        # deck with it (an earlier version of this test did) leaves junk_count
+        # unchanged. Use a card outside that set instead.
+        strong_card = HRCard(id="not_junk", name="Strong Card", cost=4, faction="",
+                             card_type="action", effects={"combat": 5})
+        session = create_session(seed=1)  # starting deck: full of junk
+        with_junk = _holistic_card_score(session, "bot", thin_card)
+        session.bot.deck = [strong_card] * 10  # no gold/shortsword/dagger/ruby left
+        session.bot.hand = []
+        session.bot.discard = []
+        without_junk = _holistic_card_score(session, "bot", thin_card)
+        self.assertLess(without_junk, with_junk)
+
+    def test_rollout_buy_picks_combat_against_a_near_dead_opponent(self):
+        from web.bot import _heuristic_rollout_action
+
+        gold_card, combat_card = self._cards()
+        session = self._no_fire_gem(create_session(seed=1))
+        session.player.hp = 5
+        session.bot.gold = 3
+        session.phase = "buy"
+        session.active_player = "bot"
+        session.market.row = [combat_card, gold_card, None, None, None]
+        action = _heuristic_rollout_action(session)
+        self.assertEqual(action["type"], "buy_card")
+        self.assertEqual(int(action["marketIndex"]), 0)
+
+    def test_rollout_buy_picks_gold_against_a_healthy_opponent_with_no_gold_yet(self):
+        from hero_engine import SHORTSWORD
+
+        from web.bot import _heuristic_rollout_action
+
+        gold_card, combat_card = self._cards()
+        session = self._no_fire_gem(create_session(seed=1))
+        session.player.hp = 50
+        session.bot.gold = 3
+        # Zero gold density, isolating the comparison from the discount.
+        session.bot.deck = [SHORTSWORD] * 10
+        session.bot.hand = []
+        session.bot.discard = []
+        session.phase = "buy"
+        session.active_player = "bot"
+        session.market.row = [combat_card, gold_card, None, None, None]
+        action = _heuristic_rollout_action(session)
+        self.assertEqual(action["type"], "buy_card")
+        self.assertEqual(int(action["marketIndex"]), 1)

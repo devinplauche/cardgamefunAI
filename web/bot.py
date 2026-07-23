@@ -6,7 +6,15 @@ import math
 import random
 from typing import Any
 
-from hero_engine import has_ally, play_card, buy_card, expend_champion
+from hero_engine import (
+    FIRE_GEM,
+    HRGame,
+    _should_self_sacrifice,
+    has_ally,
+    play_card,
+    buy_card,
+    expend_champion,
+)
 
 
 @dataclass
@@ -100,6 +108,228 @@ def _deck_quality(player) -> float:
     return sum(_card_value(card) for card in cards) / len(cards)
 
 
+def _deck_gold_density(player) -> float:
+    """Average gold produced per card the player already owns.
+
+    This has to measure gold specifically, not overall _deck_quality. A deck
+    flooded with plain Gold actually *lowers* mean card value (Gold scores
+    below the starting deck's own average), which would make a quality-based
+    discount reward buying still more Gold - the opposite of the diminishing
+    returns it is meant to express. Verified directly: flooding a starting
+    deck with 40 Gold moved _deck_quality 2.77 -> 2.55.
+    """
+    cards = player.deck + player.hand + player.discard
+    if not cards:
+        return 0.0
+    return sum(card.get("gold", 0) for card in cards) / len(cards)
+
+
+# Starting deck gold density (7 Gold among 10 cards, 1 gold each) is 0.7. The
+# discount below divides by 4x this, so a fresh deck sits at a mild discount
+# (0.8) rather than a severe one (0.5). At 0.5 the very first buy decision of
+# every game already halved gold's weight before a single purchase, and against
+# a combat weight in the same range that made a 1-cost, 3-combat, zero-economy
+# card (Spark) outscore a 1-cost, 2-gold card (Taxation) even at full opponent
+# health - real cards, not synthetic test ones. The rollout would then never
+# build an economy at all. Verified: Spark scored 5.7 against Taxation's 2.2
+# under the 1x scale; recalibrated here.
+STARTING_GOLD_DENSITY = 0.7
+GOLD_DISCOUNT_SCALE = STARTING_GOLD_DENSITY * 4.0
+
+# Ids of the four starting cards. _card_score in hero_engine.py scores these as
+# the worst cards in any deck, so they are what sacrifice/discard effects
+# remove first - the concrete thing a sacrifice effect's thinning value is
+# thinning *of*.
+_STARTING_JUNK_IDS = {"gold", "shortsword", "dagger", "ruby"}
+
+
+def _junk_count(player) -> int:
+    cards = player.deck + player.hand + player.discard
+    return sum(1 for c in cards if c.id in _STARTING_JUNK_IDS)
+
+
+def _resource_weights(session, seat: str) -> dict[str, float]:
+    """Per-resource weights, scaled by the two things a real player conditions
+    on: how close the opponent is to dead, and how urgently the buyer needs
+    healing. Returned as a dict rather than inlined so ally-triggered bonuses
+    (ally_combat, ally_gold, ...) can reuse the same weights as their base
+    counterparts.
+    """
+    opponent = session.player if seat == "bot" else session.bot
+    buyer = session.bot if seat == "bot" else session.player
+    opp_hp_ratio = min(max(opponent.hp, 0), HRGame.STARTING_HP) / HRGame.STARTING_HP
+    own_hp_ratio = min(max(buyer.hp, 0), HRGame.STARTING_HP) / HRGame.STARTING_HP
+
+    gold_discount = 1.0 / (1.0 + max(_deck_gold_density(buyer), 0.0) / GOLD_DISCOUNT_SCALE)
+
+    return {
+        # 2.0 at full opponent health, ramping to 4.0 near lethal: closing out
+        # a game matters more than incremental damage, but not so much more
+        # that it swamps everything else the way the first version did.
+        "combat": 2.0 + (1.0 - opp_hp_ratio) * 2.0,
+        # 3.0 at full opponent health, decaying to 1.5 near lethal, discounted
+        # by the buyer's own gold density (diminishing returns on gold
+        # specifically - see _deck_gold_density's own docstring for why it
+        # can't be overall deck quality instead).
+        "gold": (1.5 + opp_hp_ratio * 1.5) * gold_discount,
+        # Card advantage is close to context-independent: more selection is
+        # good whether ahead or behind.
+        "draw": 4.0,
+        # 1.5 at full own health (low urgency) ramping to 5.0 near own death:
+        # a heal is worth roughly what it costs the opponent to deal that
+        # much damage, so this tracks the same shape as combat_weight but on
+        # the buyer's own health instead of the opponent's.
+        "health": 1.5 + (1.0 - own_hp_ratio) * 3.5,
+    }
+
+
+def _ally_certainty(session, seat: str, card) -> float:
+    """How much of an ally_* bonus to count, given board state right now.
+
+    1.0 if the buyer already has a champion of the required faction in play
+    (the bonus is real and immediate), else a partial credit reflecting that
+    the ally is not guaranteed but not worthless either - a fixed discount
+    rather than 0, since ally_faction cards are common enough that ignoring
+    the bonus entirely would undervalue roughly a third of the card pool
+    (36 of the cards surveyed carry ally_faction).
+    """
+    faction = card.effects.get("ally_faction", "")
+    if not faction:
+        return 0.0
+    buyer = session.bot if seat == "bot" else session.player
+    return 1.0 if faction in buyer.allies() else 0.4
+
+
+def _sacrifice_bonus(session, seat: str, card) -> float:
+    """Value of a card's optional sacrifice/thinning effects.
+
+    Every printed sacrifice effect reads "you may sacrifice" - hero_engine.py
+    only takes it when _should_self_sacrifice/_worth_sacrificing say it is
+    actually worth it (a guard would absorb combat for nothing, or nothing in
+    hand/discard is junk). This reuses those exact predicates against the
+    buyer's current state, rather than assuming the old unconditional
+    guarantee, which would price a bonus the engine would actually decline.
+    It is still only an estimate of what happens when the card is eventually
+    played, since hand/discard contents and the opponent's board will have
+    moved on by then.
+
+    sacrifice_card/sacrifice_for_combat/sacrifice_up_to remove the worst card
+    from hand or discard - _find_worst_idx always prefers the four starting
+    cards (see _card_score in hero_engine.py) - so their thinning value is
+    scaled by how much of that junk is actually left to remove: thinning the
+    last weak card in a lean deck is worth more than the fifth in a deck
+    still full of them, and once the junk is gone the effect has nothing left
+    to remove (matching the engine, which now declines rather than forcing it).
+    """
+    buyer = session.bot if seat == "bot" else session.player
+    opponent = session.player if seat == "bot" else session.bot
+    weights = _resource_weights(session, seat)
+    bonus = 0.0
+
+    sac_combat = card.get("sacrifice_combat", 0)
+    if sac_combat and _should_self_sacrifice(buyer, opponent, requires_open_combat=True):
+        bonus += sac_combat * weights["combat"]
+
+    sac_count = 0
+    if card.effects.get("sacrifice_card", False):
+        sac_count = 1
+    elif card.get("sacrifice_for_combat", 0) > 0:
+        sac_count = 1
+        # _find_worst_idx (hero_engine.py) always prefers the four starting
+        # cards over anything purchased, so "is there any junk at all" is an
+        # exact proxy for "would _worth_sacrificing accept the worst pick."
+        if _junk_count(buyer) > 0:
+            bonus += card.get("sacrifice_for_combat", 0) * weights["combat"]
+    elif card.get("sacrifice_up_to", 0) > 0:
+        sac_count = card.get("sacrifice_up_to", 0)
+
+    if sac_count:
+        junk = _junk_count(buyer)
+        thinned = min(sac_count, junk) if junk else sac_count * 0.3
+        bonus += thinned * 2.0
+    return bonus
+
+
+def _holistic_card_score(session, seat: str, card) -> float:
+    """Context-dependent value of a candidate purchase, across the whole
+    effect surface rather than only gold and combat.
+
+    evaluate_state deliberately asserts no fixed resource exchange rate and
+    leaves that to the rollout, but the rollout has to actually play turns to
+    generate that signal, and its default policy is what determines how good
+    those simulated games are. A policy that only weighs gold against combat
+    misses roughly half the card pool: ally_* effects appear on 36+10+10+4+2
+    cards and sacrifice_* effects on 13, and neither was priced at all before
+    this. This stays out of evaluate_state itself - it only shapes how
+    rollouts are simulated, sharpening the reward search assigns to root
+    candidates, not asserting a fixed price at the point that gets searched.
+    """
+    weights = _resource_weights(session, seat)
+    or_choice = card.get("or_choice", [])
+
+    score = card.get("draw", 0) * weights["draw"]
+    if or_choice:
+        # These branches are mutually exclusive at resolution time (see
+        # expend_champion's or_choice handling in hero_engine.py), so summing
+        # every listed field double-counts value that can never all be
+        # realised in one activation. Take the best available branch instead.
+        score += max(
+            (card.get(kind, 0) * weights.get(kind, 0.0) for kind in or_choice if kind in weights),
+            default=0.0,
+        )
+    else:
+        score += card.get("combat", 0) * weights["combat"]
+        score += card.get("gold", 0) * weights["gold"]
+        score += card.get("health", 0) * weights["health"]
+
+    ally_scale = _ally_certainty(session, seat, card)
+    if ally_scale:
+        score += ally_scale * (
+            card.get("ally_combat", 0) * weights["combat"]
+            + card.get("ally_gold", 0) * weights["gold"]
+            + card.get("ally_draw", 0) * weights["draw"]
+            + card.get("ally_health", 0) * weights["health"]
+            + card.get("ally_opponent_discard", 0) * 2.0
+        )
+
+    score += _sacrifice_bonus(session, seat, card)
+    score += card.get("opponent_discard", 0) * 2.0
+    score += card.get("sacrifice_opponent_discard", 0) * 2.0
+    if card.get("stun", False):
+        score += 1.5
+
+    # Combo-enabling utility effects (recycle, reanimate, prepare, to_hand,
+    # top_of_deck): their real value depends on the rest of the deck in ways
+    # this does not model. A small flat credit acknowledges they are rarely
+    # dead text rather than pricing them properly.
+    for flag in ("recycle", "reanimate", "prepare", "to_hand", "top_of_deck"):
+        if card.get(flag, False):
+            score += 1.5
+
+    if card.card_type == "champion":
+        score += card.health * 0.5 + (3.0 if card.guard else 0.0)
+    score -= card.cost * 0.3
+    return score
+
+
+def _best_buy_action(session, buy_actions: list[dict[str, Any]]) -> dict[str, Any]:
+    seat = session.active_player
+
+    def card_for(action):
+        idx = int(action.get("marketIndex", -1))
+        if idx == 5:
+            return FIRE_GEM
+        if 0 <= idx < 5:
+            return session.market.row_cards()[idx]
+        return None
+
+    scored = [(a, card_for(a)) for a in buy_actions]
+    scored = [(a, c) for a, c in scored if c is not None]
+    if not scored:
+        return buy_actions[0]
+    return max(scored, key=lambda pair: _holistic_card_score(session, seat, pair[1]))[0]
+
+
 WIN_SCORE = 10_000.0
 
 # turn_number increments once per seat, so this is ~2 full rounds. The horizon
@@ -114,6 +344,11 @@ EVAL_MODE = "search"
 # Phases worth spending search on. Play and champion phases are auto-resolved
 # greedily; see the note in choose_bot_action.
 SEARCHED_PHASES = ("buy", "combat")
+
+# "situational" uses _holistic_card_score; "static" is the original policy
+# (highest legal_actions priority: cost + combat*2 + gold*2 + draw*2, fixed
+# regardless of game state). Kept switchable to A/B them under matched seeds.
+BUY_POLICY = "situational"
 
 
 def evaluate_state(session) -> float:
@@ -208,9 +443,11 @@ def _heuristic_rollout_action(session) -> dict[str, Any]:
             if action["type"] == "expend_champion":
                 return action
     elif phase == "buy":
-        for action in actions:
-            if action["type"] == "buy_card":
-                return action
+        buy_actions = [a for a in actions if a["type"] == "buy_card"]
+        if buy_actions:
+            if BUY_POLICY == "static":
+                return buy_actions[0]  # already highest-priority: actions is pre-sorted
+            return _best_buy_action(session, buy_actions)
     elif phase == "combat":
         for action in actions:
             if action["type"] == "attack_target":
