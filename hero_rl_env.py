@@ -157,9 +157,10 @@ class HeroRealmsEnv(gym.Env):
         self._opponent_profile["buy"](opp, ag, self.market)
 
         if opp.combat > 0:
+            # Called unconditionally, even with zero guards, so a snipe of a
+            # non-guard champion can happen on a fully undefended board too.
             guards = [bc for bc in ag.board if bc.guard and bc.alive]
-            if guards:
-                self._opponent_profile["attack"](opp, ag, guards)
+            self._opponent_profile["attack"](opp, ag, guards)
             ag.hp -= opp.combat
             opp.combat = 0
 
@@ -178,8 +179,7 @@ class HeroRealmsEnv(gym.Env):
 
         if p.combat > 0:
             guards = [bc for bc in o.board if bc.guard and bc.alive]
-            if guards:
-                attack_weakest(p, o, guards)
+            attack_weakest(p, o, guards)
             o.hp -= p.combat
             p.combat = 0
 

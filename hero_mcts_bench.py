@@ -74,6 +74,19 @@ def _profile_action(session, profile):
         return {"type": "advance_phase"}
 
     if phase == "combat":
+        # legal_actions() now also offers non-guard champions as targets once
+        # no guard remains, so "champion" actions here are not necessarily
+        # guards despite the variable name below. Take lethal first if it is
+        # on the table, or this would snipe a weak champion over ending the
+        # game.
+        buyer = session.player if session.active_player == "player" else session.bot
+        opponent = session.bot if session.active_player == "player" else session.player
+        if buyer.combat >= opponent.hp:
+            lethal = next((a for a in actions if a["type"] == "attack_target"
+                          and a.get("target") == "player"), None)
+            if lethal is not None:
+                return lethal
+
         # attack_weakest: guards sorted by lowest remaining health first
         guards = [a for a in actions if a["type"] == "attack_target" and a.get("target") == "champion"]
         if guards:

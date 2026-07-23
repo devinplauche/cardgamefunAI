@@ -470,10 +470,13 @@ class HRGame:
         if player.combat <= 0:
             return
 
-        # AI decides which guard champions to attack (if multiple)
+        # AI decides which guard champions to attack (if multiple), and - once
+        # no guard remains, including when there was never one - may snipe a
+        # non-guard champion with any leftover combat instead of it all going
+        # to face. Called unconditionally: gating this behind `if guards`
+        # meant a board with zero guards never got a chance to snipe at all.
         guards = [bc for bc in opponent.board if bc.guard and bc.alive]
-        if guards:
-            ai_attack(player, opponent, guards)
+        ai_attack(player, opponent, guards)
 
         dmg = player.combat
         if dmg <= 0:

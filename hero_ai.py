@@ -171,8 +171,33 @@ def buy_balanced(player: HRPlayer, opponent: HRPlayer, market: HRMarket):
 
 # --- Attack strategies ---
 
+def _snipe_champions(player: HRPlayer, opponent: HRPlayer, key):
+    """Spend leftover combat killing non-guard champions instead of letting it
+    spill to face - once no guard is protecting them, a champion is a legal
+    target (rulebook: "You may use Combat to attack your opponent and/or
+    their Champions"). Only whole kills are worth taking: damage does not
+    carry over between turns, so a chip that fails to kill is pure waste, and
+    is skipped rather than spent.
+
+    Never trades away a lethal hit: if the current combat pool could already
+    end the game on its own, this does nothing and leaves it for the caller
+    to spill to face.
+    """
+    if player.combat <= 0 or player.combat >= opponent.hp:
+        return
+    targets = [bc for bc in opponent.board if bc.alive and not bc.guard]
+    targets.sort(key=key)
+    for bc in targets:
+        if player.combat <= 0 or bc.current_health > player.combat:
+            continue
+        player.combat -= bc.current_health
+        bc.current_health = 0
+    remove_stunned_champions(opponent)
+
+
 def attack_weakest(player: HRPlayer, opponent: HRPlayer, guards: list):
-    """Attack the weakest guard champion first (fastest to kill)."""
+    """Attack the weakest guard champion first (fastest to kill), then use
+    any leftover combat to snipe non-guard champions before it spills to face."""
     guards.sort(key=lambda bc: bc.current_health)
     for bc in guards:
         if player.combat <= 0:
@@ -182,10 +207,13 @@ def attack_weakest(player: HRPlayer, opponent: HRPlayer, guards: list):
         player.combat -= dmg
     # Stunned champions go to their owner's discard pile, not out of the game.
     remove_stunned_champions(opponent)
+    if not any(bc.guard and bc.alive for bc in opponent.board):
+        _snipe_champions(player, opponent, key=lambda bc: bc.current_health)
 
 
 def attack_strongest(player: HRPlayer, opponent: HRPlayer, guards: list):
-    """Attack the strongest guard champion first."""
+    """Attack the strongest guard champion first, then snipe non-guard
+    champions (strongest first) with any leftover combat."""
     guards.sort(key=lambda bc: -bc.current_health)
     for bc in guards:
         if player.combat <= 0:
@@ -194,6 +222,8 @@ def attack_strongest(player: HRPlayer, opponent: HRPlayer, guards: list):
         bc.current_health -= dmg
         player.combat -= dmg
     remove_stunned_champions(opponent)
+    if not any(bc.guard and bc.alive for bc in opponent.board):
+        _snipe_champions(player, opponent, key=lambda bc: -bc.current_health)
 
 
 # --- Expend strategy ---

@@ -587,6 +587,22 @@ def _heuristic_rollout_action(session, actions: list[dict[str, Any]] | None = No
                 return buy_actions[0]  # already highest-priority: actions is pre-sorted
             return _best_buy_action(session, buy_actions)
     elif phase == "combat":
+        # Priority is 10 - current_health for a champion (higher for a weaker
+        # one) and player.combat for the player, so a target list containing
+        # both a low-health champion and the player is not reliably ordered
+        # by which one actually matters. That let the plain priority-sorted
+        # pick snipe a 3-health champion instead of taking a simultaneously
+        # available lethal hit - a minimal safety check, not a broader
+        # valuation change: earlier this session, giving the rollout a
+        # "smarter" default policy for buying made search measurably worse,
+        # so this only guards against missing a game-ending hit.
+        buyer = session.bot if session.active_player == "bot" else session.player
+        opponent = session.player if session.active_player == "bot" else session.bot
+        if buyer.combat >= opponent.hp:
+            lethal = next((a for a in actions if a["type"] == "attack_target"
+                          and a.get("target") == "player"), None)
+            if lethal is not None:
+                return lethal
         for action in actions:
             if action["type"] == "attack_target":
                 return action

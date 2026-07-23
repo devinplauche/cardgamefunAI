@@ -247,13 +247,17 @@ class GameSession:
     def _opponent(self) -> HRPlayer:
         return self.bot if self.active_player == "player" else self.player
 
-    def _stun_targets(self, opponent: HRPlayer) -> list[BoardChampion]:
+    def _attack_targets(self, opponent: HRPlayer) -> list[BoardChampion]:
+        """Legal combat/stun targets: guards while any are alive (they block
+        both the player and other champions), otherwise every living champion
+        - a champion is a legal target once nothing protects it (rulebook:
+        "You may use Combat to attack your opponent and/or their Champions")."""
         living = [champion for champion in opponent.board if champion.alive]
         guards = [champion for champion in living if champion.guard]
         return guards or living
 
     def _stun_target(self, opponent: HRPlayer, target_index: int | None) -> BoardChampion | None:
-        targets = self._stun_targets(opponent)
+        targets = self._attack_targets(opponent)
         if not targets:
             return None
         if target_index is None:
@@ -332,7 +336,7 @@ class GameSession:
         if self.phase == "play":
             for card in player.hand:
                 needs_stun_target = card.get("stun", False)
-                stun_targets = self._stun_targets(opponent) if needs_stun_target else []
+                stun_targets = self._attack_targets(opponent) if needs_stun_target else []
                 if stun_targets:
                     for target_index, target in enumerate(stun_targets):
                         actions.append({
@@ -349,7 +353,7 @@ class GameSession:
         elif self.phase == "champion":
             for champion in player.board:
                 if champion.alive and not champion.exhausted:
-                    stun_targets = self._stun_targets(opponent) if champion.card.get("stun", False) else []
+                    stun_targets = self._attack_targets(opponent) if champion.card.get("stun", False) else []
                     if stun_targets:
                         for target_index, target in enumerate(stun_targets):
                             actions.append({
@@ -385,22 +389,25 @@ class GameSession:
                     }
                 )
         elif self.phase == "combat":
-            guards = [champion for champion in opponent.board if champion.guard and champion.alive]
             # Combat can only be assigned if there is combat to assign. Offering
             # guard targets at 0 combat made attack_target_action raise.
             if player.combat > 0:
-                if guards:
-                    for champion in guards:
-                        actions.append(
-                            {
-                                "type": "attack_target",
-                                "target": "champion",
-                                "championId": champion.card.id,
-                                "label": champion.card.name,
-                                "priority": 10 - champion.current_health,
-                            }
-                        )
-                else:
+                targets = self._attack_targets(opponent)
+                guards_present = bool(targets) and targets[0].guard
+                for champion in targets:
+                    actions.append(
+                        {
+                            "type": "attack_target",
+                            "target": "champion",
+                            "championId": champion.card.id,
+                            "label": champion.card.name,
+                            "priority": 10 - champion.current_health,
+                        }
+                    )
+                # Once no guard is protecting them, the rulebook allows
+                # attacking the player and/or any champion freely - a guard
+                # blocks both, so this is only offered when none remain.
+                if not guards_present:
                     actions.append(
                         {
                             "type": "attack_target",
@@ -475,9 +482,10 @@ class GameSession:
         if player.combat <= 0:
             raise ValueError("No combat remaining")
 
-        guards = [champion for champion in opponent.board if champion.guard and champion.alive]
+        targets = self._attack_targets(opponent)
+        guards_present = bool(targets) and targets[0].guard
         if target_kind == "player":
-            if guards:
+            if guards_present:
                 raise ValueError("Guards must be attacked before the player")
             dealt = player.combat
             opponent.hp -= dealt
@@ -486,9 +494,9 @@ class GameSession:
             self._check_winner()
             return self.get_state()
 
-        champion = next((item for item in guards if item.card.id == champion_id), None)
+        champion = next((item for item in targets if item.card.id == champion_id), None)
         if champion is None:
-            raise ValueError("Guard champion not found")
+            raise ValueError("Champion not found or not a legal target")
 
         dealt = min(player.combat, champion.current_health)
         champion.current_health -= dealt
@@ -498,11 +506,11 @@ class GameSession:
             remove_stunned_champions(opponent)
         self.record_event("combat", f"Assigned {dealt} combat to {champion.card.name}")
 
-        if player.combat > 0 and not any(item.guard and item.alive for item in opponent.board):
-            spill = player.combat
-            opponent.hp -= spill
-            player.combat = 0
-            self.record_event("combat", f"Spilled {spill} combat to {opponent.name}")
+        # No auto-spill of any leftover combat: once a guard is gone, the
+        # player may freely choose to assign the remainder to the opponent's
+        # face or to another champion (rulebook: "you may use Combat to
+        # attack your opponent and/or their Champions"), so it is left in
+        # player.combat for an explicit follow-up attack_target_action call.
 
         self._check_winner()
         return self.get_state()
