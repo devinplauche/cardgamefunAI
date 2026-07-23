@@ -29,7 +29,7 @@ def load_hero_cards(path: str) -> list[HRCard]:
     """Load every card, expanded to the correct number of physical copies.
 
     The card data used to have exactly one entry per unique card, so a market
-    deck built from it had 54 cards where the base set ships 80 (26 of the 55
+    deck built from it had 54 cards where the base set ships 80 (18 of the 55
     cards are printed in 2 or 3 copies - Taxation and Profit at 3x each,
     Man-at-Arms and Wolf Shaman at 2x, and so on). Every simulated game -
     RL training, benchmarks, MCTS, the web app - drew from a market skewed
@@ -664,13 +664,6 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
         idx = _find_best_idx(player.discard, player, opponent)
         player.deck.insert(0, player.discard.pop(idx))
 
-    # Reanimate (champion from discard to top of deck) (Varrick)
-    if card.get("reanimate", False):
-        for i, c in enumerate(player.discard):
-            if c.card_type == "champion":
-                player.deck.insert(0, player.discard.pop(i))
-                break
-
     # ---- A self-sacrificed card leaves play immediately; every other
     # non-champion remains in played_this_turn until the Discard Phase. ----
     if sacrificed:
@@ -823,6 +816,20 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
     od = card.get("opponent_discard", 0)
     if od > 0 and opponent:
         _force_opponent_discard(opponent, od, player)
+
+    # ---- Reanimate on expend (Varrick): take a champion from discard to the
+    # top of the deck. This effect only exists on a champion (Varrick himself,
+    # per "reanimate" only appearing on his card), and used to live inside
+    # play_card - which returns immediately for any card_type == "champion"
+    # before reaching that code. It had never fired in any game this engine
+    # has simulated. Picks the best champion via the same contextual
+    # valuation recycle already uses, not the first one in discard order. ----
+    if card.get("reanimate", False):
+        champions = [c for c in player.discard if c.card_type == "champion"]
+        if champions:
+            best = max(champions, key=lambda c: _contextual_card_value(c, player, opponent))
+            player.discard.remove(best)
+            player.deck.insert(0, best)
 
     # ---- Ally effects on expend ----
     if has_ally(card, player):
