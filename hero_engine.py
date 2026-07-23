@@ -83,6 +83,10 @@ class HRPlayer:
         # Champions are not tracked here; they live on `board`, which has its
         # own self-exclusion check in has_ally.
         self.played_this_turn: list[HRCard] = []
+        # Cards played this turn whose ally ability has not fired yet; allies
+        # are retroactive, so these are re-checked whenever a faction card
+        # enters play.
+        self.pending_ally: list[HRCard] = []
         self.actions_played: int = 0
         self.cards_bought: int = 0
         self.next_buy_to_hand: bool = False  # Deception ally: next bought card goes to hand
@@ -401,6 +405,7 @@ class HRGame:
         player.combat = 0
         player.actions_played = 0
         player.played_this_turn.clear()
+        player.pending_ally.clear()
         player.cards_bought = 0
         player.next_buy_to_hand = False
         player.next_buy_to_top = False
@@ -465,6 +470,9 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
     if card.card_type == "champion":
         bc = BoardChampion(card)
         player.board.append(bc)
+        # A champion entering play can complete a faction pair for an action
+        # played earlier this turn.
+        _resolve_pending_allies(player, opponent)
         return True
 
     # In play until the Discard Phase, so it can trigger a later card's ally
@@ -473,6 +481,7 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
     # unaffected by this.
     if card.faction:
         player.played_this_turn.append(card)
+        _resolve_pending_allies(player, opponent)
 
     # ---- Base effects (non-champion cards only) ----
     player.gold += card.get("gold", 0)
@@ -504,17 +513,12 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
             player.hp = min(player.hp + heal, HRGame.STARTING_HP)
 
     # ---- Ally bonus ----
+    # Applied now if a partner is already in play, otherwise queued: the ally
+    # fires retroactively the moment a second card of the faction arrives.
     if ally_bonus:
-        player.combat += card.get("ally_combat", 0)
-        player.gold += card.get("ally_gold", 0)
-        ally_heal = card.get("ally_health", 0)
-        if ally_heal:
-            player.hp = min(player.hp + ally_heal, HRGame.STARTING_HP)
-        ally_draw = card.get("ally_draw", 0)
-        if ally_draw:
-            player.draw(ally_draw)
-            if card.get("ally_discard_drawn", False):
-                _discard_from_hand(player, ally_draw, opponent)
+        _apply_ally_effects(player, card, opponent)
+    elif _has_ally_payload(card):
+        player.pending_ally.append(card)
 
     total_base_draws = draws + actual_draw_up_to + (card.get("ally_draw", 0) if ally_bonus else 0)
 
@@ -572,29 +576,8 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
                     bc.exhausted = True
                     break
 
-    # ---- Ally-only effects ----
-    if ally_bonus:
-        # Prepare (ready own champion) (Domination, Rally the Troops)
-        if card.get("prepare", False):
-            for bc in player.board:
-                if bc.alive and bc.exhausted:
-                    bc.exhausted = False
-                    break
-
-        # Deception ally: next bought card goes to hand (not discard)
-        if card.get("to_hand", False):
-            player.next_buy_to_hand = True
-
-        # Bribe ally: next bought card goes on top of deck
-        if card.get("top_of_deck", False):
-            player.next_buy_to_top = True
-            if card.get("top_of_deck_action_only", False):
-                player.next_buy_to_top_action_only = True
-
-        # Ally opponent discard (Broelyn, Nature's Bounty)
-        ally_od = card.get("ally_opponent_discard", 0)
-        if ally_od > 0 and opponent:
-            _force_opponent_discard(opponent, ally_od, player)
+    # (prepare / to_hand / top_of_deck / ally_opponent_discard are applied by
+    # _apply_ally_effects, so they fire retroactively too.)
 
     # ---- Non-ally effects (always apply) ----
 
@@ -832,6 +815,68 @@ def buy_card(player: HRPlayer, market: HRMarket, index: int) -> bool:
         player.cards_bought += 1
         return True
     return False
+
+
+_ALLY_EFFECT_KEYS = ("ally_combat", "ally_gold", "ally_health", "ally_draw",
+                     "ally_opponent_discard", "prepare", "to_hand", "top_of_deck")
+
+
+def _has_ally_payload(card: HRCard) -> bool:
+    """Whether a card's ally ability actually does anything."""
+    if not card.effects.get("ally_faction", ""):
+        return False
+    return any(card.effects.get(k) for k in _ALLY_EFFECT_KEYS)
+
+
+def _apply_ally_effects(player: HRPlayer, card: HRCard, opponent: Optional[HRPlayer] = None):
+    """Apply a card's ally-gated effects. Split out of play_card so it can also
+    fire retroactively - see _resolve_pending_allies."""
+    player.combat += card.get("ally_combat", 0)
+    player.gold += card.get("ally_gold", 0)
+    ally_heal = card.get("ally_health", 0)
+    if ally_heal:
+        player.hp = min(player.hp + ally_heal, HRGame.STARTING_HP)
+    ally_draw = card.get("ally_draw", 0)
+    if ally_draw:
+        player.draw(ally_draw)
+        if card.get("ally_discard_drawn", False):
+            _discard_from_hand(player, ally_draw, opponent)
+
+    if card.get("prepare", False):
+        for bc in player.board:
+            if bc.alive and bc.exhausted:
+                bc.exhausted = False
+                break
+    if card.get("to_hand", False):
+        player.next_buy_to_hand = True
+    if card.get("top_of_deck", False):
+        player.next_buy_to_top = True
+        if card.get("top_of_deck_action_only", False):
+            player.next_buy_to_top_action_only = True
+    ally_od = card.get("ally_opponent_discard", 0)
+    if ally_od > 0 and opponent:
+        _force_opponent_discard(opponent, ally_od, player)
+
+
+def _resolve_pending_allies(player: HRPlayer, opponent: Optional[HRPlayer] = None):
+    """Fire the ally abilities of cards played earlier this turn that did not
+    have a partner at the time but do now.
+
+    Per the official rules: "The order in which you play your cards does not
+    matter. As soon as you have two or more cards of the same faction in play,
+    you may trigger all relevant Ally Abilities." The engine used to evaluate
+    ally_bonus once, at play time, and never revisit it - so playing a lone
+    Guild card and then a second Guild card fired only the second one's ally.
+    """
+    if not player.pending_ally:
+        return
+    still_pending = []
+    for pending in player.pending_ally:
+        if has_ally(pending, player):
+            _apply_ally_effects(player, pending, opponent)
+        else:
+            still_pending.append(pending)
+    player.pending_ally = still_pending
 
 
 def has_ally(card: HRCard, player: HRPlayer) -> bool:

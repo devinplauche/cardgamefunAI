@@ -245,7 +245,32 @@ triggered under the correct rule:          201 / 1023  (19.6%)
 
 **Half of all ally bonuses in the game were being silently lost.** Fixed via
 `HRPlayer.played_this_turn`, cleared at every per-turn reset, checked by
-`has_ally` alongside the board. Covered by `tests/test_ally_triggers.py`.
+`has_ally` alongside the board.
+
+### Allies are also retroactive (second fix)
+
+> "The order in which you play your cards does not matter. As soon as you have
+> two or more cards of the same faction in play, you may trigger all relevant
+> Ally Abilities."
+
+`play_card` evaluated `ally_bonus` **once, at play time**, and never revisited
+it - so playing a lone Guild card and *then* a second Guild card fired only the
+second one's ally. Cards whose ally is not yet live now queue in
+`HRPlayer.pending_ally` and fire the moment a same-faction card enters play
+(action or champion). Worth **+31% more ally firings** on its own (152 -> 199
+over 60 games), on top of the in-play fix above.
+
+### Fire Gem is the only market card that enables nothing
+
+Of the 19 market cards with no printed ally ability, **18 still have a
+faction**, so they turn on every other card of that faction; exactly one has no
+faction at all - Fire Gem. `_holistic_card_score` scored those 18 identically
+to Fire Gem on synergy (both zero), missing the reason Fire Gem is a weak buy
+unless the market is all 6-7 cost. `_enabler_value` now prices a card's
+contribution to *other* cards' allies: a plain Necros card scores 2.16 with
+three Necros ally cards owned, Fire Gem scores 0.00.
+
+Covered by `tests/test_ally_triggers.py`.
 
 ## The holistic buy valuation makes the bot *worse* (default reverted)
 

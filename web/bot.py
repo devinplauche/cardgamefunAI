@@ -10,6 +10,7 @@ from hero_engine import (
     FIRE_GEM,
     HRGame,
     _deck_gold_density,
+    _has_ally_payload,
     _should_self_sacrifice,
     has_ally,
     play_card,
@@ -240,6 +241,54 @@ def _thinning_value(player, count: int) -> float:
     return max(0.0, after - before) * DECK_QUALITY_WEIGHT
 
 
+def _enabler_value(session, seat: str, card, weights: dict[str, float]) -> float:
+    """Value of a card as an ally *enabler* for cards the buyer already owns.
+
+    A card participates in faction synergy two ways: its own ally ability
+    firing (priced by _ally_certainty), and counting as a faction card that
+    turns on everything else of that faction. 18 of the 19 market cards with
+    no printed ally ability of their own still have a faction, so they are
+    pure enablers - and scoring only the first way rated them identically to
+    Fire Gem, the single market card with no faction at all.
+
+    That is exactly why Fire Gem is a weak buy unless the market is all
+    expensive: it can never enable anything, while any faction card of
+    similar cost carries this on top of its printed effects.
+
+    Priced as the increase in trigger probability for each same-faction ally
+    card already owned, using the same 5-card-draw approximation as
+    _ally_certainty.
+    """
+    faction = card.faction
+    if not faction:
+        return 0.0
+    buyer = session.bot if seat == "bot" else session.player
+    owned = buyer.deck + buyer.hand + buyer.discard
+    if not owned:
+        return 0.0
+
+    partner_value = 0.0
+    same_faction = 0
+    for owned_card in owned:
+        if owned_card.faction != faction:
+            continue
+        same_faction += 1
+        if _has_ally_payload(owned_card):
+            partner_value += (
+                owned_card.get("ally_combat", 0) * weights["combat"]
+                + owned_card.get("ally_gold", 0) * weights["gold"]
+                + owned_card.get("ally_draw", 0) * weights["draw"]
+                + owned_card.get("ally_health", 0) * weights["health"]
+            )
+    if partner_value <= 0.0:
+        return 0.0
+
+    total = len(owned)
+    before = 1.0 - (1.0 - same_faction / total) ** 4
+    after = 1.0 - (1.0 - (same_faction + 1) / (total + 1)) ** 4
+    return max(0.0, after - before) * partner_value
+
+
 def _sacrifice_bonus(session, seat: str, card, weights: dict[str, float] | None = None) -> float:
     """Value of a card's optional sacrifice/thinning effects.
 
@@ -349,6 +398,7 @@ def _holistic_card_score(session, seat: str, card, weights: dict[str, float] | N
         )
 
     score += _sacrifice_bonus(session, seat, card, weights)
+    score += _enabler_value(session, seat, card, weights)
     score += card.get("opponent_discard", 0) * 2.0
     score += card.get("sacrifice_opponent_discard", 0) * 2.0
     if card.get("stun", False):

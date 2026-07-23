@@ -125,5 +125,142 @@ class TestClonePreservesAllyZone(unittest.TestCase):
         self.assertTrue(session.bot.played_this_turn, "clone must not share the list")
 
 
+class TestRetroactiveAlly(unittest.TestCase):
+    """Per the rules: "The order in which you play your cards does not matter.
+    As soon as you have two or more cards of the same faction in play, you may
+    trigger all relevant Ally Abilities."
+
+    play_card used to evaluate ally_bonus once, at play time, and never
+    revisit it, so a lone faction card played first lost its ally for the
+    whole turn even after a partner arrived.
+    """
+
+    def test_first_card_gets_its_ally_when_a_partner_arrives_later(self):
+        profit = _card("Profit")            # Guild, ally_combat 4
+        intimidation = _card("Intimidation")  # Guild, ally_gold 2
+        player = HRPlayer("P")
+        player.hand = [profit, intimidation]
+        market = _fresh_market()
+
+        play_card(player, profit, market, ally_bonus=has_ally(profit, player))
+        self.assertEqual(player.combat, 0, "no partner yet, so no ally_combat")
+        self.assertEqual(player.pending_ally, [profit])
+
+        play_card(player, intimidation, market, ally_bonus=has_ally(intimidation, player))
+        # Profit base 2 gold, Intimidation base 5 combat,
+        # + Profit ally_combat 4 (retroactive) + Intimidation ally_gold 2
+        self.assertEqual(player.combat, 9)
+        self.assertEqual(player.gold, 4)
+        self.assertEqual(player.pending_ally, [])
+
+    def test_a_champion_arriving_triggers_an_earlier_actions_ally(self):
+        from hero_engine import BoardChampion
+
+        profit = _card("Profit")  # Guild action, ally_combat 4
+        guild_champ = next(c for c in CARDS if c.faction == "Guild" and c.card_type == "champion")
+        player = HRPlayer("P")
+        player.hand = [profit, guild_champ]
+        market = _fresh_market()
+
+        play_card(player, profit, market, ally_bonus=has_ally(profit, player))
+        self.assertEqual(player.combat, 0)
+        play_card(player, guild_champ, market, ally_bonus=has_ally(guild_champ, player))
+        self.assertEqual(player.combat, 4, "the champion completed the Guild pair")
+
+    def test_a_different_faction_does_not_trigger_the_pending_ally(self):
+        profit = _card("Profit")  # Guild
+        spark = _card("Spark")    # Wild
+        player = HRPlayer("P")
+        player.hand = [profit, spark]
+        market = _fresh_market()
+        play_card(player, profit, market, ally_bonus=has_ally(profit, player))
+        play_card(player, spark, market, ally_bonus=has_ally(spark, player))
+        # Spark is a lone Wild card, so it queues as well; the point is that
+        # neither fired - a Guild card must not complete a Wild pair.
+        self.assertIn(profit, player.pending_ally, "Profit's Guild ally must still be pending")
+        self.assertIn(spark, player.pending_ally, "Spark's Wild ally must still be pending")
+        self.assertEqual(player.combat, 3, "only Spark's base combat, no ally bonuses")
+
+    def test_pending_allies_do_not_leak_across_turns(self):
+        from web.session import create_session
+
+        profit = _card("Profit")
+        session = create_session(seed=3)
+        session.bot.hand = [profit]
+        session.active_player = "bot"
+        session.phase = "play"
+        session.play_card(profit.id)
+        self.assertTrue(session.bot.pending_ally)
+        session._start_turn(session.bot)
+        self.assertEqual(session.bot.pending_ally, [])
+
+    def test_pending_ally_survives_a_clone(self):
+        from web.session import create_session
+
+        profit = _card("Profit")
+        session = create_session(seed=3)
+        session.bot.hand = [profit]
+        session.active_player = "bot"
+        session.phase = "play"
+        session.play_card(profit.id)
+        clone = session.clone()
+        self.assertEqual([c.id for c in clone.bot.pending_ally],
+                         [c.id for c in session.bot.pending_ally])
+        clone.bot.pending_ally.clear()
+        self.assertTrue(session.bot.pending_ally, "clone must not share the list")
+
+
+class TestEnablerValue(unittest.TestCase):
+    """A faction card with no ally ability of its own still turns on every
+    other card of its faction. 18 of the 19 market cards without a printed
+    ally ability have a faction; only Fire Gem has none - which is why it is
+    a weak buy unless the market is all expensive."""
+
+    def test_a_plain_faction_card_has_enabler_value_and_fire_gem_has_none(self):
+        from hero_engine import FIRE_GEM
+        from web.bot import _enabler_value, _resource_weights
+        from web.session import create_session
+
+        necros_plain = next(c for c in CARDS
+                            if c.faction == "Necros" and "ally_faction" not in c.effects)
+        necros_ally = next(c for c in CARDS
+                           if c.faction == "Necros" and c.effects.get("ally_combat"))
+        session = create_session(seed=1)
+        session.bot.deck.extend([necros_ally] * 3)
+        weights = _resource_weights(session, "bot")
+
+        self.assertGreater(_enabler_value(session, "bot", necros_plain, weights), 0.0)
+        self.assertEqual(_enabler_value(session, "bot", FIRE_GEM, weights), 0.0)
+
+    def test_enabler_value_rises_with_owned_same_faction_ally_cards(self):
+        from web.bot import _enabler_value, _resource_weights
+        from web.session import create_session
+
+        necros_plain = next(c for c in CARDS
+                            if c.faction == "Necros" and "ally_faction" not in c.effects)
+        necros_ally = next(c for c in CARDS
+                           if c.faction == "Necros" and c.effects.get("ally_combat"))
+        scores = []
+        for n in (0, 1, 3):
+            session = create_session(seed=1)
+            session.bot.deck.extend([necros_ally] * n)
+            scores.append(_enabler_value(session, "bot", necros_plain,
+                                         _resource_weights(session, "bot")))
+        self.assertEqual(scores, sorted(scores))
+        self.assertGreater(scores[-1], scores[0])
+
+    def test_owning_no_ally_cards_of_that_faction_gives_no_enabler_value(self):
+        from web.bot import _enabler_value, _resource_weights
+        from web.session import create_session
+
+        necros_plain = next(c for c in CARDS
+                            if c.faction == "Necros" and "ally_faction" not in c.effects)
+        session = create_session(seed=1)  # starting deck has no faction cards at all
+        self.assertEqual(
+            _enabler_value(session, "bot", necros_plain, _resource_weights(session, "bot")),
+            0.0,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
