@@ -185,8 +185,12 @@ def _ally_certainty(session, seat: str, card) -> float:
     return 1.0 if faction in buyer.allies() else 0.4
 
 
-def _sacrifice_bonus(session, seat: str, card) -> float:
+def _sacrifice_bonus(session, seat: str, card, weights: dict[str, float] | None = None) -> float:
     """Value of a card's optional sacrifice/thinning effects.
+
+    `weights` may be passed in when scoring several candidates from the same
+    position: _resource_weights scans the whole deck for gold density, and it
+    is identical for every card in one decision.
 
     Every printed sacrifice effect reads "you may sacrifice" - hero_engine.py
     only takes it when _should_self_sacrifice/_worth_sacrificing say it is
@@ -208,7 +212,8 @@ def _sacrifice_bonus(session, seat: str, card) -> float:
     """
     buyer = session.bot if seat == "bot" else session.player
     opponent = session.player if seat == "bot" else session.bot
-    weights = _resource_weights(session, seat)
+    if weights is None:
+        weights = _resource_weights(session, seat)
     bonus = 0.0
 
     sac_combat = card.get("sacrifice_combat", 0)
@@ -235,7 +240,7 @@ def _sacrifice_bonus(session, seat: str, card) -> float:
     return bonus
 
 
-def _holistic_card_score(session, seat: str, card) -> float:
+def _holistic_card_score(session, seat: str, card, weights: dict[str, float] | None = None) -> float:
     """Context-dependent value of a candidate purchase, across the whole
     effect surface rather than only gold and combat.
 
@@ -248,8 +253,12 @@ def _holistic_card_score(session, seat: str, card) -> float:
     this. This stays out of evaluate_state itself - it only shapes how
     rollouts are simulated, sharpening the reward search assigns to root
     candidates, not asserting a fixed price at the point that gets searched.
+
+    `weights` may be passed in when scoring several candidates from the same
+    position - see _best_buy_action.
     """
-    weights = _resource_weights(session, seat)
+    if weights is None:
+        weights = _resource_weights(session, seat)
     or_choice = card.get("or_choice", [])
 
     score = card.get("draw", 0) * weights["draw"]
@@ -286,7 +295,7 @@ def _holistic_card_score(session, seat: str, card) -> float:
             + card.get("ally_opponent_discard", 0) * 2.0
         )
 
-    score += _sacrifice_bonus(session, seat, card)
+    score += _sacrifice_bonus(session, seat, card, weights)
     score += card.get("opponent_discard", 0) * 2.0
     score += card.get("sacrifice_opponent_discard", 0) * 2.0
     if card.get("stun", False):
@@ -321,7 +330,13 @@ def _best_buy_action(session, buy_actions: list[dict[str, Any]]) -> dict[str, An
     scored = [(a, c) for a, c in scored if c is not None]
     if not scored:
         return buy_actions[0]
-    return max(scored, key=lambda pair: _holistic_card_score(session, seat, pair[1]))[0]
+    # Computed once for the whole decision rather than per candidate:
+    # _resource_weights scans the entire deck for gold density, and the result
+    # depends only on the position, not on which card is being scored. It was
+    # being recomputed twice per candidate (once here, once inside
+    # _sacrifice_bonus).
+    weights = _resource_weights(session, seat)
+    return max(scored, key=lambda pair: _holistic_card_score(session, seat, pair[1], weights))[0]
 
 
 WIN_SCORE = 10_000.0
@@ -422,8 +437,17 @@ def _action_summary(action: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
-def _heuristic_rollout_action(session) -> dict[str, Any]:
-    actions = _sorted_actions(legal_actions(session))
+def _heuristic_rollout_action(session, actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Greedy default policy. `actions` may be passed in by a caller that has
+    already computed legal_actions for this state (the rollout loop does), to
+    avoid rebuilding the action dicts a second time.
+
+    session.legal_actions() already returns its result sorted by priority
+    descending, using the same key _sorted_actions applies, so re-sorting here
+    was a no-op - verified across 4999 states.
+    """
+    if actions is None:
+        actions = legal_actions(session)
     if not actions:
         return {"type": "advance_phase"}
 
@@ -460,14 +484,18 @@ def _rollout(session, turn_limit: int | None = None, action_cap: int = 400) -> f
     # Read at call time, not bound as a default, so the constant stays tunable.
     turn_limit = ROLLOUT_TURNS if turn_limit is None else turn_limit
     start_turn = session.turn_number
-    actions = 0
+    steps = 0
     while (not session.winner
            and session.turn_number - start_turn < turn_limit
-           and actions < action_cap):
-        if not legal_actions(session):
+           and steps < action_cap):
+        # Computed once and handed to the policy: this used to call
+        # legal_actions here for the emptiness check and again inside
+        # _heuristic_rollout_action, rebuilding every action dict twice.
+        actions = legal_actions(session)
+        if not actions:
             break
-        apply_action(session, _heuristic_rollout_action(session))
-        actions += 1
+        apply_action(session, _heuristic_rollout_action(session, actions))
+        steps += 1
     return _leaf_value(session)
 
 

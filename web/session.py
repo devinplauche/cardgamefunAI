@@ -28,6 +28,37 @@ DEFAULT_CARDS = load_hero_cards(str(CARDS_PATH))
 PHASES = ("play", "champion", "buy", "combat")
 
 
+# Action priorities are pure functions of a card, and HRCard is never mutated,
+# so they are computed once per distinct card rather than rebuilt on every
+# legal_actions() call. legal_actions runs ~25k times per MCTS decision, and
+# these lookups were the single largest source of HRCard.get calls (~420k in a
+# 12-decision profile). Keyed by card.id, which is unique across the card set
+# and the five hardcoded starting/Fire Gem cards (verified: 60 cards, no
+# duplicate ids, no id with conflicting stats).
+_PLAY_PRIORITY_CACHE: dict[str, int] = {}
+_BUY_PRIORITY_CACHE: dict[str, int] = {}
+
+
+def _play_priority(card: HRCard) -> int:
+    cached = _PLAY_PRIORITY_CACHE.get(card.id)
+    if cached is None:
+        eff = card.effects
+        cached = (card.cost + eff.get("draw", 0) * 3
+                  + eff.get("gold", 0) * 2 + eff.get("combat", 0))
+        _PLAY_PRIORITY_CACHE[card.id] = cached
+    return cached
+
+
+def _buy_priority(card: HRCard) -> int:
+    cached = _BUY_PRIORITY_CACHE.get(card.id)
+    if cached is None:
+        eff = card.effects
+        cached = (card.cost + eff.get("combat", 0) * 2
+                  + eff.get("gold", 0) * 2 + eff.get("draw", 0) * 2)
+        _BUY_PRIORITY_CACHE[card.id] = cached
+    return cached
+
+
 def _copy_champion(champion: BoardChampion) -> BoardChampion:
     clone = BoardChampion.__new__(BoardChampion)
     clone.card = champion.card  # HRCard is never mutated; share the reference
@@ -276,7 +307,7 @@ class GameSession:
                         "type": "play_card",
                         "cardId": card.id,
                         "label": card.name,
-                        "priority": card.cost + card.get("draw", 0) * 3 + card.get("gold", 0) * 2 + card.get("combat", 0),
+                        "priority": _play_priority(card),
                     }
                 )
         elif self.phase == "champion":
@@ -298,7 +329,7 @@ class GameSession:
                             "type": "buy_card",
                             "marketIndex": idx,
                             "label": card.name,
-                            "priority": card.cost + card.get("combat", 0) * 2 + card.get("gold", 0) * 2 + card.get("draw", 0) * 2,
+                            "priority": _buy_priority(card),
                         }
                     )
             if player.gold >= 2 and self.market.can_buy_fire_gem():
@@ -474,6 +505,17 @@ class GameSession:
         return self.get_state()
 
     def get_state(self) -> dict[str, Any]:
+        # Every action handler (play_card, buy_card_action, attack_target_action,
+        # advance_phase, end_turn) returns self.get_state(), and apply_action
+        # discards it. Inside an MCTS rollout that meant serialising both hands,
+        # both boards, the market and legal_actions on *every* action, purely to
+        # throw it away - measured at ~32% of total rollout time.
+        #
+        # _check_winner() still has to run: it is the only thing that sets
+        # self.winner, which the rollout loop and evaluate_state both depend on.
+        if not self.record_history:
+            self._check_winner()
+            return {}
         state = self._core_state()
         state["history"] = self.history[-40:]
         return state
