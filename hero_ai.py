@@ -1,6 +1,6 @@
 """AI strategies for Hero Realms."""
 
-from hero_engine import HRPlayer, HRMarket, HRCard, play_card, buy_card, has_ally, auto_expend_all
+from hero_engine import HRPlayer, HRMarket, HRCard, play_card, buy_card, has_ally, auto_expend_all, remove_stunned_champions
 
 
 # --- Play strategies ---
@@ -180,8 +180,8 @@ def attack_weakest(player: HRPlayer, opponent: HRPlayer, guards: list):
         dmg = min(player.combat, bc.current_health)
         bc.current_health -= dmg
         player.combat -= dmg
-    # Remove dead champions
-    opponent.board = [bc for bc in opponent.board if bc.alive]
+    # Stunned champions go to their owner's discard pile, not out of the game.
+    remove_stunned_champions(opponent)
 
 
 def attack_strongest(player: HRPlayer, opponent: HRPlayer, guards: list):
@@ -193,7 +193,7 @@ def attack_strongest(player: HRPlayer, opponent: HRPlayer, guards: list):
         dmg = min(player.combat, bc.current_health)
         bc.current_health -= dmg
         player.combat -= dmg
-    opponent.board = [bc for bc in opponent.board if bc.alive]
+    remove_stunned_champions(opponent)
 
 
 # --- Expend strategy ---

@@ -296,6 +296,36 @@ terms (opponent-HP urgency, ally certainty, thinning value, sacrifice bonus),
 which is exactly what a coach needs to justify a recommendation. It belongs in
 the explanation layer, not in the rollout.
 
+## Engine-vs-rules audit (three more bugs)
+
+Prompted by how many rules bugs kept surfacing one at a time. `tools/audit_cards.py`
+compares every card's printed text to its parsed `effects` dict; it found the
+**card data is clean** (55 cards, one false positive where `discard: 1`
+correctly encodes "draw a card, then discard a card"). That was the useful
+result: every bug found so far has been in **engine logic**, not data. So the
+audit moved to engine-vs-rules semantics.
+
+**1. Wolf Shaman counted only champions.** Its text reads "+1 combat for each
+other {Wild} *card* you have in play" - not "champion". All eight other
+`per_*` counting sites say champion or guard, so board-only is right for them;
+this one is not. Wild actions in play now count.
+
+**2. Champion damage carried over between turns.** The rules: *"Damage to
+Champions does not carry over between turns."* `current_health` was set once in
+`BoardChampion.__init__` and never reset, so chip damage accumulated
+permanently and guards silently eroded across a game. Now reset at every
+per-turn boundary (`hero_engine`, `web/session`, `hero_rl_env`).
+
+**3. Stunned champions were destroyed instead of discarded.** The rules: *"Once
+stunned, a Champion is placed in its owner's discard pile."* Every combat site
+filtered dead champions off the board with a list comprehension, so the card
+left the game entirely - effectively banishing it. That made every champion a
+one-use card once attacked, and gutted champion-focused strategies. Now
+centralised in `remove_stunned_champions`, which moves the card to its owner's
+discard; ~3.4 champion cards per game are recoverable that previously vanished.
+
+Covered by `tests/test_champion_rules.py`.
+
 ## Known structural limits
 
 These cap what any amount of training can achieve here:

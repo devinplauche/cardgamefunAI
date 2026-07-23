@@ -150,6 +150,7 @@ class HeroRealmsEnv(gym.Env):
         opp.cards_bought = 0
         for bc in opp.board:
             bc.exhausted = False
+            bc.current_health = bc.card.health  # damage does not carry over between turns
 
         self._opponent_profile["play"](opp, ag, self.market)
         self._opponent_profile["expend"](opp, ag)
@@ -203,6 +204,7 @@ class HeroRealmsEnv(gym.Env):
         p.cards_bought = 0
         for bc in p.board:
             bc.exhausted = False
+            bc.current_health = bc.card.health  # damage does not carry over between turns
 
         play_all_playable(p, o, self.market)
         auto_expend_all(p, o)

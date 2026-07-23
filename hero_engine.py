@@ -143,6 +143,26 @@ def _card_score(card: HRCard) -> int:
             (card.health if card.card_type == "champion" else 0) * 2)
 
 
+def remove_stunned_champions(player: HRPlayer) -> list[HRCard]:
+    """Move stunned (destroyed) champions off the board into their owner's
+    discard pile, and return the cards moved.
+
+    Per the official rules: "Once stunned, a Champion is placed in its owner's
+    discard pile." Every combat site used to just filter dead champions off
+    the board with a list comprehension, so the card vanished from the game
+    entirely - effectively banishing it. That made every champion a one-use
+    card once attacked, and champion-focused strategies far weaker than the
+    rules allow.
+    """
+    stunned = [bc for bc in player.board if not bc.alive]
+    if not stunned:
+        return []
+    player.board = [bc for bc in player.board if bc.alive]
+    for bc in stunned:
+        player.discard.append(bc.card)
+    return [bc.card for bc in stunned]
+
+
 def _deck_gold_density(player: HRPlayer) -> float:
     """Average gold produced per card the player already owns.
 
@@ -412,6 +432,7 @@ class HRGame:
         player.next_buy_to_top_action_only = False
         for bc in player.board:
             bc.exhausted = False
+            bc.current_health = bc.card.health  # damage does not carry over between turns
 
         phase = "play"
         while phase:
@@ -678,7 +699,12 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
         player.combat += per_other_guard_combat * other_guards
     per_other_wild_combat = card.get("per_other_wild_combat", 0)
     if per_other_wild_combat:
+        # "for each other {Wild} CARD you have in play" - not "champion". The
+        # other per_* effects on nearby cards all say champion or guard, so
+        # board-only is right for them; this one is not. Actions played this
+        # turn are in play until the Discard Phase, so a Wild action counts.
         other_wild = len([c for c in player.board if c.alive and c.card.faction == "Wild" and c != bc])
+        other_wild += sum(1 for c in player.played_this_turn if c.faction == "Wild")
         player.combat += per_other_wild_combat * other_wild
     draws = card.get("draw", 0)
     if draws:

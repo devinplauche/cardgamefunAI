@@ -19,6 +19,7 @@ from hero_engine import (
     has_ally,
     load_hero_cards,
     play_card,
+    remove_stunned_champions,
 )
 
 
@@ -230,6 +231,8 @@ class GameSession:
         player.next_buy_to_top_action_only = False
         for champion in player.board:
             champion.exhausted = False
+            # Damage to champions does not carry over between turns.
+            champion.current_health = champion.card.health
 
     def _current(self) -> HRPlayer:
         return self.player if self.active_player == "player" else self.bot
@@ -447,7 +450,8 @@ class GameSession:
         champion.current_health -= dealt
         player.combat -= dealt
         if not champion.alive:
-            opponent.board = [item for item in opponent.board if item.alive]
+            # Stunned champions go to their owner's discard pile.
+            remove_stunned_champions(opponent)
         self.record_event("combat", f"Assigned {dealt} combat to {champion.card.name}")
 
         if player.combat > 0 and not any(item.guard and item.alive for item in opponent.board):
