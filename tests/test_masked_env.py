@@ -200,5 +200,43 @@ class TestAgentSide(unittest.TestCase):
                 self.assertTrue(done, f"{side}: game should reach a win/loss")
 
 
+
+
+class TestEvaluationReproducibility(unittest.TestCase):
+    """opponent_profile="random" drew from the global RNG, so the episode seed
+    fixed the deck shuffle but not which of the four profiles was faced. The
+    same model on the same seeds could score several points apart between runs,
+    which silently undermined every "identical seeds" comparison."""
+
+    def test_same_seed_gives_the_same_opponent_profile(self):
+        env = HeroRealmsMaskedEnv(opponent_profile="random")
+        first = [(env.reset(seed=i), env.opponent_profile_key)[1] for i in range(12)]
+        second = [(env.reset(seed=i), env.opponent_profile_key)[1] for i in range(12)]
+        self.assertEqual(first, second)
+
+    def test_profile_draw_is_not_disturbed_by_the_global_rng(self):
+        env = HeroRealmsMaskedEnv(opponent_profile="random")
+        env.reset(seed=3)
+        baseline = env.opponent_profile_key
+        random.seed(999)
+        random.random()
+        env.reset(seed=3)
+        self.assertEqual(env.opponent_profile_key, baseline)
+
+    def test_different_seeds_still_vary_the_profile(self):
+        env = HeroRealmsMaskedEnv(opponent_profile="random")
+        seen = set()
+        for i in range(40):
+            env.reset(seed=i)
+            seen.add(env.opponent_profile_key)
+        self.assertGreater(len(seen), 1, "seeding must not collapse to one profile")
+
+    def test_named_profile_is_unaffected(self):
+        env = HeroRealmsMaskedEnv(opponent_profile="economic")
+        for i in range(5):
+            env.reset(seed=i)
+            self.assertEqual(env.opponent_profile_key, "economic")
+
+
 if __name__ == "__main__":
     unittest.main()

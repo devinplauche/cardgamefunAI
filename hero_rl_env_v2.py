@@ -249,7 +249,13 @@ class HeroRealmsMaskedEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        key = (random.choice(list(OPPONENT_PROFILES.keys()))
+        # Draw the profile from a seed-derived RNG, not the global one. With
+        # random.choice, opponent_profile="random" made evaluation
+        # irreproducible: the seed fixed the deck shuffle but not which of the
+        # four profiles was faced, so the same model on the same seeds could
+        # score several points apart between runs.
+        self._episode_rng = random.Random(seed) if seed is not None else random
+        key = (self._episode_rng.choice(sorted(OPPONENT_PROFILES))
                if self._requested_profile == "random" else self._requested_profile)
         self._profile = OPPONENT_PROFILES[key]
         self.opponent_profile_key = key

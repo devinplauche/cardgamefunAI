@@ -46,10 +46,13 @@ class SelfPlayEnv(HeroRealmsMaskedEnv):
     def reset(self, seed=None, options=None):
         # Pick opponent and seat before reset, since reset may hand the opposing
         # seat its opening turn immediately when the agent sits second.
-        self._current_opponent = (random.choice(self.opponent_pool)
+        # Seed-derived where a seed is given, so an evaluation faces the same
+        # opponent and seat every run - same reason as the profile draw.
+        rng = random.Random(seed * 7919) if seed is not None else random
+        self._current_opponent = (rng.choice(self.opponent_pool)
                                   if self.opponent_pool else None)
         if self.random_seat:
-            self.agent_side = random.choice(("player", "bot"))
+            self.agent_side = rng.choice(("player", "bot"))
         return super().reset(seed=seed, options=options)
 
     def _opponent_turn(self):
