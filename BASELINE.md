@@ -670,6 +670,49 @@ against at any affordable sample size. A margin-based fitness (HP differential
 rather than binary win/loss) has far lower variance and is the obvious next
 attempt before spending more compute on the search itself.
 
+### Margin-based fitness (tried; also negative)
+
+HP margin correlates 0.89 with winning and carries a continuous per-game
+signal, so it should resolve differences binary win/loss cannot. It did, in
+the fit loop: 40x150 games, mean −11.9 → −5.6hp, real convergence rather than
+the win-rate version's noise. It did not transfer. Paired on identical held-out
+seeds (n=600, same seed plays default and fitted):
+
+  margin diff +0.87hp, SE 1.31, **z=0.67, ns**; fitted better in 42.5% of
+  games, worse in 38.7%, tied 18.8% — a coin flip.
+
+Both objectives now agree: tuning buy/card valuation does not move greedy's
+result against these opponents.
+
+### Why, most likely — reconciling with the variance ceiling
+
+The ceiling section shows ~30-37pp of *contested* headroom, and a deep-search
+MCTS converts some of it. But MCTS searches combat routing, sacrifice
+targeting and tempo — not just buy ordering. CMA-ES here only tunes card
+valuation, which feeds the *buy* decision. The coherent reading is that the
+headroom lives in how cards are played, not primarily in which are bought in
+what order: buy ordering is close to saturated for greedy, while play/combat
+decisions are where the contested ground is. That matches the one thing that
+did move the plateau being the full-action-space work, not any valuation
+change.
+
+### Domain caveat (added after seeing real game logs)
+
+The play data that motivated all of this comes from the digital client's
+**Hero** mode: custom hero starting decks (Cat Familiar, Fire Staff, Ignite,
+Spell Components, Calm Channel/Channel) plus cards this engine does not model
+(12 distinct ones seen in two logged games). The base engine starts every
+player with `7 Gold + Shortsword + Dagger + Ruby` and no hero. So the card-lift
+figures (Taxation +23pp, etc.) describe a richer game than the one being fit,
+and are not expected to transfer cleanly. The code-level finding — that the
+valuation has no ally or sacrifice term — is independent of this and stands.
+
+The same logs independently **validate** several rules fixes against the real
+client: first player draws 3 / second draws 5, Taxation's Imperial ally
+auto-grants 6 health retroactively, The Rot's Necros ally adds +3 combat
+retroactively (twice in one turn), stunned champions return the next turn, and
+sacrifice_card banishes a card. All match this session's changes.
+
 ## RL vs MCTS, head to head
 
 `hero_rl_vs_mcts.py`, 30 games per policy, sides split evenly, MCTS in its

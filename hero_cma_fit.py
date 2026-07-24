@@ -38,27 +38,52 @@ FIT_SEED_BASE = 200000      # seeds used during the search
 HOLDOUT_SEED_BASE = 900000  # never seen by the search or by model selection
 
 
+MARGIN_CLAMP = 15  # hp; beyond this a game is decided, so do not reward overkill
+
+
+def _play_greedy(env, seed):
+    env.reset(seed=seed)
+    done = truncated = False
+    reward = 0.0
+    while not (done or truncated):
+        table = env._action_table()
+        action = max(table, key=lambda k: table[k].get("priority", 0))
+        _, reward, done, truncated, _ = env.step(action)
+    me, foe = env._seats()
+    return (reward > 0) if done else None, me.hp - foe.hp
+
+
 def greedy_win_rate(n_games, seed_base, agent_side="player"):
     env = HeroRealmsMaskedEnv(opponent_profile="random", agent_side=agent_side)
     wins = decided = 0
     for i in range(n_games):
-        env.reset(seed=seed_base + i)
-        done = truncated = False
-        reward = 0.0
-        while not (done or truncated):
-            table = env._action_table()
-            action = max(table, key=lambda k: table[k].get("priority", 0))
-            _, reward, done, truncated, _ = env.step(action)
-        if done:
+        won, _ = _play_greedy(env, seed_base + i)
+        if won is not None:
             decided += 1
-            wins += reward > 0
+            wins += won
     return wins / max(decided, 1)
 
 
-def evaluate(vector, n_games, seed_base):
-    """CMA-ES minimizes, so return negative win rate."""
+def greedy_margin(n_games, seed_base, agent_side="player"):
+    """Mean clamped HP margin. Correlates 0.89 with winning but carries a
+    continuous per-game signal where win/loss carries one bit, so a fixed
+    game budget resolves policy differences the binary objective cannot.
+    Clamped to +/-MARGIN_CLAMP so the fit sharpens the win boundary rather
+    than rewarding 40-hp blowouts that are already decided wins."""
+    env = HeroRealmsMaskedEnv(opponent_profile="random", agent_side=agent_side)
+    total = 0.0
+    for i in range(n_games):
+        _, margin = _play_greedy(env, seed_base + i)
+        total += max(-MARGIN_CLAMP, min(MARGIN_CLAMP, margin))
+    return total / n_games
+
+
+def evaluate(vector, n_games, seed_base, objective="margin"):
+    """CMA-ES minimizes, so return the negated objective."""
     W.set_weights(W.from_vector(vector))
     try:
+        if objective == "margin":
+            return -greedy_margin(n_games, seed_base)
         return -greedy_win_rate(n_games, seed_base)
     finally:
         W.reset()
@@ -96,42 +121,54 @@ def empirical_check(weights):
 if __name__ == "__main__":
     generations = int(sys.argv[1]) if len(sys.argv) > 1 else 25
     n_games = int(sys.argv[2]) if len(sys.argv) > 2 else 120
+    objective = sys.argv[3] if len(sys.argv) > 3 else "margin"
 
     x0 = W.to_vector(W.DEFAULTS)
     baseline = greedy_win_rate(300, HOLDOUT_SEED_BASE)
-    print(f"Fitting {len(x0)} weights, {generations} generations x {n_games} games")
+    print(f"Fitting {len(x0)} weights, {generations}x{n_games} games, objective={objective}")
     print(f"  default weights, held-out (n=300): {baseline:.1%}\n", flush=True)
 
     es = cma.CMAEvolutionStrategy(x0, 3.0, {"popsize": 10, "seed": 7, "verbose": -9})
-    best_vec, best_fit = None, 0.0
+    unit = "hp" if objective == "margin" else ""
+    scale = 1.0 if objective == "margin" else 100.0
+    incumbents = []  # per-generation best; ranked on a disjoint block afterwards
     start = time.time()
 
     for gen in range(generations):
         # Rotate the seed block so the search cannot settle into one sample.
         seed_base = FIT_SEED_BASE + gen * n_games
         candidates = es.ask()
-        losses = [evaluate(c, n_games, seed_base) for c in candidates]
+        losses = [evaluate(c, n_games, seed_base, objective) for c in candidates]
         es.tell(candidates, losses)
+        incumbents.append(candidates[int(np.argmin(losses))])
+        print(f"  gen {gen + 1:2d}/{generations}  best-in-gen {-min(losses) * scale:.1f}{unit}  "
+              f"mean {-np.mean(losses) * scale:.1f}{unit}  ({time.time() - start:.0f}s)", flush=True)
 
-        gen_best = min(losses)
-        if gen_best < best_fit:
-            best_fit = gen_best
-            best_vec = candidates[int(np.argmin(losses))]
-        print(f"  gen {gen + 1:2d}/{generations}  best-in-gen {-gen_best:.1%}  "
-              f"mean {-np.mean(losses):.1%}  ({time.time() - start:.0f}s)", flush=True)
-
-    fitted = W.from_vector(best_vec if best_vec is not None else es.result.xbest)
+    # Per-generation bests were each scored on a different rotating block, so
+    # they are not comparable to one another - the earlier version's rolling
+    # best just picked the luckiest seed block. Re-rank the incumbents plus the
+    # CMA mean on one validation block, disjoint from both fit and held-out.
+    VAL_SEED_BASE = 500000
+    pool = incumbents + [es.result.xbest]
+    val = [-evaluate(v, 200, VAL_SEED_BASE, objective) for v in pool]
+    best_vec = pool[int(np.argmax(val))]
+    print(f"\n  selected on validation block: {max(val) * scale:.1f}{unit}", flush=True)
+    fitted = W.from_vector(best_vec)
     print("\nFitted weights:")
     for k, v in fitted.items():
         print(f"  {k:16s} {W.DEFAULTS[k]:7.2f} -> {v:7.2f}")
 
+    W.reset()
+    base_margin = greedy_margin(300, HOLDOUT_SEED_BASE)
     W.set_weights(fitted)
     held = greedy_win_rate(300, HOLDOUT_SEED_BASE)
+    held_margin = greedy_margin(300, HOLDOUT_SEED_BASE)
     W.reset()
 
-    print(f"\nHeld-out (n=300, unseen by the search):")
-    print(f"  default weights {baseline:.1%}")
-    print(f"  fitted weights  {held:.1%}   ({(held - baseline) * 100:+.1f}pp)")
+    print(f"\nHeld-out (n=300, unseen by the search or selection):")
+    print(f"  default  win {baseline:.1%}   margin {base_margin:+.2f}hp")
+    print(f"  fitted   win {held:.1%}   margin {held_margin:+.2f}hp")
+    print(f"  delta        {(held - baseline) * 100:+.1f}pp        {held_margin - base_margin:+.2f}hp")
 
     before, after, total = empirical_check(fitted)
     print(f"\nRank among {total} unique cards (never a fit target):")
