@@ -79,17 +79,31 @@ class HeroRealmsMaskedEnv(gym.Env):
         obs_dim = (8 + 12 + (MARKET_SLOTS * 7) + (CHAMPION_SLOTS * 5) * 2 + (HAND_SLOTS * 7))
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32)
 
+    @staticmethod
+    def _other(side):
+        return "bot" if side == "player" else "player"
+
     @property
     def me(self):
         return getattr(self.session, self.agent_side)
 
     @property
     def foe(self):
-        return self.session.bot if self.agent_side == "player" else self.session.player
+        return getattr(self.session, self._other(self.agent_side))
 
     @property
     def _foe_side(self):
-        return "bot" if self.agent_side == "player" else "player"
+        return self._other(self.agent_side)
+
+    def _seats(self, side=None):
+        """(acting player, their opponent) for whichever seat is asked about.
+
+        Self-play needs the opposing policy's view of the same session, so
+        every perspective-dependent method takes a side rather than reading
+        self.agent_side directly.
+        """
+        side = side or self.agent_side
+        return getattr(self.session, side), getattr(self.session, self._other(side))
 
     # ---- observation ----
 
@@ -135,9 +149,9 @@ class HeroRealmsMaskedEnv(gym.Env):
             feats.append(min(sum(1 for c in owned if c.faction == f) / 8.0, 1.0))
         return feats
 
-    def _get_obs(self):
+    def _get_obs(self, side=None):
         s = self.session
-        p, o = self.me, self.foe
+        p, o = self._seats(side)
         f = [
             p.hp / 50.0, o.hp / 50.0,
             min(p.gold / 20.0, 1.0), min(p.combat / 20.0, 1.0),
@@ -160,16 +174,17 @@ class HeroRealmsMaskedEnv(gym.Env):
 
     # ---- action mapping ----
 
-    def _action_table(self):
+    def _action_table(self, side=None):
         """Map each legal session action onto a flat index. Several legal
         actions can share an index (a stun card with multiple targets); the
         highest-priority variant wins, which keeps target choice heuristic for
         stuns while leaving physical combat targeting to the policy."""
         s = self.session
         table = {}
-        hand_ids = [c.id for c in self.me.hand]
-        board_ids = [str(bc.instance_id) for bc in self.me.board if bc.alive and not bc.exhausted]
-        targets = [str(bc.instance_id) for bc in s._attack_targets(self.foe)]
+        me, foe = self._seats(side)
+        hand_ids = [c.id for c in me.hand]
+        board_ids = [str(bc.instance_id) for bc in me.board if bc.alive and not bc.exhausted]
+        targets = [str(bc.instance_id) for bc in s._attack_targets(foe)]
 
         for a in s.legal_actions():
             t = a["type"]
@@ -200,10 +215,10 @@ class HeroRealmsMaskedEnv(gym.Env):
                 table[idx] = a
         return table
 
-    def action_masks(self):
+    def action_masks(self, side=None):
         mask = np.zeros(N_ACTIONS, dtype=bool)
         if self.session.winner is None:
-            for idx in self._action_table():
+            for idx in self._action_table(side):
                 mask[idx] = True
         if not mask.any():
             mask[ADVANCE] = True  # never hand MaskablePPO an all-false mask
@@ -215,7 +230,7 @@ class HeroRealmsMaskedEnv(gym.Env):
         """Heuristic profile rather than the session's MCTS bot: 2M training
         steps cannot afford thousands of rollouts per opponent move."""
         s = self.session
-        opp, ag = self.foe, self.me
+        ag, opp = self._seats()
         prof = self._profile
         prof["play"](opp, ag, self.market)
         prof["expend"](opp, ag)
