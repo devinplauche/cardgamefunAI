@@ -337,6 +337,60 @@ These cap what any amount of training can achieve here:
    deckbuilder, the agent cannot see its own deck quality.
 3. **Hand is observed post-auto-play**, and only the first 5 cards.
 
+Limits 1–3 are addressed by `hero_rl_env_v2.py` (see below). **Fixing them did
+not fix the win rate**, which relocates the problem rather than solving it.
+
+## V14 — last buy-only run, first on the corrected engine
+
+Every model v10–v13 was trained against a broken engine (54-card market deck,
+non-retroactive allies, mandatory sacrifice, champion damage persisting across
+turns, stunned champions destroyed rather than discarded, dead reanimate code).
+Those checkpoints are invalid baselines and were not resumed from.
+
+V14 (2M steps, Fire Gem penalty −0.01, buy-only): peak 24.0% at 1.7M, final
+**19.5%** vs random profiles. No plateau, 15–24% band, no convergence.
+
+## V15 — unified action space did not beat a naive heuristic
+
+`hero_rl_env_v2.py` drives the real `GameSession`: play order, champion
+expends, buys, and combat routing/targeting are all the policy's decisions,
+illegal actions masked via `MaskablePPO` (sb3-contrib). Observation gains deck
+composition (gold/combat/draw density, faction counts, sacrifice access).
+
+Measured on identical eval seeds (100000–100199, `opponent_profile="random"`):
+
+| Policy | Win rate |
+| --- | --- |
+| Uniform random legal action | 0.0% |
+| **Naive highest-priority greedy** | **37.5%** |
+| V15 @ 500k | 29.5% |
+| V15 @ 900k (best checkpoint) | 36.5% |
+| V15 @ 2M (final) | 19.0% |
+
+**MaskablePPO never beat greedy.** The run oscillated 23–38% with no learning
+trend across 2M steps and collapsed to 18% at the end — that is noise around a
+naive baseline, not convergence.
+
+Note the earlier "greedy 34%" figure was measured on seeds 0–49; on the eval
+seeds it is 37.5%. Baselines and checkpoints must share a seed set to be
+comparable — the two numbers are the same policy, not a change.
+
+What this rules out and what it doesn't:
+
+- **Ruled out:** that the buy-only action space was the binding constraint.
+  It was a real limit (v14 could not learn targeting at all), but removing it
+  moved the ceiling by ~0, so it was not what was holding the win rate down.
+- **Not ruled out:** sparse terminal-only reward over ~69-step episodes across
+  30 actions makes credit assignment hard; fixed heuristic opponents cap the
+  skill ceiling; PPO from random init may simply need a warm start to find the
+  region greedy already occupies; sacrifice/discard (still heuristic, and named
+  by the project owner as among the game's most important decisions) may carry
+  more of the value than buy/play/targeting combined.
+
+The practical read: **MCTS remains the stronger engine for this game**, and
+that conclusion is now supported by a full-action-space RL run rather than
+only by the buy-only one.
+
 ## Rules corrections applied
 
 Verified against the [official base-set rules](https://www.herorealms.com/base-game-rules/):
