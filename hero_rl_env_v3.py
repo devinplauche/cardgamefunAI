@@ -50,12 +50,20 @@ class HeroRealmsChoiceEnv(HeroRealmsMaskedEnv):
         from gymnasium import spaces
         self.action_space = spaces.Discrete(N_ACTIONS)
 
+    #: Set True only when the opposing seat is driven by something that can
+    #: answer choices (a policy in self-play). A heuristic profile cannot:
+    #: nothing calls auto_resolve_choices for it, so its pending choices sit
+    #: unanswered until _start_turn drops them, silently deleting every
+    #: sacrifice and discard it should have made - Elven Gift would draw
+    #: without discarding, a free card. That distorts the opponent and makes
+    #: results incomparable to the v2 baselines.
+    defer_opponent = False
+
     def reset(self, seed=None, options=None):
         obs, info = super().reset(seed=seed, options=options)
-        # Both seats defer: the opposing policy gets the same decisions the
-        # agent does, so self-play and mirror matches stay symmetric.
-        self.session.player.defer_choices = True
-        self.session.bot.defer_choices = True
+        me, foe = self._seats()
+        me.defer_choices = True
+        foe.defer_choices = self.defer_opponent
         return obs, info
 
     def _pending(self, side=None):

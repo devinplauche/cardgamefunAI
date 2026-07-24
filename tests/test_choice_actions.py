@@ -112,11 +112,36 @@ class TestChoiceEnv(unittest.TestCase):
         self.assertEqual(CHOICE_BASE, 30)
         self.assertEqual(N_ACTIONS, 40)
 
-    def test_both_seats_defer_so_selfplay_stays_symmetric(self):
+    def test_heuristic_opponent_does_not_defer(self):
+        """Nothing answers a heuristic opponent's choices, so deferring them
+        deletes its sacrifices and discards at the next _start_turn - Elven
+        Gift would draw without discarding. That silently changes the
+        opponent and breaks comparability with the v2 baselines."""
         env = HeroRealmsChoiceEnv(opponent_profile="balanced")
         env.reset(seed=0)
-        self.assertTrue(env.session.player.defer_choices)
-        self.assertTrue(env.session.bot.defer_choices)
+        self.assertTrue(env.me.defer_choices)
+        self.assertFalse(env.foe.defer_choices)
+
+    def test_opponent_choices_never_go_unanswered_during_a_game(self):
+        env = HeroRealmsChoiceEnv(opponent_profile="balanced")
+        env.reset(seed=1)
+        for _ in range(200):
+            table = env._action_table()
+            _, _, done, trunc, _ = env.step(max(table, key=lambda k: table[k].get("priority", 0)))
+            self.assertFalse(env.foe.pending_choices,
+                             "heuristic opponent left a choice unresolved")
+            if done or trunc:
+                break
+
+    def test_defer_opponent_flag_enables_symmetric_deferral(self):
+        """Self-play needs both seats deferring, since a policy can answer."""
+        class Symmetric(HeroRealmsChoiceEnv):
+            defer_opponent = True
+
+        env = Symmetric(opponent_profile="balanced")
+        env.reset(seed=0)
+        self.assertTrue(env.me.defer_choices)
+        self.assertTrue(env.foe.defer_choices)
 
     def test_pending_choice_blocks_all_other_actions(self):
         env = HeroRealmsChoiceEnv(opponent_profile="balanced")
