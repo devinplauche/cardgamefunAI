@@ -789,6 +789,38 @@ shippable MCTS bot does — its default `evaluate_state` is pure HP-diff and its
 rollout horizon ends at its own turn, so it is theoretically blind to the
 future-turn value an enemy champion denies.
 
+## MCTS blind spot: it under-clears economy champions (confirmed)
+
+Controlled combat-decision test: bot in the combat phase with enough combat to
+kill one non-guard enemy champion and still hit face (not lethal), 20 trials per
+champion at 300ms. Measured how often MCTS snipes the champion vs hits face,
+against what the greedy `attack_weakest` fallback does.
+
+| champion | recurring value | MCTS snipes | heuristic |
+| --- | --- | --- | --- |
+| Broelyn, Loreweaver | 2 gold / turn | **0%** | 100% |
+| Rasmus, the Smuggler | 2 gold | 15% | 100% |
+| Cult Priest | gold + combat | 25% | 100% |
+| Tithe Priest | 1 gold | 35% | 100% |
+| Cron, the Berserker | **5 combat** | 100% | 100% |
+| Rayla, Endweaver | 3 combat | 90% | 100% |
+
+The split is clean and matches the mechanism exactly. `evaluate_state` is pure
+HP-diff and the rollout horizon is short, so a champion whose expend deals
+*combat* shows up (the rollout takes that damage → worse HP-diff → MCTS kills
+it, ~95-100%). A champion whose expend makes *gold* does not (economy denial has
+no HP signature in the horizon → the search is indifferent → 0-35%). The greedy
+fallback clears everything.
+
+This is the ~20pp champion-denial lever, located inside the shippable bot: MCTS
+systematically leaves enemy economy engines alive, and on this class of decision
+its own greedy fallback plays better than the search. Fix path: give
+`evaluate_state` (or the combat rollout) a term for enemy non-guard board value
+so denial is priced, then A/B the win-rate delta. Not yet built — `evaluate_state`
+is deliberately pure HP-diff (see its docstring), so changing it is a real design
+decision, and the win-rate gain of the fix is inferred from the round-robin, not
+yet directly measured.
+
 ## RL vs MCTS, head to head
 
 `hero_rl_vs_mcts.py`, 30 games per policy, sides split evenly, MCTS in its
