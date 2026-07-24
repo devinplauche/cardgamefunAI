@@ -387,9 +387,60 @@ What this rules out and what it doesn't:
   by the project owner as among the game's most important decisions) may carry
   more of the value than buy/play/targeting combined.
 
-The practical read: **MCTS remains the stronger engine for this game**, and
-that conclusion is now supported by a full-action-space RL run rather than
-only by the buy-only one.
+## V16 — the warm start was the missing piece
+
+Behavior-clone greedy (3000 episodes, 428k state-action pairs, BC loss
+0.297 → 0.022), then fine-tune with the same MaskablePPO setup at a lower
+learning rate (1e-4) and entropy (0.005).
+
+| Stage | Win rate (eval seeds) |
+| --- | --- |
+| BC clone of greedy | 33.0% |
+| + 150k fine-tune | 39.5% |
+| + 350k fine-tune | 55.5% (best observed) |
+| + 500k fine-tune (final) | 47.0% |
+
+Validated on **held-out seeds 900000–900499** (n=500, never used in BC
+collection or in-training eval):
+
+| Opponent | V16 final | Greedy |
+| --- | --- | --- |
+| random (n=500) | **46.8%** | 30.6% |
+| balanced | 43.3% | 32.0% |
+| aggressive | 51.3% | 37.3% |
+| economic | 52.0% | 32.0% |
+| champion | 47.3% | 34.7% |
+
+This is the first RL policy in the project to beat the heuristic, and it beats
+it on every opponent profile, on seeds it never trained against.
+
+The V15 hypothesis was therefore right in mechanism but wrong in emphasis: PPO
+*can* improve on greedy in this action space, it just cannot find greedy's
+region of policy space on its own from a terminal-only ±1 reward. Cloning
+first and improving second works; exploring from random init does not.
+
+Note greedy scores 37.5% on the eval seeds but 30.6% on the held-out set — the
+heuristic is more seed-sensitive than the learned policy (46.8% vs 47.0%
+across the same two sets). Compare policies within a seed set, never across.
+
+**Process failure worth recording:** V16's phase 2 had an eval callback but no
+checkpoint callback, so the best observed model (55.5% at 350k) was overwritten
+and is unrecoverable. Only the 47.0% final survives. V17 pairs every eval with
+a save for exactly this reason.
+
+## Where this leaves MCTS vs RL
+
+The earlier read — that MCTS is simply the stronger engine — was based on RL
+never beating a naive heuristic. V16 changes that premise and the conclusion
+should move with it: a warm-started policy beats greedy comfortably and costs
+one forward pass at inference, against MCTS's thousands of rollouts.
+
+What has *not* been shown is RL beating MCTS. These have never been played
+head-to-head, and the RL numbers are all against fixed heuristic profiles, so
+they measure "beats these four bots" rather than general strength. The honest
+current standing is: MCTS is still the strongest thing here, RL is no longer
+structurally hopeless, and the comparison that would settle it has not been
+run.
 
 ## Rules corrections applied
 
