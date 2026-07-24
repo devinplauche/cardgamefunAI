@@ -543,6 +543,27 @@ plateau is not deck variance** — there is real room, and further optimization
 is justified. (A player-seat run gives 22.3% always-lost and a 77.7% ceiling;
 absolute numbers shift with the seat, the conclusion does not.)
 
+### The always-lost band is not actually unwinnable
+
+Probing it with MCTS at 960 ms — same opponent, same seeds, only the agent's
+strength changed — converts **8 of 30**, i.e. 26.7% (95% CI 10.8–42.5%). Those
+seeds are hard, not lost. Correcting for it:
+
+| | ceiling |
+| --- | --- |
+| partition alone (assumes always-lost is unwinnable) | 69.7% |
+| corrected, low conversion (10.8%) | 73.0% |
+| **corrected, point estimate (26.7%)** | **77.8%** |
+| corrected, high conversion (42.5%) | 82.6% |
+
+So the ceiling is ~78% and the headroom is **~37pp**, not 29. And that is still
+a lower bound: MCTS at 960 ms is not optimal play either.
+
+Note this reaches the same verbal conclusion as the *broken* first probe, which
+swapped the opponent instead of the agent. That version's 11/25 was an artifact
+of a different matchup and remains void; this one varies only the agent, which
+is the comparison the claim requires.
+
 Two bugs were fixed in this harness before its numbers meant anything:
 
 - The probe swapped the **opponent** for MCTS instead of strengthening the
