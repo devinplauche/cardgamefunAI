@@ -456,12 +456,64 @@ never beating a naive heuristic. V16 changes that premise and the conclusion
 should move with it: a warm-started policy beats greedy comfortably and costs
 one forward pass at inference, against MCTS's thousands of rollouts.
 
-What has *not* been shown is RL beating MCTS. These have never been played
-head-to-head, and the RL numbers are all against fixed heuristic profiles, so
-they measure "beats these four bots" rather than general strength. The honest
-current standing is: MCTS is still the strongest thing here, RL is no longer
-structurally hopeless, and the comparison that would settle it has not been
-run.
+## RL vs MCTS, head to head
+
+`hero_rl_vs_mcts.py`, 30 games per policy, sides split evenly, MCTS in its
+**best documented configuration** (960 ms, search-priced eval — the budget
+where the sweep above shows it becoming competitive):
+
+| Policy | vs MCTS | as player seat | as bot seat |
+| --- | --- | --- | --- |
+| Greedy heuristic | 43.3% | 26.7% | 60.0% |
+| **V16 (BC + fine-tune)** | **60.0%** | 46.7% | 73.3% |
+
+MCTS beats greedy at 960 ms (56.7–43.3), which matches the crossover in the
+budget sweep. **V16 beats MCTS at MCTS's best budget**, at one forward pass per
+move against ~960 ms of search.
+
+At 300 ms with search eval — i.e. below the crossover — the same harness gives
+greedy 58.3% and V16 70.0%. That configuration runs MCTS near its floor and
+should not be quoted as a fair result; it is recorded only to show the budget
+dependence.
+
+### The seat matters enormously against MCTS
+
+Against heuristic profiles the seat is nearly neutral (greedy 34.0% as player
+vs 33.3% as bot). Against MCTS it swings by 27–33 points for both policies:
+MCTS is far weaker in the player seat (moves first, 3-card opening) than in the
+bot seat it was developed and benchmarked in — `evaluate_state` scores from
+`session.bot`'s perspective, and every earlier MCTS number in this file comes
+from that seat.
+
+Any MCTS benchmark that does not split seats is measuring the seat. The
+original version of this harness did not split them, and its docstring claimed
+it did.
+
+## Where this leaves MCTS vs RL
+
+An earlier revision of this file claimed MCTS was "still the strongest thing
+here". That was never supported by the data already recorded above: at the
+60 ms budget the web UI uses, MCTS scores 14–20% against heuristic profiles
+while its own greedy fallback scores 40%. MCTS only reaches parity with the
+heuristic at 960 ms.
+
+Corrected standing, by inference cost:
+
+| | Strength | Cost per move |
+| --- | --- | --- |
+| Greedy heuristic | baseline | ~0 |
+| MCTS @ 60 ms | **below** greedy | 60 ms |
+| MCTS @ 960 ms | ~matches greedy, beats it head-to-head | 960 ms |
+| **V16 RL** | beats greedy and beats MCTS@960ms | one forward pass |
+
+The warm-started RL policy is the strongest option in the repo at interactive
+speed. This reverses the earlier read, which rested on RL never having cleared
+a naive heuristic — true of v14 and v15, not of v16.
+
+Caveats that keep this provisional: 30 games per cell is roughly ±9pp, all RL
+training used fixed heuristic opponents, and MCTS still searches only buy and
+attack decisions (play/expend stay heuristic from the sample-starvation fix),
+so a better-budgeted or fuller-search MCTS is not ruled out.
 
 ## Rules corrections applied
 

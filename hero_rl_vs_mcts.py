@@ -12,8 +12,15 @@ advantage - Hero Realms compensates player 1's initiative with a 3-card
 opening hand instead of 5, but that is a rules-level correction, not a
 guarantee the seat is neutral for any particular pair of policies.
 
+MCTS configuration matters more than it looks. BASELINE.md's budget sweep
+shows the two evaluators cross over between 240ms and 960ms: search-priced
+eval sits near the floor until roughly 960ms and only then jumps to ~42.5%,
+while shaped eval is close to flat at ~25-35%. web/bot.py ships
+EVAL_MODE = "search", so benchmarking at a few hundred ms runs MCTS in its
+worst configuration for that budget. Pass eval_mode explicitly.
+
 Usage:
-    python hero_rl_vs_mcts.py [n_games] [budget_ms] [model_path]
+    python hero_rl_vs_mcts.py [n_games] [budget_ms] [model_path] [eval_mode]
 """
 import sys
 import time
@@ -101,13 +108,24 @@ if __name__ == "__main__":
     n_games = int(sys.argv[1]) if len(sys.argv) > 1 else 50
     budget_ms = int(sys.argv[2]) if len(sys.argv) > 2 else 60
     model_path = sys.argv[3] if len(sys.argv) > 3 else "models_v16/v16_final"
+    eval_mode = sys.argv[4] if len(sys.argv) > 4 else None
+
+    if eval_mode:
+        import web.bot
+        web.bot.EVAL_MODE = eval_mode
 
     model = MaskablePPO.load(model_path)
 
     def rl_pick(env, obs):
         return model.predict(obs, action_masks=env.action_masks(), deterministic=True)[0]
 
-    print(f"{n_games} games vs MCTS @ {budget_ms}ms/move\n")
+    import web.bot
+
+    # Echo the config. Which evaluator MCTS uses matters more than the budget
+    # number on its own - search-priced eval is near the floor below ~960ms and
+    # competitive above it - so a benchmark that does not say is unreadable.
+    print(f"{n_games} games vs MCTS @ {budget_ms}ms/move, "
+          f"eval={web.bot.EVAL_MODE}, buy={web.bot.BUY_POLICY}\n")
     for label, policy in (("greedy", greedy_pick), (model_path, rl_pick)):
         w, l, t, secs, tally = run_match(policy, n_games, budget_ms)
         rate = w / max(w + l, 1)
