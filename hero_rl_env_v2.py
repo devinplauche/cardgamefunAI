@@ -58,8 +58,15 @@ class HeroRealmsMaskedEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
 
     def __init__(self, cards=None, opponent_profile="random", max_steps=1000,
-                 fire_gem_penalty=0.0, seed=None):
+                 fire_gem_penalty=0.0, seed=None, agent_side="player"):
         super().__init__()
+        # The two seats are not symmetric: the player seat moves first and is
+        # compensated with a 3-card opening hand against the bot seat's 5.
+        # Benchmarks that always seat the tested policy in one of them measure
+        # the seat as much as the policy, so the side is parameterized.
+        if agent_side not in ("player", "bot"):
+            raise ValueError("agent_side must be 'player' or 'bot'")
+        self.agent_side = agent_side
         self.cards = cards if cards is not None else load_hero_cards("data/hero_realms_cards.json")
         self.max_steps = max_steps
         self.fire_gem_penalty = fire_gem_penalty
@@ -71,6 +78,18 @@ class HeroRealmsMaskedEnv(gym.Env):
         self.action_space = spaces.Discrete(N_ACTIONS)
         obs_dim = (8 + 12 + (MARKET_SLOTS * 7) + (CHAMPION_SLOTS * 5) * 2 + (HAND_SLOTS * 7))
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32)
+
+    @property
+    def me(self):
+        return getattr(self.session, self.agent_side)
+
+    @property
+    def foe(self):
+        return self.session.bot if self.agent_side == "player" else self.session.player
+
+    @property
+    def _foe_side(self):
+        return "bot" if self.agent_side == "player" else "player"
 
     # ---- observation ----
 
@@ -118,7 +137,7 @@ class HeroRealmsMaskedEnv(gym.Env):
 
     def _get_obs(self):
         s = self.session
-        p, o = s.player, s.bot
+        p, o = self.me, self.foe
         f = [
             p.hp / 50.0, o.hp / 50.0,
             min(p.gold / 20.0, 1.0), min(p.combat / 20.0, 1.0),
@@ -148,9 +167,9 @@ class HeroRealmsMaskedEnv(gym.Env):
         stuns while leaving physical combat targeting to the policy."""
         s = self.session
         table = {}
-        hand_ids = [c.id for c in s.player.hand]
-        board_ids = [str(bc.instance_id) for bc in s.player.board if bc.alive and not bc.exhausted]
-        targets = [str(bc.instance_id) for bc in s._attack_targets(s.bot)]
+        hand_ids = [c.id for c in self.me.hand]
+        board_ids = [str(bc.instance_id) for bc in self.me.board if bc.alive and not bc.exhausted]
+        targets = [str(bc.instance_id) for bc in s._attack_targets(self.foe)]
 
         for a in s.legal_actions():
             t = a["type"]
@@ -196,7 +215,7 @@ class HeroRealmsMaskedEnv(gym.Env):
         """Heuristic profile rather than the session's MCTS bot: 2M training
         steps cannot afford thousands of rollouts per opponent move."""
         s = self.session
-        opp, ag = s.bot, s.player
+        opp, ag = self.foe, self.me
         prof = self._profile
         prof["play"](opp, ag, self.market)
         prof["expend"](opp, ag)
@@ -225,6 +244,10 @@ class HeroRealmsMaskedEnv(gym.Env):
         self.session.phase = "play"
         self.market = self.session.market
         self.steps_taken = 0
+        # Seated second: the opposing seat takes its opening turn before the
+        # agent ever observes the state.
+        if self.agent_side == "bot":
+            self._opponent_turn()
         return self._get_obs(), {}
 
     def step(self, action):
@@ -247,18 +270,18 @@ class HeroRealmsMaskedEnv(gym.Env):
         apply_action(s, chosen)
 
         # end_turn inside advance_phase hands the turn to the opponent.
-        if s.winner is None and s.active_player == "bot":
+        if s.winner is None and s.active_player == self._foe_side:
             self._opponent_turn()
 
         done = s.winner is not None
         if done:
             # GameSession.winner is the side key ("player"/"bot"), not the
             # HRPlayer.name ("Player"/"Bot") the v1 env compares against.
-            reward = 1.0 if s.winner == "player" else -1.0
+            reward = 1.0 if s.winner == self.agent_side else -1.0
         truncated = self.steps_taken >= self.max_steps and not done
         return self._get_obs(), reward, done, truncated, {}
 
     def render(self):
         s = self.session
-        print(f"T{s.turn_number} {s.phase} | P {s.player.hp}hp g{s.player.gold} c{s.player.combat} "
-              f"| O {s.bot.hp}hp")
+        print(f"T{s.turn_number} {s.phase} | me {self.me.hp}hp g{self.me.gold} "
+              f"c{self.me.combat} | foe {self.foe.hp}hp")

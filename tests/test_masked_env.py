@@ -157,5 +157,48 @@ class TestPolicySeparation(unittest.TestCase):
         self.assertGreater(run(True), run(False) + 0.15)
 
 
+
+
+class TestAgentSide(unittest.TestCase):
+    """The two seats are not symmetric - the player seat moves first and is
+    compensated with a 3-card opening hand against the bot seat's 5 - so a
+    benchmark that always seats the tested policy on one side measures the seat
+    as well as the policy."""
+
+    def test_rejects_an_unknown_side(self):
+        with self.assertRaises(ValueError):
+            HeroRealmsMaskedEnv(agent_side="neither")
+
+    def test_seated_second_the_opponent_has_already_moved_at_reset(self):
+        env = HeroRealmsMaskedEnv(opponent_profile="balanced", agent_side="bot")
+        env.reset(seed=7)
+        self.assertEqual(env.session.active_player, "bot")
+        self.assertIs(env.me, env.session.bot)
+        self.assertIs(env.foe, env.session.player)
+
+    def test_reward_follows_the_agent_side_not_a_hardcoded_seat(self):
+        for side in ("player", "bot"):
+            env = HeroRealmsMaskedEnv(opponent_profile="balanced", agent_side=side)
+            env.reset(seed=0)
+            env.foe.hp = 1
+            env.me.combat = 50
+            env.session.active_player = side
+            env.session.phase = "combat"
+            _, reward, done, _, _ = env.step(ATTACK_FACE)
+            self.assertTrue(done, f"{side}: lethal should end the game")
+            self.assertEqual(reward, 1.0, f"{side}: agent's own lethal must score +1")
+
+    def test_both_seats_are_playable_end_to_end(self):
+        for side in ("player", "bot"):
+            env = HeroRealmsMaskedEnv(opponent_profile="random", agent_side=side)
+            for ep in range(3):
+                env.reset(seed=ep)
+                done = trunc = False
+                while not (done or trunc):
+                    table = env._action_table()
+                    _, _, done, trunc, _ = env.step(random.choice(list(table)))
+                self.assertTrue(done, f"{side}: game should reach a win/loss")
+
+
 if __name__ == "__main__":
     unittest.main()

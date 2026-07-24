@@ -38,12 +38,29 @@ class MCTSOpponentEnv(HeroRealmsMaskedEnv):
         return obs, info
 
     def _opponent_turn(self):
-        self.session.run_bot_turn()
-        self.session._check_winner()
-        if self.session.winner is None and self.session.active_player == "bot":
-            # run_bot_turn ends its own turn; guard against it stalling so a
-            # stuck bot shows up as a hang rather than an infinite loop.
-            self.session.end_turn()
+        """run_bot_turn only drives the "bot" seat. When the agent is seated
+        there, MCTS holds the "player" seat instead, so the session's sides are
+        swapped for the duration of the call and swapped back after."""
+        s = self.session
+        swap = self.agent_side == "bot"
+        if swap:
+            s.player, s.bot = s.bot, s.player
+            s.active_player = "bot" if s.active_player == "player" else "player"
+            if s.winner is not None:
+                s.winner = "bot" if s.winner == "player" else "player"
+        try:
+            s.run_bot_turn()
+            s._check_winner()
+            if s.winner is None and s.active_player == "bot":
+                # run_bot_turn ends its own turn; guard against a stall so a
+                # stuck bot hangs visibly rather than looping forever.
+                s.end_turn()
+        finally:
+            if swap:
+                s.player, s.bot = s.bot, s.player
+                s.active_player = "bot" if s.active_player == "player" else "player"
+                if s.winner is not None:
+                    s.winner = "bot" if s.winner == "player" else "player"
 
 
 def greedy_pick(env, _obs):
@@ -52,11 +69,19 @@ def greedy_pick(env, _obs):
 
 
 def run_match(policy, n_games, budget_ms, seed_base=500000):
-    env = MCTSOpponentEnv(budget_ms=budget_ms, opponent_profile="balanced")
-    wins = losses = truncs = 0
+    """Half the games from each seat. The seats are close to neutral for greedy
+    (34.0% vs 33.3% over 150 games each), but that is a measured result rather
+    than an assumption, and it need not hold for a different policy."""
+    envs = {side: MCTSOpponentEnv(budget_ms=budget_ms, opponent_profile="balanced",
+                                  agent_side=side)
+            for side in ("player", "bot")}
+    tally = {"player": [0, 0], "bot": [0, 0]}
+    truncs = 0
     start = time.time()
     for ep in range(n_games):
-        obs, _ = env.reset(seed=seed_base + ep)
+        side = "player" if ep % 2 == 0 else "bot"
+        env = envs[side]
+        obs, _ = env.reset(seed=seed_base + ep // 2)
         done = truncated = False
         reward = 0.0
         while not (done or truncated):
@@ -64,10 +89,12 @@ def run_match(policy, n_games, budget_ms, seed_base=500000):
         if truncated:
             truncs += 1
         elif reward > 0:
-            wins += 1
+            tally[side][0] += 1
         else:
-            losses += 1
-    return wins, losses, truncs, time.time() - start
+            tally[side][1] += 1
+    wins = tally["player"][0] + tally["bot"][0]
+    losses = tally["player"][1] + tally["bot"][1]
+    return wins, losses, truncs, time.time() - start, tally
 
 
 if __name__ == "__main__":
@@ -82,6 +109,7 @@ if __name__ == "__main__":
 
     print(f"{n_games} games vs MCTS @ {budget_ms}ms/move\n")
     for label, policy in (("greedy", greedy_pick), (model_path, rl_pick)):
-        w, l, t, secs = run_match(policy, n_games, budget_ms)
+        w, l, t, secs, tally = run_match(policy, n_games, budget_ms)
         rate = w / max(w + l, 1)
-        print(f"  {label:24s} {w}W {l}L {t}T -> {rate:.1%} vs MCTS   ({secs:.0f}s)")
+        seats = "  ".join(f"{s}:{v[0]}-{v[1]}" for s, v in tally.items())
+        print(f"  {label:24s} {w}W {l}L {t}T -> {rate:.1%} vs MCTS   [{seats}]  ({secs:.0f}s)")
