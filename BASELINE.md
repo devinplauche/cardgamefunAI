@@ -753,6 +753,42 @@ Tooling: `hero_archetypes.py`, `hero_roundrobin.py`, `hero_stance_matrix.py`.
 The automated "distinct best-responses > 1 → RPS" flag is too loose (fires on a
 near-dominant single response); read the matrix, not the flag.
 
+## Champion denial is the biggest lever found (+~20pp)
+
+Re-examining the corrected round-robin, seat-balanced (each pair played both
+directions, n=250x2/cell, ~±2.2pp): balanced 59.8%, aggressive 59.0%,
+sac_engine 49.7%, economic 47.9%, champion 45.3%, rush 38.3%. First-player
+advantage is real and uneven (economic +10pp from moving first, aggressive ~0),
+so seat-balancing was necessary — the raw "always agent A" numbers overstated
+the slow strategies.
+
+The interesting anomaly: pure aggression (rush) is the *worst*, below the slow
+decks. Isolating why, with a clean A/B — `rush` (all-face) vs `rush_snipe`
+(identical buys, but spends leftover combat clearing non-guard champions):
+
+| opponent | rush | rush_snipe | delta |
+| --- | --- | --- | --- |
+| aggressive | 34.4% | 54.8% | +20.4 |
+| economic | 38.6% | 61.2% | +22.6 |
+| champion | 42.0% | 65.2% | +23.2 |
+| sac_engine | 41.2% | 63.6% | +22.4 |
+| balanced | 35.2% | 53.2% | +18.0 |
+
+**Clearing enemy champions is worth ~20pp** — larger than any RL, self-play,
+BC, or valuation effect measured this session. And it is *denial, not racing*:
+game lengths are identical (~11–13 turns) and rush is the fastest at 11.4 while
+still worst. The loss comes entirely from letting the opponent keep recurring
+non-guard champions (gold/health engines that pay every turn). This is the
+project owner's "almost never beneficial to let your opponent leave champions
+out," measured.
+
+It also re-explains the ranking: balanced/aggressive win because `attack_weakest`
+already snipes champions; rush loses because `attack_rush` ignores them. The
+strong heuristics already capture this. The open question is whether the
+shippable MCTS bot does — its default `evaluate_state` is pure HP-diff and its
+rollout horizon ends at its own turn, so it is theoretically blind to the
+future-turn value an enemy champion denies.
+
 ## RL vs MCTS, head to head
 
 `hero_rl_vs_mcts.py`, 30 games per policy, sides split evenly, MCTS in its
