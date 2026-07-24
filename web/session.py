@@ -93,6 +93,11 @@ def _copy_player(player: HRPlayer, rng: random.Random) -> HRPlayer:
     clone.pending_ally = player.pending_ally[:]
     clone.pending_per_champion = [dict(e) for e in player.pending_per_champion]
     clone.pending_stun_targets = player.pending_stun_targets[:]
+    # Deferred sacrifice/discard targeting. Dicts are copied, not aliased -
+    # apply_choice decrements "count" in place, so a shared dict would let a
+    # simulated branch consume the real game's pending choice.
+    clone.pending_choices = [dict(c) for c in player.pending_choices]
+    clone.defer_choices = player.defer_choices
     clone.actions_played = player.actions_played
     clone.cards_bought = player.cards_bought
     clone.next_buy_to_hand = player.next_buy_to_hand
@@ -241,6 +246,7 @@ class GameSession:
         player.pending_ally.clear()
         player.pending_per_champion.clear()
         player.pending_stun_targets.clear()
+        player.pending_choices.clear()
         player.cards_bought = 0
         player.next_buy_to_hand = False
         player.next_buy_to_top = False

@@ -122,6 +122,15 @@ class HRPlayer:
         # _apply_per_champion_bonus / _resolve_pending_per_champion.
         self.pending_per_champion: list[dict] = []
         self.pending_stun_targets: list[tuple[HRCard, Optional[BoardChampion]]] = []
+        # Sacrifice and discard targeting used to be resolved inline by
+        # _find_worst_idx the moment the effect fired, which made them
+        # unreachable to any agent - they are the decisions a strong player
+        # spends the most thought on. With defer_choices set, the effect
+        # enqueues here instead and something outside the engine answers it;
+        # left False, play_card auto-resolves exactly as before, so every
+        # existing caller (heuristics, MCTS, the v1 RL env) is unchanged.
+        self.pending_choices: list[dict] = []
+        self.defer_choices: bool = False
         self.actions_played: int = 0
         self.cards_bought: int = 0
         self.next_buy_to_hand: bool = False  # Deception ally: next bought card goes to hand
@@ -375,9 +384,71 @@ def _should_self_sacrifice(player: HRPlayer, opponent: Optional[HRPlayer] = None
 def _discard_from_hand(player: HRPlayer, n: int, opponent: Optional[HRPlayer] = None):
     """Discard n lowest-value cards from hand (self-discard: keep best)."""
     n = min(n, len(player.hand))
+    if n <= 0:
+        return
+    if player.defer_choices:
+        _enqueue_choice(player, "discard", n)
+        return
     for _ in range(n):
         idx = _find_worst_idx(player.hand, player, opponent)
         player.discard.append(player.hand.pop(idx))
+
+
+def _enqueue_choice(player: HRPlayer, kind: str, count: int, zone: str = "hand"):
+    """Record a targeting decision for later instead of resolving it now."""
+    if count > 0:
+        player.pending_choices.append({"kind": kind, "count": count, "zone": zone})
+
+
+def choice_candidates(player: HRPlayer, choice: dict) -> list[HRCard]:
+    """The cards a pending choice may legally select from."""
+    if choice["kind"] == "discard":
+        return list(player.hand)
+    # Sacrifice reads "a card in your hand or discard pile"; hand is offered
+    # first only when non-empty, matching the original inline resolution.
+    if choice["zone"] == "hand":
+        return list(player.hand)
+    return list(player.discard)
+
+
+def apply_choice(player: HRPlayer, choice: dict, index: int) -> Optional[HRCard]:
+    """Resolve one unit of a pending choice by selecting candidate `index`."""
+    candidates = choice_candidates(player, choice)
+    if not candidates or not (0 <= index < len(candidates)):
+        return None
+    card = candidates[index]
+    if choice["kind"] == "discard":
+        player.hand.remove(card)
+        player.discard.append(card)
+    else:
+        source = player.hand if choice["zone"] == "hand" else player.discard
+        source.remove(card)
+        player.banish.append(card)
+    choice["count"] -= 1
+    if choice["count"] <= 0 and choice in player.pending_choices:
+        player.pending_choices.remove(choice)
+    return card
+
+
+def auto_resolve_choices(player: HRPlayer, opponent: Optional[HRPlayer] = None):
+    """Answer every pending choice with the heuristic the engine used inline.
+
+    Keeps deferred and non-deferred play byte-identical when nobody else
+    answers, so enabling deferral cannot silently change existing agents.
+    """
+    while player.pending_choices:
+        choice = player.pending_choices[0]
+        candidates = choice_candidates(player, choice)
+        if not candidates:
+            player.pending_choices.remove(choice)
+            continue
+        idx = _find_worst_idx(candidates, player, opponent)
+        if choice["kind"] == "sacrifice" and not _worth_sacrificing(
+                candidates[idx], player, opponent):
+            player.pending_choices.remove(choice)
+            continue
+        if apply_choice(player, choice, idx) is None:
+            player.pending_choices.remove(choice)
 
 
 def _force_opponent_discard(opponent: HRPlayer, n: int = 1, forcing_player: Optional[HRPlayer] = None):
@@ -640,15 +711,15 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
     # only take it if the worst available card is actually junk; see
     # _worth_sacrificing.
     if card.effects.get("sacrifice_card", False):
-        source = None
-        if player.hand:
-            source = player.hand
-        elif player.discard:
-            source = player.discard
-        if source:
-            idx = _find_worst_idx(source, player, opponent)
-            if _worth_sacrificing(source[idx], player, opponent):
-                player.banish.append(source.pop(idx))
+        zone = "hand" if player.hand else ("discard" if player.discard else None)
+        if zone:
+            if player.defer_choices:
+                _enqueue_choice(player, "sacrifice", 1, zone)
+            else:
+                source = player.hand if zone == "hand" else player.discard
+                idx = _find_worst_idx(source, player, opponent)
+                if _worth_sacrificing(source[idx], player, opponent):
+                    player.banish.append(source.pop(idx))
 
     # ---- Stun (primary for non-ally cards like Fire Bomb; ally-only if ally_faction set) ----
     if card.get("stun", False) and opponent and not card.get("ally_faction", ""):
