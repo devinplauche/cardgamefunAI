@@ -68,8 +68,8 @@ def model_pick(model):
     return pick
 
 
-def collect(n_seeds):
-    env = HeroRealmsMaskedEnv(opponent_profile="random")
+def collect(n_seeds, agent_side="bot"):
+    env = HeroRealmsMaskedEnv(opponent_profile="random", agent_side=agent_side)
     policies = [("random", random_pick), ("greedy", greedy_pick)]
     for label, path in MODELS:
         try:
@@ -101,21 +101,51 @@ def partition(results, n_seeds):
     return always_won, always_lost, contested
 
 
-def probe_unwinnable(seeds, budget_ms=960, limit=20):
+def _same_action(a, b):
+    keys = ("type", "cardId", "marketIndex", "championId", "target", "stunTargetIndex")
+    return all(a.get(k) == b.get(k) for k in keys)
+
+
+def mcts_pick(budget_ms):
+    """Drive the agent's seat with the MCTS bot.
+
+    evaluate_state scores from session.bot and uct alternates on
+    active_player == "bot", so MCTS only ever optimizes the bot seat. The
+    env must therefore be built with agent_side="bot" - on the player seat
+    this would search on behalf of the opponent, which is what the first
+    version of this probe accidentally did.
+    """
+    from web.bot import choose_bot_action
+
+    def pick(env, _obs):
+        assert env.agent_side == "bot", "MCTS optimizes the bot seat only"
+        chosen = choose_bot_action(env.session, budget_ms=budget_ms)
+        table = env._action_table()
+        for idx, action in table.items():
+            if _same_action(action, chosen):
+                return idx
+        from hero_rl_env_v2 import ADVANCE
+        return ADVANCE if ADVANCE in table else next(iter(table))
+    return pick
+
+
+def probe_unwinnable(seeds, budget_ms=960, limit=20, agent_side="bot"):
     """Can a deep search win the seeds every cheap policy lost?
 
-    If it cannot, those seeds are unwinnable in practice and the ceiling
-    estimate holds. If it can, the ceiling is higher than the partition says.
+    Same opponent, same seeds - only the agent's strength changes. An earlier
+    version swapped the opponent for MCTS instead, which measured a different
+    matchup entirely and told us nothing about whether these seeds are
+    winnable.
     """
     import web.bot
-    from hero_rl_vs_mcts import MCTSOpponentEnv
 
     web.bot.EVAL_MODE = "search"
-    env = MCTSOpponentEnv(budget_ms=budget_ms, opponent_profile="random")
+    env = HeroRealmsMaskedEnv(opponent_profile="random", agent_side=agent_side)
+    pick = mcts_pick(budget_ms)
     won = 0
     sample = seeds[:limit]
     for seed in sample:
-        if play(env, SEED_BASE + seed, greedy_pick):
+        if play(env, SEED_BASE + seed, pick):
             won += 1
     return won, len(sample)
 
@@ -127,8 +157,13 @@ if __name__ == "__main__":
     if "--probe" in sys.argv:
         probe = int(sys.argv[sys.argv.index("--probe") + 1])
 
-    print(f"Variance ceiling over {n_seeds} shared seeds (base {SEED_BASE})\n")
-    results = collect(n_seeds)
+    # The partition and the probe must use the same seat, or "always-lost" is
+    # defined on a different set of games than the probe tests. MCTS can only
+    # optimize the bot seat, so both are fixed there.
+    AGENT_SIDE = "bot"
+    print(f"Variance ceiling over {n_seeds} shared seeds (base {SEED_BASE}), "
+          f"agent seated as {AGENT_SIDE}\n")
+    results = collect(n_seeds, agent_side=AGENT_SIDE)
     won, lost, contested = partition(results, n_seeds)
 
     print(f"\n  always-won (even random wins) {len(won) / n_seeds:6.1%}  ({len(won)})")
@@ -143,7 +178,7 @@ if __name__ == "__main__":
 
     if probe and lost:
         print(f"\nProbing {min(probe, len(lost))} always-lost seeds with MCTS @960ms...")
-        w, n = probe_unwinnable(lost, limit=probe)
+        w, n = probe_unwinnable(lost, limit=probe, agent_side=AGENT_SIDE)
         print(f"  deep search won {w}/{n} of them")
         if w:
             print("  -> ceiling is higher than the partition suggests")
