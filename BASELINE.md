@@ -713,6 +713,46 @@ auto-grants 6 health retroactively, The Rot's Necros ally adds +3 combat
 retroactively (twice in one turn), stunned champions return the next turn, and
 sacrifice_card banishes a card. All match this session's changes.
 
+## Opponent-adaptation / RPS test (and a harness bug that voided the first run)
+
+An opponent-strategy classifier only helps if the game has a strategy-dependent
+best response — rock-paper-scissors. Tested with a six-strategy round-robin: the
+four heuristic profiles plus two coherent archetypes (`rush` = cheap combat,
+all-face, race; `sac_engine` = acquire sacrifice enablers, thin, go long).
+
+**The first run was invalid.** `hero_roundrobin.py`'s turn loop discarded the
+hand but never moved `played_this_turn` to the discard pile (the real
+`GameSession.end_turn` does this via `discard_played_cards`). So every card
+played vanished after one use, decks decayed to starters, combat collapsed to
+0 by turn 4, and games ran 80+ turns. It produced a confident but fictional
+conclusion — "champion dominates, no burst, needs Heroes." The project owner
+caught it from game sense alone (real games last 15–25 turns; Elven Curse +
+Elven Gift is 13 combat via Wild allies, not the 8 max my sim showed). The
+engine itself was never wrong — only this standalone harness. RL results are
+unaffected: the RL env drives the real `GameSession`, which recycles played
+cards correctly.
+
+With the fix (games now 11–14 turns), n=200, common seeds, agent draws 3 /
+moves first. Mean win rate as agent: balanced 63%, aggressive 61%, champion 53%,
+sac_engine 53%, economic 51%, rush 43%.
+
+Aggression/tempo is strongest, which inverts the broken run. The claimed cycle
+(rush beats the engine, engine beats grinders) still does not cleanly appear —
+rush vs sac_engine is 45.5%, and sac_engine vs the grinders is 51.7% (even) —
+but rush is now a viable racer (11-turn games) rather than a pass-bot. Best
+response is aggressive or balanced depending on opponent (2 distinct), which is
+a soft edge, not a strong cycle.
+
+Given how badly the first version misled, no strong claim is drawn here about
+whether opponent-adaptation is worth building. What is solid: the corrected base
+game rewards tempo/aggression, and does not obviously exhibit the sharp
+rush-vs-engine RPS an expert reports from Hero mode — which may still be a
+Hero-mode property, but that is now a hypothesis, not a measured conclusion.
+
+Tooling: `hero_archetypes.py`, `hero_roundrobin.py`, `hero_stance_matrix.py`.
+The automated "distinct best-responses > 1 → RPS" flag is too loose (fires on a
+near-dominant single response); read the matrix, not the flag.
+
 ## RL vs MCTS, head to head
 
 `hero_rl_vs_mcts.py`, 30 games per policy, sides split evenly, MCTS in its
