@@ -603,6 +603,73 @@ v2 baselines were measured against. V19 still reads 50.0% against the corrected
 opponent, so the distortion did not manufacture its result, but V20 reruns it
 cleanly as the fair test.
 
+## Play data vs the engine's valuation
+
+Four months of real play (936 games, baseline **56.84%**; 2026 61.71% over 538,
+2025 50.25% over 398). Per-card lift over the lifetime baseline, largest block:
+
+| Card | n | lift | z | |
+| --- | --- | --- | --- | --- |
+| Taxation | 97 | **+23.2pp** | +5.7 | *** |
+| The Rot | 74 | +11.2pp | +2.1 | ** |
+| Death Touch | 107 | +9.2pp | +2.0 | ** |
+| Influence / Spark / Profit / Recruit | ~90 | +5 to +7pp | ~1.0–1.4 | ns |
+| Intimidation / Death Cultist / Elven Gift | ~78 | +1 to −5pp | ~0 | ns |
+
+All three significant cards win on effects the engine priced at **zero**:
+Taxation's Imperial ally grants 6 health; The Rot and Death Touch carry
+`sacrifice_card`. `_card_score` and `_buy_priority` had no term for any
+`ally_*` effect or for sacrifice access — 55 of 96 cards carry printed value
+neither function could see. With default weights the engine ranks Taxation
+**#54 of 55** and Death Touch **#53**.
+
+Rank correlation between engine valuation and observed win rate:
+`_card_score` −0.077, `_buy_priority` −0.196, `_holistic_card_score` +0.245.
+The two without ally terms are flat-to-negative; the one with `_enabler_value`
+is the only positive.
+
+Caveat: these are win rates *conditional on purchase*, not causal effects, and
+the two years pool different skill levels (50.25% → 61.71%).
+
+## CMA-ES weight fitting did not work
+
+`hero_weights.py` parameterizes both valuation functions (defaults reproduce
+the original integer formulas exactly). `hero_cma_fit.py` fits them on
+simulated win rate with common random numbers and rotating seed blocks.
+
+**The fit is not credible and should not be adopted.** 25 generations x 120
+games: held-out 32.0% → 34.3%, which is 0.6 standard errors. The trajectory
+never converged (best-in-generation bounced 29–43% with no trend), and the
+fitted vector prices **gold at −4.56, draw at −1.22, ally_health at −6.21** —
+sign flips that contradict the game. 250 evaluations for 17 parameters at
+~4.5pp noise each is far too faint a signal for CMA-ES to follow.
+
+Testing the hypothesis directly with 2 parameters instead of 17, n=400
+held-out:
+
+| Weights | win rate | vs default |
+| --- | --- | --- |
+| default | 31.8% | — |
+| + sacrifice terms | 31.8% | +0.0pp (ns) |
+| + ally terms | 31.0% | −0.8pp (ns) |
+| + both | 30.5% | −1.3pp (ns) |
+| CMA-fitted | 32.5% | +0.8pp (ns) |
+
+The CMA-fitted weights regressed from +2.3pp (n=300) to +0.8pp (n=400) —
+regression to the mean, confirming noise.
+
+**Power matters for reading this.** At n=400 per arm only effects above ~9pp
+are detectable; ~2.6pp needs n=5000, ~1.3pp needs n=20000. So this rules out
+*large* gains from ally/sacrifice pricing, not small ones. The play data's
++23pp on Taxation is a per-card conditional rate, not a claim that any single
+weight change moves overall win rate by that much.
+
+The likely blocker is the objective, not the optimizer: greedy win rate
+against heuristic profiles appears too insensitive to buy ordering to fit
+against at any affordable sample size. A margin-based fitness (HP differential
+rather than binary win/loss) has far lower variance and is the obvious next
+attempt before spending more compute on the search itself.
+
 ## RL vs MCTS, head to head
 
 `hero_rl_vs_mcts.py`, 30 games per policy, sides split evenly, MCTS in its
