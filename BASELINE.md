@@ -521,6 +521,67 @@ currently resolved by engine heuristics, they are the decisions the project
 owner identifies as among the most important in the game, and no amount of
 training-loop variation reaches them.
 
+## The variance ceiling: the plateau is not the game
+
+Before spending more compute, measure whether ~48% is an optimizer limit or a
+property of a high-variance game. `hero_variance_ceiling.py` plays policies of
+widely differing strength through identical seeds and partitions them.
+
+n=300 shared seeds, agent on the bot seat, opponents seeded and reproducible:
+
+| Band | Share |
+| --- | --- |
+| always-won (even uniform-random wins) | 0.0% |
+| always-lost (no policy wins) | 30.3% |
+| contested (play decides) | 69.7% |
+| **estimated ceiling** | **69.7%** |
+| best measured policy | 40.3% |
+| **remaining headroom** | **~29pp** |
+
+Roughly 30 points of contested ground go unconverted by the best policy. **The
+plateau is not deck variance** — there is real room, and further optimization
+is justified. (A player-seat run gives 22.3% always-lost and a 77.7% ceiling;
+absolute numbers shift with the seat, the conclusion does not.)
+
+Two bugs were fixed in this harness before its numbers meant anything:
+
+- The probe swapped the **opponent** for MCTS instead of strengthening the
+  **agent**. The always-lost seeds are defined against heuristic profiles, so
+  it played a different matchup entirely; its 11/25 "these are winnable"
+  result was meaningless. The corrected probe won 0/3 on a comparable sample.
+- `evaluate_state` scores from `session.bot` and UCT alternates on
+  `active_player == "bot"`, so MCTS only ever optimizes the bot seat. Probing
+  from the player seat would have searched on behalf of the opponent.
+  Partition and probe are now both pinned to the bot seat.
+
+## V19 — sacrifice/discard targeting did not move the plateau
+
+`hero_rl_env_v3` adds sacrifice and discard targeting at action indices 30-39
+(v2's numbering is untouched, so its checkpoints stay loadable; models do not
+transfer between the two). The engine defers these via
+`HRPlayer.pending_choices` / `defer_choices`; with the flag off it resolves
+inline exactly as before, verified byte-identical across 150 cases covering all
+six choice-bearing cards.
+
+Same BC + fine-tune recipe as V16. Held-out, n=600:
+
+| Model | Win rate |
+| --- | --- |
+| greedy (v3) | 33.0% |
+| V16 (v2) | 48.0% |
+| **V19 best (v3)** | **50.0% ± 4.0pp** |
+
+Difference **+2.0pp, 95% CI [-3.7, +7.7]** — not significant. An n=200 read
+gave 51.5% and looked like a breakthrough; it did not survive n=600. Five
+methods have now landed in the same band.
+
+Caveat on V19 specifically: it trained in an env that deferred the *heuristic
+opponent's* choices with nothing to answer them, silently deleting its
+sacrifices and discards (~40 steps per game). That opponent was not the one the
+v2 baselines were measured against. V19 still reads 50.0% against the corrected
+opponent, so the distortion did not manufacture its result, but V20 reruns it
+cleanly as the fair test.
+
 ## RL vs MCTS, head to head
 
 `hero_rl_vs_mcts.py`, 30 games per policy, sides split evenly, MCTS in its
