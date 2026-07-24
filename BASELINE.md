@@ -456,6 +456,71 @@ never beating a naive heuristic. V16 changes that premise and the conclusion
 should move with it: a warm-started policy beats greedy comfortably and costs
 one forward pass at inference, against MCTS's thousands of rollouts.
 
+## V18 — self-play did not work
+
+`hero_rl_selfplay.py`: the opposing seat is a frozen snapshot drawn from a pool
+of past policies, seats randomized per episode, starting from V16 with V16 as
+the initial pool anchor. Progress measured against fixed external references,
+never the current opponent (a self-play win rate sits near 50% by construction
+whether both sides are strong or both are terrible).
+
+| Step | vs heuristics | vs frozen V16 | pool |
+| --- | --- | --- | --- |
+| 100k | 49.3% | 60.0% | 2 |
+| 200k | **50.7%** | **63.3%** | 3 |
+| 300k | 36.0% | 50.0% | 4 |
+| 700k–1.4M | 34–45% | 40–57% | 8 |
+| 1.5M (final) | 34.7% | 50.0% | 8 |
+
+Two hundred thousand steps of real improvement — beating frozen V16 63.3% head
+to head — then a collapse it never recovered from, ending below its own
+starting point.
+
+The obvious explanation, that the pool filled with weak descendants, does not
+fit: the collapse begins at pool=4, before the cap, and the capped-pool mean
+(41.2%) is higher than the 300k trough. No validated mechanism. Candidates not
+yet tested: learning rate too high for a converged start, entropy driving drift
+off the BC-anchored policy, or the pool needing far more diversity than eight
+snapshots of one lineage.
+
+## Evaluation was not reproducible (fixed)
+
+`opponent_profile="random"` drew the profile with `random.choice` on the global
+RNG. The episode seed fixed the deck shuffle but **not** which of the four
+profiles was faced, so the same model on the same seeds scored 45.5% and 48.0%
+in two separate runs.
+
+Every "identical seeds" comparison recorded above this section carried that
+unseeded component. Not a bias — profiles were drawn uniformly either way — but
+the runs were noisier than claimed and small gaps between models meant less
+than reported. Treat any difference under ~5pp in the sections above as
+unresolved.
+
+Unaffected: the MCTS head-to-head below, which uses the named `balanced`
+profile (no random draw) and deterministic seat alternation.
+
+Profile and self-play opponent/seat draws now derive from the episode seed.
+
+### Reproducible standing (n=600, held-out seeds 900000+)
+
+| Policy | Win rate |
+| --- | --- |
+| Greedy heuristic | 31.3% |
+| **V16 (BC + fine-tune)** | **48.0%** |
+| V18 best (self-play @ 200k) | **48.3%** |
+| V18 final (self-play @ 1.5M) | 37.2% |
+
+V16 and V18-best are indistinguishable at 0.3pp on n=600. **Four attempts to
+improve on V16 — V17's extended fine-tune, V18's self-play, and both of their
+best checkpoints — have produced nothing above noise.** The ~48% band is where
+this setup tops out.
+
+What has not been tried, and is where the remaining headroom most plausibly
+sits: exposing sacrifice and discard targeting as real actions. Those are
+currently resolved by engine heuristics, they are the decisions the project
+owner identifies as among the most important in the game, and no amount of
+training-loop variation reaches them.
+
 ## RL vs MCTS, head to head
 
 `hero_rl_vs_mcts.py`, 30 games per policy, sides split evenly, MCTS in its
