@@ -177,7 +177,7 @@ class HRPlayer:
 
 # --- Effect helper functions ---
 
-def _card_score(card: HRCard) -> int:
+def _card_score(card: HRCard) -> float:
     """Score a card's overall value (higher = more valuable to keep)."""
     if card.id == "gold":
         return -100
@@ -187,9 +187,25 @@ def _card_score(card: HRCard) -> int:
         return -60
     if card.id == "ruby":
         return -50
-    return (card.cost * 10 + card.get("combat", 0) * 4 + card.get("gold", 0) * 3 +
-            card.get("health", 0) * 3 + card.get("draw", 0) * 5 +
-            (card.health if card.card_type == "champion" else 0) * 2)
+    import hero_weights as W
+
+    e = card.effects
+    score = (card.cost * W.get("cost")
+             + card.get("combat", 0) * W.get("combat")
+             + card.get("gold", 0) * W.get("gold")
+             + card.get("health", 0) * W.get("health")
+             + card.get("draw", 0) * W.get("draw")
+             + (card.health if card.card_type == "champion" else 0) * W.get("champion_health"))
+    # Ally effects and sacrifice access were worth zero here, which is what
+    # DEFAULTS still encode - see hero_weights for the play data that says
+    # they should not be.
+    score += (e.get("ally_combat", 0) * W.get("ally_combat")
+              + e.get("ally_gold", 0) * W.get("ally_gold")
+              + e.get("ally_health", 0) * W.get("ally_health")
+              + e.get("ally_draw", 0) * W.get("ally_draw"))
+    if e.get("sacrifice_card"):
+        score += W.get("sacrifice_card")
+    return score
 
 
 def remove_stunned_champions(player: HRPlayer) -> list[HRCard]:

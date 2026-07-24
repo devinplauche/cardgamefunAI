@@ -37,7 +37,7 @@ PHASES = ("play", "champion", "buy", "combat")
 # and the five hardcoded starting/Fire Gem cards (verified: 60 cards, no
 # duplicate ids, no id with conflicting stats).
 _PLAY_PRIORITY_CACHE: dict[str, int] = {}
-_BUY_PRIORITY_CACHE: dict[str, int] = {}
+_BUY_PRIORITY_CACHE: dict[str, float] = {}
 
 
 def _play_priority(card: HRCard) -> int:
@@ -50,12 +50,21 @@ def _play_priority(card: HRCard) -> int:
     return cached
 
 
-def _buy_priority(card: HRCard) -> int:
+def _buy_priority(card: HRCard) -> float:
     cached = _BUY_PRIORITY_CACHE.get(card.id)
     if cached is None:
         eff = card.effects
-        cached = (card.cost + eff.get("combat", 0) * 2
-                  + eff.get("gold", 0) * 2 + eff.get("draw", 0) * 2)
+        import hero_weights as W
+
+        cached = (card.cost * W.get("buy_cost")
+                  + eff.get("combat", 0) * W.get("buy_combat")
+                  + eff.get("gold", 0) * W.get("buy_gold")
+                  + eff.get("draw", 0) * W.get("buy_draw"))
+        ally = (eff.get("ally_combat", 0) + eff.get("ally_gold", 0)
+                + eff.get("ally_health", 0) + eff.get("ally_draw", 0))
+        cached += ally * W.get("buy_ally")
+        if eff.get("sacrifice_card"):
+            cached += W.get("buy_sacrifice")
         _BUY_PRIORITY_CACHE[card.id] = cached
     return cached
 
