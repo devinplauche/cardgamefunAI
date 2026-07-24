@@ -428,6 +428,27 @@ checkpoint callback, so the best observed model (55.5% at 350k) was overwritten
 and is unrecoverable. Only the 47.0% final survives. V17 pairs every eval with
 a save for exactly this reason.
 
+## V17 — more fine-tuning added nothing
+
+Continued V16's fine-tune for 1.5M more steps, checkpointed every 50k. Peaked
+at 51.0% by 100k, then oscillated 32–46% for the remaining 1.4M steps with no
+trend. Re-evaluated from disk:
+
+| Model | Eval seeds (n=200) | Held-out (n=400) |
+| --- | --- | --- |
+| `v16_final` | 48.0% | **49.8%** |
+| `v17_best` | 49.0% | 47.2% |
+| `v17_final` | 45.0% | 37.0% |
+
+**V16 is still the best model.** V17's 1.5M steps produced no improvement.
+
+`v17_best` is a worked example of checkpoint-selection bias: it was chosen
+*because* it scored 51.0% on the eval seeds, re-evaluates at 49.0% on those
+same seeds, and falls to 47.2% held out. Selecting on a seed set and then
+reporting that set's score overstates by roughly two points. Model selection
+and model reporting need different seeds, the same way BC data and eval data
+already do.
+
 ## Where this leaves MCTS vs RL
 
 The earlier read — that MCTS is simply the stronger engine — was based on RL
