@@ -821,6 +821,42 @@ is deliberately pure HP-diff (see its docstring), so changing it is a real desig
 decision, and the win-rate gain of the fix is inferred from the round-robin, not
 yet directly measured.
 
+## Fixing the blind spot: shaping term vs. longer horizon
+
+Two approaches to the economy-champion blind spot, both targeting the same
+controlled test (bot has spare combat over a lethal-safe threshold; how often
+does it snipe a non-guard economy champion vs hit face).
+
+**(a) Board-denial shaping term** (`DENY_BOARD_WEIGHT`, default 0). Prices the
+recurring own-minus-enemy board output HP-diff misses. Weight 15 lifted Broelyn
+0%→~40% and, in a first A/B (search eval, 60ms, 50 games/profile), scored +2pp
+on tuning and +6pp on held-out — but held-out was z=1.40, **not significant**.
+A powered confirmation was started, then pre-empted for approach (b); not yet
+resolved. Weight 30 backfired (champion 10%), so over-shaping biases the search.
+
+**(b) Longer rollout horizon** (`ROLLOUT_TURNS`, default 4). The more principled
+fix: let the rollout run long enough that a surviving economy champion's gold
+converts to cards → combat → HP, so pure HP-diff prices denial with no shaping.
+Confirmed at the mechanism level (denial term off, 400ms):
+
+| horizon | Broelyn (2 gold) | Tithe (1 gold) | Cron (5 combat) |
+| --- | --- | --- | --- |
+| 4 (current) | 0% | 35% | 100% |
+| 8 | 50% | 45% | 100% |
+| 12 | **85%** | 70% | 95% |
+| 16 | 75% | 40% | **35%** |
+
+Horizon 12 makes the search value economy denial on its own — this is the "gold
+eventually converts into attack" mechanism, measured. But the horizon is not
+free: `budget_ms` is wall-clock, so a longer rollout means fewer of them, and at
+horizon 16 / 400ms the search starves so badly it stops clearing even the Cron
+combat threat (100%→35%). Deeper buys depth at the cost of breadth; the sweet
+spot is budget-dependent (~12 at 400ms).
+
+Win-rate A/B across horizons at fixed budget is running (`hero_horizon_ab.py`).
+The mechanism (b fixes the behavior more cleanly than a) is settled; whether it
+moves win rate, and where it starves, is what the sweep decides.
+
 ## RL vs MCTS, head to head
 
 `hero_rl_vs_mcts.py`, 30 games per policy, sides split evenly, MCTS in its
