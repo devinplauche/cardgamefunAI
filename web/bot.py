@@ -479,23 +479,54 @@ SEARCHED_PHASES = ("buy", "combat")
 BUY_POLICY = "static"
 
 
+# Weight on standing board value (own minus enemy) added to the otherwise
+# pure-HP-diff search eval. 0.0 keeps the original behaviour byte-for-byte.
+#
+# The measured motivation: with the ROLLOUT_TURNS=4 horizon, a non-guard enemy
+# champion whose expend makes *gold* never touches HP in time, so pure HP-diff
+# is indifferent to killing it - MCTS clears Broelyn (2 gold/turn) 0% of the
+# time while the greedy fallback clears it 100%. A champion whose expend deals
+# combat is already priced (the rollout takes the damage). This term prices the
+# recurring value HP-diff misses, so denial gets valued.
+DENY_BOARD_WEIGHT = 0.0
+
+
+def _champ_recurring_value(bc) -> float:
+    """Per-turn output a champion keeps generating while it lives - the part a
+    short HP-diff horizon cannot see. Combat is included for consistency though
+    the rollout already prices it; gold/draw are the terms that were invisible."""
+    if not bc.alive:
+        return 0.0
+    e = bc.card.effects
+    return (e.get("gold", 0) * 1.0 + e.get("draw", 0) * 2.0
+            + e.get("combat", 0) * 1.0 + e.get("health", 0) * 0.5)
+
+
+def _board_balance(session) -> float:
+    own = sum(_champ_recurring_value(bc) for bc in session.bot.board)
+    enemy = sum(_champ_recurring_value(bc) for bc in session.player.board)
+    return own - enemy
+
+
 def evaluate_state(session) -> float:
-    """Score a position by the win condition alone.
+    """Score a position by the win condition, plus (optionally) standing board
+    value.
 
-    Nothing here prices gold, combat, draw, or board development. Those are
-    worth exactly what the rollout converts them into, which is the point: the
-    gold-to-combat exchange rate is situational, and any fixed weight asserts a
-    tradeoff that is wrong at some point in every game.
-
-    This is only sound because _rollout plays whole turns for both seats. With
-    a horizon that ends at the bot's own end of turn, a purchase never gets
-    drawn and buying correctly looks worthless.
+    The HP-diff core prices gold, combat, and draw at exactly what the rollout
+    converts them into - the gold-to-combat exchange rate is situational and any
+    fixed weight is wrong somewhere. That is sound only because _rollout plays
+    whole turns for both seats; even so, the 4-seat-turn horizon is too short to
+    convert a denied enemy economy champion into HP, which DENY_BOARD_WEIGHT
+    corrects when non-zero.
     """
     if session.winner == "bot":
         return WIN_SCORE
     if session.winner == "player":
         return -WIN_SCORE
-    return (session.bot.hp - session.player.hp) * 10.0
+    score = (session.bot.hp - session.player.hp) * 10.0
+    if DENY_BOARD_WEIGHT:
+        score += DENY_BOARD_WEIGHT * _board_balance(session)
+    return score
 
 
 def evaluate_state_shaped(session) -> float:
