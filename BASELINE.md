@@ -853,9 +853,41 @@ horizon 16 / 400ms the search starves so badly it stops clearing even the Cron
 combat threat (100%→35%). Deeper buys depth at the cost of breadth; the sweet
 spot is budget-dependent (~12 at 400ms).
 
-Win-rate A/B across horizons at fixed budget is running (`hero_horizon_ab.py`).
-The mechanism (b fixes the behavior more cleanly than a) is settled; whether it
-moves win rate, and where it starves, is what the sweep decides.
+### Horizon win-rate sweep — large, significant gain (at 200ms)
+
+`hero_horizon_ab.py`, search eval, 200ms, 40 games/profile (160/arm). Win rate
+climbs monotonically with horizon:
+
+| horizon | balanced | aggressive | economic | champion | avg (tuning) |
+| --- | --- | --- | --- | --- | --- |
+| 4 (current) | 32.5% | 32.5% | 35.0% | 35.0% | 33.8% |
+| 8 | 45.0% | 45.0% | 57.5% | 55.0% | 50.6% |
+| 12 | 57.5% | 62.5% | 52.5% | 65.0% | **59.4%** |
+
+Held-out confirmation (seeds 60000+, 160/arm): horizon 4 = 20.6%, horizon 12 =
+48.8%, **+28.1pp, z=5.53, significant**. The delta is consistent on both seed
+sets (+25.6pp tuning, +28.1pp held-out), so it is not selection bias. Horizon 4
+here (20.6% held-out) matches its historical search-eval numbers, which
+cross-checks the harness.
+
+**This is the first confirmed win-rate improvement on the shippable bot in the
+session** — and it is the project owner's idea, not a training-loop tweak.
+Expanding the rollout so gold converts to attack is worth ~28pp at 200ms.
+
+Caveats, held honestly:
+- **Budget-specific.** Measured at 200ms; the interactive default is 60ms, where
+  a horizon-12 rollout gets far fewer samples and may starve (the horizon-16 /
+  400ms starvation shows the failure mode). The gain must be re-verified at the
+  shipped budget before `ROLLOUT_TURNS` is changed — not yet done.
+- **A sleep anomaly during the run.** Wall-clock segments were 895s / 12210s /
+  1030s; the horizon-8 segment is ~12x horizon-12's, consistent with the machine
+  sleeping mid-run. Win rates are game outcomes and independent of wall-clock,
+  and the headline horizon-4-vs-12 comparison uses the two clean segments (895s,
+  1030s), so the result stands — but horizon 8's row may have a few starved games
+  and is treated as trend, not a precise number.
+
+Next: sweep horizon at the 60ms interactive budget to find the budget-matched
+sweet spot before adopting a new default.
 
 ## RL vs MCTS, head to head
 
