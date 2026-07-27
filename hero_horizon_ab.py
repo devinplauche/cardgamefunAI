@@ -26,7 +26,7 @@ bot_module.EVAL_MODE = "search"
 bot_module.DENY_BOARD_WEIGHT = 0.0  # horizon effect only, no shaping
 
 PROFILES = list(PROFILE_WEIGHTS)
-HORIZONS = [4, 8, 12, 16]
+HORIZONS = [4, 8, 12, 16, 24]
 TUNE_SEED = 1000
 HOLDOUT_SEED = 60000
 
