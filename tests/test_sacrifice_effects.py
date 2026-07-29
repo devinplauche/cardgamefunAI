@@ -47,12 +47,14 @@ def _player_with_hand(*cards, board=()):
 class TestSelfSacrifice(unittest.TestCase):
     """sacrifice_combat: the played card sacrifices ITSELF for bonus combat."""
 
-    def test_declines_when_a_guard_would_absorb_the_combat(self):
+    def test_declines_when_an_exhausted_guard_would_absorb_the_combat(self):
         player = _player_with_hand(FIRE_GEM_CARD)
         opponent = HRPlayer("O")
         from hero_engine import BoardChampion
         guard_champ = next(c for c in CARDS if c.card_type == "champion" and c.guard > 0)
-        opponent.board.append(BoardChampion(guard_champ))
+        guard = BoardChampion(guard_champ)
+        guard.exhausted = True
+        opponent.board.append(guard)
         market = HRMarket(CARDS)
 
         play_card(player, FIRE_GEM_CARD, market, opponent=opponent)
@@ -83,6 +85,35 @@ class TestSelfSacrifice(unittest.TestCase):
         self.assertEqual(player.combat, 3)
         self.assertIn(FIRE_GEM_CARD, player.banish)
         self.assertNotIn(FIRE_GEM_CARD, player.discard)
+
+    def test_takes_lethal_sacrifice_without_established_economy(self):
+        player = _player_with_hand(FIRE_GEM_CARD)
+        player.combat = 48
+        opponent = HRPlayer("O")
+        opponent.hp = 3
+        market = HRMarket(CARDS)
+
+        play_card(player, FIRE_GEM_CARD, market, opponent=opponent)
+
+        self.assertEqual(player.combat, 51)
+        self.assertIn(FIRE_GEM_CARD, player.banish)
+
+    def test_takes_lethal_sacrifice_after_clearing_guard_health(self):
+        player = _player_with_hand(FIRE_GEM_CARD)
+        player.combat = 5
+        opponent = HRPlayer("O")
+        opponent.hp = 3
+        from hero_engine import BoardChampion
+        guard_champ = next(c for c in CARDS if c.card_type == "champion" and c.guard > 0)
+        guard = BoardChampion(guard_champ)
+        guard.current_health = 5
+        opponent.board.append(guard)
+        market = HRMarket(CARDS)
+
+        play_card(player, FIRE_GEM_CARD, market, opponent=opponent)
+
+        self.assertEqual(player.combat, 8)
+        self.assertIn(FIRE_GEM_CARD, player.banish)
 
 
 class TestHandDiscardSacrifice(unittest.TestCase):

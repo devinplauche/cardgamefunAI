@@ -278,7 +278,7 @@ class TestRolloutPolicyLethalSafety(unittest.TestCase):
         action = _heuristic_rollout_action(session)
         self.assertEqual(action.get("target"), "player")
 
-    def test_rollout_policy_still_snipes_when_not_lethal(self):
+    def test_rollout_policy_does_not_chip_an_unkillable_non_guard(self):
         from web.bot import _heuristic_rollout_action
         from web.session import create_session
 
@@ -291,8 +291,77 @@ class TestRolloutPolicyLethalSafety(unittest.TestCase):
         session.player.combat = 2
 
         action = _heuristic_rollout_action(session)
-        self.assertEqual(action.get("target"), "champion",
-                         "non-lethal case should be unaffected by the safety check")
+        self.assertEqual(action.get("target"), "player",
+                         "damage that cannot kill a non-guard resets next turn")
+
+    def test_rollout_policy_snipes_when_it_can_finish_the_champion(self):
+        from web.bot import _heuristic_rollout_action
+        from web.session import create_session
+
+        weak = _non_guard_champion(max_health=3)
+        session = create_session(seed=3)
+        session.bot.board = [BoardChampion(weak)]
+        session.bot.hp = 50
+        session.active_player = "player"
+        session.phase = "combat"
+        session.player.combat = weak.health
+
+        action = _heuristic_rollout_action(session)
+        self.assertEqual(action.get("target"), "champion")
+
+
+class TestRolloutStunTargeting(unittest.TestCase):
+    def test_stun_prefers_the_stronger_undefended_champion(self):
+        from web.bot import _heuristic_rollout_action
+        from web.session import create_session
+
+        fire_bomb = next(card for card in CARDS if card.name == "Fire Bomb")
+        wolf_shaman = next(card for card in CARDS if card.name == "Wolf Shaman")
+        cron = next(card for card in CARDS if card.name == "Cron, the Berserker")
+        session = create_session(seed=3)
+        session.bot.hand = [fire_bomb]
+        session.player.board = [BoardChampion(wolf_shaman), BoardChampion(cron)]
+        session.active_player = "bot"
+        session.phase = "play"
+
+        action = _heuristic_rollout_action(session)
+        self.assertEqual(action.get("cardId"), fire_bomb.id)
+        self.assertEqual(action.get("stunTargetIndex"), 1,
+                         "Cron's visible value should beat a weaker non-guard")
+
+    def test_stun_still_targets_a_guard_before_a_stronger_non_guard(self):
+        from web.bot import _heuristic_rollout_action
+        from web.session import create_session
+
+        fire_bomb = next(card for card in CARDS if card.name == "Fire Bomb")
+        death_cultist = next(card for card in CARDS if card.name == "Death Cultist")
+        cron = next(card for card in CARDS if card.name == "Cron, the Berserker")
+        session = create_session(seed=3)
+        session.bot.hand = [fire_bomb]
+        session.player.board = [BoardChampion(death_cultist), BoardChampion(cron)]
+        session.active_player = "bot"
+        session.phase = "play"
+
+        action = _heuristic_rollout_action(session)
+        self.assertEqual(action.get("stunTargetIndex"), 0)
+
+    def test_stun_champion_uses_the_same_target_ranking(self):
+        from web.bot import _heuristic_rollout_action
+        from web.session import create_session
+
+        rake = next(card for card in CARDS if card.name == "Rake, Master Assassin")
+        wolf_shaman = next(card for card in CARDS if card.name == "Wolf Shaman")
+        cron = next(card for card in CARDS if card.name == "Cron, the Berserker")
+        session = create_session(seed=3)
+        rake_on_board = BoardChampion(rake)
+        session.bot.board = [rake_on_board]
+        session.player.board = [BoardChampion(wolf_shaman), BoardChampion(cron)]
+        session.active_player = "bot"
+        session.phase = "champion"
+
+        action = _heuristic_rollout_action(session)
+        self.assertEqual(action.get("championId"), str(rake_on_board.instance_id))
+        self.assertEqual(action.get("stunTargetIndex"), 1)
 
 
 class TestBenchProfileLethalSafety(unittest.TestCase):
@@ -307,6 +376,21 @@ class TestBenchProfileLethalSafety(unittest.TestCase):
         session.active_player = "player"
         session.phase = "combat"
         session.player.combat = 4
+
+        action = _profile_action(session, "balanced")
+        self.assertEqual(action.get("target"), "player")
+
+    def test_profile_action_does_not_chip_an_unkillable_non_guard(self):
+        from hero_mcts_bench import _profile_action
+        from web.session import create_session
+
+        tough = next(c for c in CARDS if c.card_type == "champion" and not c.guard and c.health >= 6)
+        session = create_session(seed=3)
+        session.bot.board = [BoardChampion(tough)]
+        session.bot.hp = 50
+        session.active_player = "player"
+        session.phase = "combat"
+        session.player.combat = tough.health - 1
 
         action = _profile_action(session, "balanced")
         self.assertEqual(action.get("target"), "player")

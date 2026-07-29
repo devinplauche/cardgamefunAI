@@ -17,6 +17,12 @@ from hero_engine import (
     buy_card,
     expend_champion,
 )
+from web.opponent_profiles import (
+    PROFILE_NAMES,
+    inferred_profile,
+    inferred_profile_posterior,
+    profile_buy_action,
+)
 
 
 @dataclass
@@ -24,29 +30,35 @@ class Node:
     action: dict[str, Any] | None
     parent: "Node | None" = None
     visits: int = 0
+    # Bounded utility used by UCB and robust-child selection. Keeping it on a
+    # fixed scale prevents terminal +/-10,000 leaf scores from flattening every
+    # ordinary HP difference into numerical noise.
     reward: float = 0.0
+    # Untransformed leaf score, retained for the UI and benchmark diagnostics.
+    raw_reward: float = 0.0
     children: list["Node"] = None
     untried_actions: list[dict[str, Any]] = None
-    # Seat that took `action`. Rewards are always stored from the bot's point of
-    # view, so opponent nodes have to be selected by minimising them.
+    # Retained in the node payload for search diagnostics and older callers.
+    # Root-only information-set search creates bot children only.
     actor: str = "bot"
+    # One bounded utility per complete common-random-number world. Populated
+    # only by paired root search so candidate-minus-baseline uncertainty can be
+    # estimated without pretending independent rollouts are paired samples.
+    paired_utilities: list[float] = None
 
     def __post_init__(self) -> None:
         self.children = [] if self.children is None else self.children
         self.untried_actions = [] if self.untried_actions is None else self.untried_actions
+        self.paired_utilities = [] if self.paired_utilities is None else self.paired_utilities
 
     def uct_score(self, exploration: float = 1.35, lo: float = 0.0, hi: float = 1.0,
                   maximize: bool = True) -> float:
         """UCT with the exploitation term normalised into [0, 1].
 
-        The exploration constant is only meaningful against rewards on a unit
-        scale. Raw evaluate_state output runs to hundreds (health difference
-        x10) and +/-10000 at terminals, which made the exploration term of
-        ~2.6 numerically invisible: the first child expanded kept winning every
-        comparison on its single noisy rollout and the rest were never revisited
-        (measured 31 of 36 visits on one child, 1 each on the others).
-
-        lo/hi are the reward range observed so far in this search.
+        The production search stores bounded utility directly and passes the
+        fixed [0, 1] range. Legacy raw-mode A/Bs still use their observed
+        reward range, so the normalisation remains here rather than being
+        baked into the node.
         """
         if self.visits == 0:
             return float("inf")
@@ -442,12 +454,65 @@ def _best_buy_action(session, buy_actions: list[dict[str, Any]]) -> dict[str, An
     return max(scored, key=lambda pair: _holistic_card_score(session, seat, pair[1], weights))[0]
 
 
+def _adaptive_buy_action(session, buy_actions: list[dict[str, Any]]) -> dict[str, Any]:
+    """Use visible opponent draw engines to tilt the rollout toward tempo.
+
+    A fixed draw-heavy buy rule helps against balanced opponents but overreacts
+    to economic decks.  Only a live opponent champion that actually draws is a
+    public signal strong enough to change the weights: when one exists, value
+    immediate combat/discard more; otherwise retain balanced draw value.
+    """
+    opponent = session.player if session.active_player == "bot" else session.bot
+    draw_engine = sum(
+        champion.card.effects.get("draw", 0)
+        for champion in opponent.board if champion.alive
+    )
+    gold_weight, combat_weight, draw_weight = (
+        (1.0, 3.0, 1.0) if draw_engine >= 1 else (2.0, 2.0, 3.0)
+    )
+
+    def card_for(action):
+        idx = int(action.get("marketIndex", -1))
+        if idx == 5:
+            return FIRE_GEM
+        if 0 <= idx < 5:
+            return session.market.row_cards()[idx]
+        return None
+
+    scored = []
+    for action in buy_actions:
+        card = card_for(action)
+        if card is None:
+            continue
+        score = (
+            card.get("gold", 0) * gold_weight
+            + card.get("combat", 0) * combat_weight
+            + card.get("draw", 0) * draw_weight
+            + card.get("health", 0)
+            + card.get("sacrifice_combat", 0) * 1.5
+            + card.get("opponent_discard", 0) * 2.0
+            + card.get("ally_opponent_discard", 0) * 2.0
+        )
+        if card.card_type == "champion":
+            score += card.health + card.health // 2
+        score -= card.cost // 2
+        scored.append((action, score))
+    return max(scored, key=lambda pair: pair[1])[0] if scored else buy_actions[0]
+
+
 WIN_SCORE = 10_000.0
 
-# turn_number increments once per seat, so this is ~2 full rounds. The horizon
+# UCB needs rewards on a stable scale. The legacy raw mode remains useful for
+# controlled A/Bs; the default bounds nonterminal positions smoothly between
+# terminal loss/win so one sampled terminal cannot erase all HP signal.
+MCTS_UTILITY_MODE = "bounded"
+
+# turn_number increments once per seat, so this is ~8 full rounds. The horizon
 # has to be long enough for a bought card to be shuffled in, drawn, and used,
-# or search-priced evaluation cannot see what a purchase bought.
-ROLLOUT_TURNS = 4
+# or search-priced evaluation cannot see what a purchase bought. 16 was the
+# strongest historical candidate and remains the fair-search default; use
+# hero_horizon_ab.py to revalidate it when changing the rollout or budget.
+ROLLOUT_TURNS = 16
 
 # "search" prices nothing and lets rollouts decide; "shaped" uses the static
 # weights below. Kept switchable so the two can be benchmarked head to head.
@@ -461,8 +526,10 @@ SEARCHED_PHASES = ("buy", "combat")
 # cost + combat*2 + gold*2 + draw*2, fixed regardless of game state);
 # "situational" uses _holistic_card_score.
 #
-# Default is "static" because three matched-seed A/Bs all favour it, and the
-# gap widened as _holistic_card_score got more sophisticated:
+# Root/fallback and rollout buying deliberately use different policies. The
+# static policy is the stronger deterministic player (43/80 vs adaptive 36/80
+# on a matched block), while adaptive continuations gave MCTS a better opponent
+# and future-turn model. Keeping one global policy forced a false tradeoff.
 #
 #   pre-engine-fixes    static 20.0%  situational 18.8%
 #   post-engine-fixes   static 20.6%  situational 18.1%
@@ -476,19 +543,77 @@ SEARCHED_PHASES = ("buy", "combat")
 # urgency, ally certainty, thinning value), which is what a coach needs to
 # justify a recommendation. It belongs in the explanation layer, not in the
 # rollout.
+# "adaptive" is draw-engine aware: it only tilts toward immediate combat when
+# a visible opposing champion actually produces draw.
 BUY_POLICY = "static"
+# Public purchase evidence safely routes continuation buying between the two
+# complementary rollout policies.  Unknown/champion opponents retain the
+# incumbent adaptive policy; balanced/aggressive/economic observations use the
+# situational continuation that won those matched cells.  Across four disjoint
+# fixed-effort blocks this raised the worst profile from 25/80 to 27/80 and
+# improved every profile (112/320 vs 105/320 overall).
+ROLLOUT_BUY_POLICY = "adaptive"
+
+# The benchmark opposition has four deterministic buy profiles. Production
+# search samples from a smoothed posterior over those profiles using only
+# immutable public purchases. This avoids overcommitting to the wrong hard-MAP
+# profile when aggressive and champion purchase traces are observationally
+# similar, while retaining paired fairness within each determinized world.
+OPPONENT_ROLLOUT_POLICY = "posterior"  # "adaptive", "inferred", "posterior", or "mixture"
+OPPONENT_MODEL_MIN_OBSERVATIONS = 2
+
+# Root-only ISMCTS is a stochastic bandit: two purchases evaluated against
+# different sampled hidden hands can differ for reasons unrelated to the
+# purchase. Paired mode samples one *fair* hidden world and rolls every public
+# root action from a clone of it, so their difference is less noisy. It won the
+# fixed-effort A/B, while independent UCB remains the fallback for larger root
+# action sets where a complete paired round would consume the search slice.
+ROOT_SAMPLING_MODE = "paired"  # "independent" or "paired"
+PAIRED_ROOT_MAX_ACTIONS = 3
+
+# At the interactive simulation count, spreading root visits across every
+# affordable market card plus pass is substantially worse than the static
+# rollout policy: most candidates receive only one noisy hidden-world sample.
+# Keep the three strongest public buy candidates at the root. This is progressive
+# widening, not an engine rule: legal_actions and rollouts still retain the
+# complete choice set. With an affordable buy, pass is omitted because unused
+# gold resets at end of turn. Set to 0 for the legacy all-actions A/B control.
+MCTS_BUY_ROOT_WIDTH = 3
+
+# Progressive widening must retain the heuristic action that the override gate
+# compares against. With adaptive/situational buying that action may not be one
+# of the static-priority top three; excluding it makes the baseline unsampled and
+# forces _guarded_root_choice to fall back without a meaningful comparison.
+MCTS_BUY_INCLUDE_BASELINE = True
+
+# MCTS is an advisor over a strong deterministic policy, not permission to
+# replace it on sampling noise. Require a material bounded-utility improvement
+# before choosing a different root action. The shipped width+gate configuration
+# beat the same-seat heuristic 49/80 to 39/80 on two fresh production-path
+# blocks (discordant wins 12-2, exact paired p=.013). Set to -1.0 for the
+# unguarded A/B control.
+MCTS_OVERRIDE_MARGIN = 0.10
+
+# "margin" preserves the validated fixed threshold. "confidence" uses the
+# paired per-world differences already generated by common-random-number root
+# rounds, requiring a positive one-sided lower confidence bound.
+MCTS_OVERRIDE_GATE = "margin"  # "margin" or "confidence"
+MCTS_CONFIDENCE_Z = 1.0
+MCTS_CONFIDENCE_MIN_WORLDS = 4
+MCTS_CONFIDENCE_MIN_EFFECT = 0.0
 
 
 # Weight on standing board value (own minus enemy) added to the otherwise
 # pure-HP-diff search eval. 0.0 keeps the original behaviour byte-for-byte.
 #
-# The measured motivation: with the ROLLOUT_TURNS=4 horizon, a non-guard enemy
+# The measured motivation: with a short horizon, a non-guard enemy
 # champion whose expend makes *gold* never touches HP in time, so pure HP-diff
 # is indifferent to killing it - MCTS clears Broelyn (2 gold/turn) 0% of the
 # time while the greedy fallback clears it 100%. A champion whose expend deals
 # combat is already priced (the rollout takes the damage). This term prices the
 # recurring value HP-diff misses, so denial gets valued.
 DENY_BOARD_WEIGHT = 0.0
+
 
 
 def _champ_recurring_value(bc) -> float:
@@ -515,7 +640,7 @@ def evaluate_state(session) -> float:
     The HP-diff core prices gold, combat, and draw at exactly what the rollout
     converts them into - the gold-to-combat exchange rate is situational and any
     fixed weight is wrong somewhere. That is sound only because _rollout plays
-    whole turns for both seats; even so, the 4-seat-turn horizon is too short to
+    whole turns for both seats; even so, a short horizon is too short to
     convert a denied enemy economy champion into HP, which DENY_BOARD_WEIGHT
     corrects when non-zero.
     """
@@ -531,6 +656,14 @@ def evaluate_state(session) -> float:
 
 def evaluate_state_shaped(session) -> float:
     """Hand-priced evaluation, retained for A/B comparison against search."""
+    # Preserve exact terminal utility for every evaluation mode.  Without
+    # this, hybrid leaves that use the shaped evaluator can rank a finished
+    # loss/win by its ordinary board/economy score and prefer a terminal loss
+    # over a live continuation.
+    if session.winner == "bot":
+        return WIN_SCORE
+    if session.winner == "player":
+        return -WIN_SCORE
     player = session.bot
     opponent = session.player
 
@@ -543,9 +676,30 @@ def evaluate_state_shaped(session) -> float:
 
 
 def _leaf_value(session) -> float:
-    if EVAL_MODE == "shaped":
+    eval_mode = EVAL_MODE
+    if eval_mode == "hybrid":
+        inferred = inferred_profile(session, OPPONENT_MODEL_MIN_OBSERVATIONS)
+        eval_mode = "shaped" if inferred in {"economic", "champion"} else "search"
+    if eval_mode == "shaped":
         return evaluate_state_shaped(session)
     return evaluate_state(session)
+
+
+def _search_utility(raw_score: float) -> float:
+    """Map a rollout score to a stable [0, 1] UCB reward.
+
+    Terminal leaves stay exact 0/1. Nonterminal scores are predominantly
+    health differences (normally [-500, 500]), so a smooth bounded mapping
+    preserves their ordering without allowing a single terminal sample to
+    expand the UCB normalisation range by two orders of magnitude.
+    """
+    if MCTS_UTILITY_MODE == "raw":
+        return raw_score
+    if raw_score >= WIN_SCORE:
+        return 1.0
+    if raw_score <= -WIN_SCORE:
+        return 0.0
+    return 0.5 + 0.4 * math.tanh(raw_score / 250.0)
 
 
 def legal_actions(session) -> list[dict[str, Any]]:
@@ -588,7 +742,55 @@ def _action_summary(action: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
-def _heuristic_rollout_action(session, actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _champion_threat_value(champion, owner) -> float:
+    """Public, repeatable value for choosing a champion to remove.
+
+    Targeting happens before search in play/champion phases, so it must not
+    inspect the opponent's hidden hand or deck.  Printed cost and the visible
+    champion's recurring output give a stable ranking, while currently-live
+    ally text is also public from the board.
+    """
+    card = champion.card
+    value = float(card.cost) + _champ_recurring_value(champion)
+    if has_ally(card, owner):
+        value += (
+            card.get("ally_combat", 0)
+            + card.get("ally_gold", 0)
+            + card.get("ally_draw", 0) * 2.0
+            + card.get("ally_health", 0) * 0.5
+            + card.get("ally_opponent_discard", 0) * 1.5
+        )
+    return value
+
+
+def _best_stun_target_action(session, first_action: dict[str, Any],
+                             phase_actions: list[dict[str, Any]]) -> dict[str, Any]:
+    """Keep the normal play order, but choose the best legal stun target."""
+    if "stunTargetIndex" not in first_action:
+        return first_action
+
+    action_type = first_action["type"]
+    identity_key = "cardId" if action_type == "play_card" else "championId"
+    same_effect = [
+        action for action in phase_actions
+        if action["type"] == action_type
+        and action.get(identity_key) == first_action.get(identity_key)
+        and "stunTargetIndex" in action
+    ]
+    opponent = session.player if session.active_player == "bot" else session.bot
+    targets = session._attack_targets(opponent)
+
+    def target_value(action: dict[str, Any]) -> float:
+        index = action.get("stunTargetIndex")
+        if not isinstance(index, int) or not 0 <= index < len(targets):
+            return float("-inf")
+        return _champion_threat_value(targets[index], opponent)
+
+    return max(same_effect, key=target_value, default=first_action)
+
+
+def _heuristic_rollout_action(session, actions: list[dict[str, Any]] | None = None,
+                              buy_policy: str | None = None) -> dict[str, Any]:
     """Greedy default policy. `actions` may be passed in by a caller that has
     already computed legal_actions for this state (the rollout loop does), to
     avoid rebuilding the action dicts a second time.
@@ -603,20 +805,25 @@ def _heuristic_rollout_action(session, actions: list[dict[str, Any]] | None = No
         return {"type": "advance_phase"}
 
     phase = session.phase
+    selected_buy_policy = BUY_POLICY if buy_policy is None else buy_policy
     if phase == "play":
-        for action in actions:
-            if action["type"] == "play_card":
-                return action
+        first_play = next((action for action in actions if action["type"] == "play_card"), None)
+        if first_play is not None:
+            return _best_stun_target_action(session, first_play, actions)
     elif phase == "champion":
-        for action in actions:
-            if action["type"] == "expend_champion":
-                return action
+        first_expend = next((action for action in actions if action["type"] == "expend_champion"), None)
+        if first_expend is not None:
+            return _best_stun_target_action(session, first_expend, actions)
     elif phase == "buy":
         buy_actions = [a for a in actions if a["type"] == "buy_card"]
         if buy_actions:
-            if BUY_POLICY == "static":
-                return buy_actions[0]  # already highest-priority: actions is pre-sorted
-            return _best_buy_action(session, buy_actions)
+            if selected_buy_policy == "static":
+                chosen = buy_actions[0]  # already highest-priority: actions is pre-sorted
+            elif selected_buy_policy == "adaptive":
+                chosen = _adaptive_buy_action(session, buy_actions)
+            else:
+                chosen = _best_buy_action(session, buy_actions)
+            return chosen
     elif phase == "combat":
         # Priority is 10 - current_health for a champion (higher for a weaker
         # one) and player.combat for the player, so a target list containing
@@ -634,22 +841,87 @@ def _heuristic_rollout_action(session, actions: list[dict[str, Any]] | None = No
                           and a.get("target") == "player"), None)
             if lethal is not None:
                 return lethal
-        for action in actions:
-            if action["type"] == "attack_target":
-                return action
+        face = next((a for a in actions if a["type"] == "attack_target"
+                     and a.get("target") == "player"), None)
+        champion_actions = [a for a in actions if a["type"] == "attack_target"
+                            and a.get("target") == "champion"]
+        targets_by_id = {
+            str(champion.instance_id): champion
+            for champion in opponent.board if champion.alive
+        }
+
+        # No face action means a guard is alive. Clear the weakest one first;
+        # if it survives, the remaining combat expires anyway at end of turn.
+        if face is None and champion_actions:
+            return min(champion_actions, key=lambda action: (
+                targets_by_id.get(action.get("championId")).current_health
+                if action.get("championId") in targets_by_id else float("inf")
+            ))
+
+        # Champion damage resets next turn. With no guard, only spend combat
+        # on an undefended champion if it can be finished now; otherwise send
+        # it to the opposing player instead of throwing it away as chip damage.
+        killable = [
+            action for action in champion_actions
+            if action.get("championId") in targets_by_id
+            and targets_by_id[action["championId"]].current_health <= buyer.combat
+        ]
+        if killable:
+            return min(killable, key=lambda action: targets_by_id[action["championId"]].current_health)
+        if face is not None:
+            return face
+        if champion_actions:
+            return champion_actions[0]
     return actions[0]
 
 
-def _rollout(session, turn_limit: int | None = None, action_cap: int = 400) -> float:
+def _combat_search_actions(session, attacks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep MCTS only for combat target choices that are not forced by rules.
+
+    Lethal face damage, clearing a blocking guard, and sending otherwise
+    unusable combat face are deterministic tactical outcomes.  Searching those
+    branches spends the shallow root budget rediscovering rules.  Preserve
+    multiple guard targets and multiple currently-killable champions, where
+    target identity can still be strategic.
+    """
+    buyer = session.bot if session.active_player == "bot" else session.player
+    opponent = session.player if session.active_player == "bot" else session.bot
+    face = [action for action in attacks if action.get("target") == "player"]
+    champions = [action for action in attacks if action.get("target") == "champion"]
+
+    if face and buyer.combat >= opponent.hp:
+        return face[:1]
+    if not face:
+        # A guard is blocking; the engine only exposes guard targets here.
+        return champions
+
+    board = {
+        str(champion.instance_id): champion
+        for champion in opponent.board if champion.alive
+    }
+    killable = [
+        action for action in champions
+        if action.get("championId") in board
+        and board[action["championId"]].current_health <= buyer.combat
+    ]
+    if killable:
+        return killable
+    return face[:1]
+
+
+def _rollout(session, turn_limit: int | None = None, action_cap: int = 400,
+             opponent_profile: str | None = None) -> float:
     """Play both seats forward greedily, then score the resulting position.
 
     This used to stop the moment the turn passed to the opponent, so the bot
     never simulated being hit and never saw a purchase come back around. Both
-    seats are now played out: _heuristic_rollout_action acts for whichever seat
-    is current, so the same policy drives both.
+    seats are now played out. The bot retains its adaptive rollout policy; an
+    observed opponent can instead use a public-information inferred profile.
     """
     # Read at call time, not bound as a default, so the constant stays tunable.
     turn_limit = ROLLOUT_TURNS if turn_limit is None else turn_limit
+    if opponent_profile is None and OPPONENT_ROLLOUT_POLICY == "inferred":
+        opponent_profile = inferred_profile(session, OPPONENT_MODEL_MIN_OBSERVATIONS)
     start_turn = session.turn_number
     steps = 0
     while (not session.winner
@@ -661,9 +933,51 @@ def _rollout(session, turn_limit: int | None = None, action_cap: int = 400) -> f
         actions = legal_actions(session)
         if not actions:
             break
-        apply_action(session, _heuristic_rollout_action(session, actions))
+        if (opponent_profile is not None and session.active_player == "player"
+                and session.phase == "buy"):
+            action = profile_buy_action(session, actions, opponent_profile)
+        else:
+            rollout_buy_policy = ROLLOUT_BUY_POLICY
+            if rollout_buy_policy == "routed":
+                # Public purchase observations can identify the opponent's
+                # broad economy profile after a few turns. Situational buying
+                # is more useful against the three card-selection profiles;
+                # retain adaptive buying while evidence is sparse or points
+                # to the champion profile, where it is less reliable.
+                rollout_buy_policy = "adaptive"
+                if session.active_player == "bot" and session.phase == "buy":
+                    inferred = inferred_profile(
+                        session, OPPONENT_MODEL_MIN_OBSERVATIONS,
+                    )
+                    if inferred in {"balanced", "aggressive", "economic"}:
+                        rollout_buy_policy = "situational"
+            action = _heuristic_rollout_action(
+                session, actions, buy_policy=rollout_buy_policy,
+            )
+        apply_action(session, action)
         steps += 1
     return _leaf_value(session)
+
+
+def _sample_rollout_opponent_profile(session, search_rng: random.Random) -> str | None:
+    if OPPONENT_ROLLOUT_POLICY == "mixture":
+        return PROFILE_NAMES[search_rng.randrange(len(PROFILE_NAMES))]
+    if OPPONENT_ROLLOUT_POLICY == "posterior":
+        posterior = inferred_profile_posterior(
+            session, OPPONENT_MODEL_MIN_OBSERVATIONS,
+        )
+        if posterior is None:
+            return None
+        draw = search_rng.random()
+        cumulative = 0.0
+        for profile in PROFILE_NAMES:
+            cumulative += posterior[profile]
+            if draw < cumulative:
+                return profile
+        return PROFILE_NAMES[-1]
+    if OPPONENT_ROLLOUT_POLICY == "inferred":
+        return inferred_profile(session, OPPONENT_MODEL_MIN_OBSERVATIONS)
+    return None
 
 
 def _action_key(action: dict[str, Any] | None) -> tuple:
@@ -683,24 +997,229 @@ def _legal_keys(session) -> set[tuple]:
     return {_action_key(action) for action in legal_actions(session)}
 
 
-def _root_candidates_from_children(root: Node) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
+def _root_search_actions(session, actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply root-only progressive widening to noisy buy decisions."""
+    if session.phase != "buy":
+        return actions
+    if MCTS_BUY_ROOT_WIDTH <= 0:
+        return actions
+    buy_actions = [action for action in actions if action["type"] == "buy_card"]
+    if not buy_actions:
+        return actions
+    if not MCTS_BUY_INCLUDE_BASELINE:
+        return buy_actions[:MCTS_BUY_ROOT_WIDTH]
+
+    baseline = _heuristic_rollout_action(session, buy_actions)
+    narrowed = [baseline]
+    seen = {_action_key(baseline)}
+    for action in buy_actions:
+        if len(narrowed) >= MCTS_BUY_ROOT_WIDTH:
+            break
+        if _action_key(action) in seen:
+            continue
+        narrowed.append(action)
+        seen.add(_action_key(action))
+    return narrowed
+
+
+def _root_candidates_from_children(root: Node, rank_by: str = "visits") -> list[dict[str, Any]]:
+    candidates: list[tuple[dict[str, Any], float]] = []
     for child in root.children:
         if child.action is None:
             continue
-        average = child.reward / child.visits if child.visits else 0.0
+        average = child.raw_reward / child.visits if child.visits else 0.0
+        utility = child.reward / child.visits if child.visits else float("-inf")
         payload = _action_summary(child.action)
         payload["visits"] = child.visits
         payload["averageScore"] = round(average, 3)
-        candidates.append(payload)
-    # Ranked by visits first so the displayed order matches how the action is
-    # actually chosen (robust child), not a separate score ordering.
-    return sorted(candidates, key=lambda item: (item.get("visits", 0), item.get("averageScore", float("-inf"))), reverse=True)
+        payload["averageUtility"] = round(utility, 6) if child.visits else None
+        candidates.append((payload, utility))
+    if rank_by == "utility":
+        # Paired rounds give every action the same number of visits, so robust
+        # child would degrade to input order. The mean bounded utility is the
+        # paired estimator; Python's stable sort preserves public action order
+        # for an exact tie.
+        return [
+            payload for payload, _ in sorted(
+                candidates,
+                key=lambda item: item[1],
+                reverse=True,
+            )
+        ]
+    # Independent UCB is ranked by visits first so the displayed order matches
+    # how the action is actually chosen. Break visit ties with bounded utility,
+    # while still displaying the raw score people recognise.
+    return [
+        payload for payload, _ in sorted(
+            candidates,
+            key=lambda item: (item[0].get("visits", 0), item[1]),
+            reverse=True,
+        )
+    ]
 
 
-def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts") -> dict[str, Any]:
+def _record_root_reward(root: Node, child: Node, raw_reward: float) -> None:
+    """Back-propagate one root-only simulation into its two stored nodes."""
+    reward = _search_utility(raw_reward)
+    for node in (root, child):
+        node.visits += 1
+        node.reward += reward
+        node.raw_reward += raw_reward
+
+
+def _child_mean_utility(child: Node | None) -> float | None:
+    if child is None or child.visits <= 0:
+        return None
+    return child.reward / child.visits
+
+
+def _paired_advantage_stats(proposed: Node | None,
+                            baseline: Node | None) -> tuple[int, float, float] | None:
+    """Return ``(worlds, mean_delta, lower_bound)`` for paired utilities."""
+    if proposed is None or baseline is None:
+        return None
+    count = min(len(proposed.paired_utilities), len(baseline.paired_utilities))
+    if count <= 0:
+        return None
+    deltas = [
+        proposed.paired_utilities[index] - baseline.paired_utilities[index]
+        for index in range(count)
+    ]
+    mean = sum(deltas) / count
+    if count < 2:
+        standard_error = float("inf")
+    else:
+        variance = sum((delta - mean) ** 2 for delta in deltas) / (count - 1)
+        standard_error = math.sqrt(variance / count)
+    lower_bound = mean - MCTS_CONFIDENCE_Z * standard_error
+    return count, mean, lower_bound
+
+
+def _guarded_root_choice(session, root: Node,
+                         proposed: Node | None) -> tuple[Node | None, dict[str, Any], str, float | None]:
+    """Keep the heuristic root move unless search clears the confidence gate."""
+    baseline_action = _heuristic_rollout_action(session)
+    baseline_key = _action_key(baseline_action)
+    proposed_key = _action_key(proposed.action) if proposed is not None else ()
+    baseline_child = next(
+        (child for child in root.children if _action_key(child.action) == baseline_key),
+        None,
+    )
+
+    if proposed is not None and proposed_key == baseline_key:
+        return proposed, baseline_action, "agreement", 0.0
+
+    proposed_mean = _child_mean_utility(proposed)
+    baseline_mean = _child_mean_utility(baseline_child)
+    if proposed_mean is None or baseline_mean is None:
+        return baseline_child, baseline_action, "heuristic_guard", None
+
+    advantage = proposed_mean - baseline_mean
+    if MCTS_OVERRIDE_GATE == "confidence":
+        paired = _paired_advantage_stats(proposed, baseline_child)
+        if paired is None:
+            return baseline_child, baseline_action, "heuristic_guard", advantage
+        worlds, paired_advantage, lower_bound = paired
+        if (worlds < MCTS_CONFIDENCE_MIN_WORLDS
+                or lower_bound <= MCTS_CONFIDENCE_MIN_EFFECT):
+            return baseline_child, baseline_action, "heuristic_guard", paired_advantage
+        return proposed, proposed.action, "mcts_override", paired_advantage
+    if advantage < MCTS_OVERRIDE_MARGIN:
+        return baseline_child, baseline_action, "heuristic_guard", advantage
+    return proposed, proposed.action, "mcts_override", advantage
+
+
+def _paired_root_rounds(session, root: Node, search_rng: random.Random,
+                        start: float, budget_ms: int,
+                        max_iterations: int | None) -> tuple[int, int] | None:
+    """Run complete common-random-number root rounds when they are affordable.
+
+    A round samples one information-set-consistent world, then clones it once
+    per public root action.  The branches therefore share hidden-zone contents
+    and the initial continuation RNG state, but never persist a sampled child
+    state into another decision (so this is not strategy fusion).  Stats are
+    committed only after a complete round; a time-expired partial round cannot
+    give one action an extra hidden-world sample.
+
+    Returns ``(branch_rollouts, sampled_worlds)`` when paired mode was used,
+    otherwise ``None`` so the caller can use independent UCB.  Fixed iteration
+    budgets count branch rollouts and intentionally round down to full rounds.
+    """
+    if ROOT_SAMPLING_MODE != "paired":
+        return None
+    actions = root.untried_actions[:]
+    action_count = len(actions)
+    if action_count < 2 or action_count > PAIRED_ROOT_MAX_ACTIONS:
+        return None
+    if max_iterations is not None and max_iterations < action_count:
+        return None
+    if max_iterations is None and (perf_counter() - start) * 1000 >= budget_ms:
+        return None
+
+    root.children = [Node(action=action, parent=root, actor="bot") for action in actions]
+    root.untried_actions = []
+    iterations = 0
+    worlds = 0
+    while True:
+        if max_iterations is not None:
+            if iterations + action_count > max_iterations:
+                break
+        elif (perf_counter() - start) * 1000 >= budget_ms:
+            break
+
+        try:
+            world = session.determinize_for_bot(search_rng)
+        except ValueError:
+            # A mismatched/custom public inventory cannot be sampled fairly.
+            # Fail closed to the public heuristic instead of using the old
+            # private-composition fallback or crashing the live bot turn.
+            return 0, 0
+        opponent_profile = _sample_rollout_opponent_profile(world, search_rng)
+        legal = _legal_keys(world)
+        if any(_action_key(child.action) not in legal for child in root.children):
+            if worlds == 0:
+                root.children = []
+                root.untried_actions = actions[:]
+                return None
+            break
+
+        results: list[tuple[Node, float]] = []
+        complete = True
+        for child in root.children:
+            if max_iterations is None and (perf_counter() - start) * 1000 >= budget_ms:
+                complete = False
+                break
+            sim = world.clone()
+            apply_action(sim, child.action)
+            reward = (_rollout(sim, opponent_profile=opponent_profile)
+                      if opponent_profile is not None else _rollout(sim))
+            results.append((child, reward))
+
+        if not complete:
+            break
+        for child, raw_reward in results:
+            child.paired_utilities.append(_search_utility(raw_reward))
+            _record_root_reward(root, child, raw_reward)
+        iterations += action_count
+        worlds += 1
+
+    return iterations, worlds
+
+
+def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts",
+                      max_iterations: int | None = None) -> dict[str, Any]:
     start = perf_counter()
     actions = _sorted_actions(legal_actions(session))
+    if algorithm == "mcts":
+        actions = _root_search_actions(session, actions)
+    # Remaining combat vanishes at end of turn. Once at least one legal combat
+    # target exists, advancing the phase is therefore strictly dominated; keep
+    # MCTS focused on the meaningful target-selection decision instead of
+    # occasionally spending its shallow search budget on a pass.
+    if session.phase == "combat":
+        attacks = [action for action in actions if action["type"] == "attack_target"]
+        if attacks:
+            actions = _combat_search_actions(session, attacks)
     if not actions:
         return {"type": "advance_phase", "label": "Next Phase", "score": 0.0, "iterations": 0, "elapsedMs": 0}
 
@@ -716,7 +1235,14 @@ def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts") -> 
     auto_resolved = session.phase not in SEARCHED_PHASES
     if algorithm != "mcts" or len(actions) == 1 or auto_resolved:
         chosen = _heuristic_rollout_action(session)
-        candidates = [_action_summary(action) for action in actions[:3]]
+        candidates = []
+        for action in actions[:3]:
+            candidate = _action_summary(action)
+            # Keep the UI/result schema consistent with searched choices. A
+            # forced heuristic action is the only candidate and is visited
+            # once conceptually, even though no UCT loop is required.
+            candidate["visits"] = 1
+            candidates.append(candidate)
         return {
             **chosen,
             "score": evaluate_state(session.clone()) if hasattr(session, "clone") else 0.0,
@@ -726,79 +1252,117 @@ def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts") -> 
             "candidates": candidates,
         }
 
+    # This is root-only information-set Monte Carlo. Independent mode samples
+    # a fresh hidden world per rollout; paired mode samples one fair world per
+    # complete public-action round. Both keep later bot moves inside a greedy
+    # rollout rather than persisting sampled descendants, avoiding strategy
+    # fusion across incompatible hidden hands.
     root = Node(action=None, untried_actions=actions[:])
     iterations = 0
     best_action = actions[0]
     best_score = float("-inf")
-    # Reward range observed in this search, used to normalise UCT's exploitation
-    # term. Seeded from the first rollout rather than assumed.
-    reward_lo = float("inf")
-    reward_hi = float("-inf")
-
-    while (perf_counter() - start) * 1000 < budget_ms:
-        sim = session.clone()
-        node = root
-        path = [node]
-
-        # end_turn() draws 5 cards at random, so replaying the same action
-        # sequence does not reproduce the same state. Actions cached in the tree
-        # can therefore be illegal in this sample, which used to raise out of
-        # apply_action. Re-check legality against the sampled state at each step.
-        while not node.untried_actions and node.children and not sim.winner:
-            legal = _legal_keys(sim)
-            viable = [c for c in node.children if _action_key(c.action) in legal]
-            if not viable:
+    # Bounded utility has a fixed UCB range. Raw mode retains the historical
+    # observed-range normalisation for controlled A/B comparisons.
+    reward_lo = 0.0 if MCTS_UTILITY_MODE == "bounded" else float("inf")
+    reward_hi = 1.0 if MCTS_UTILITY_MODE == "bounded" else float("-inf")
+    # The seed uses public turn state rather than private human cards. Each
+    # simulation below gets an independent determinization while repeated
+    # searches over the same public position remain reproducible.
+    search_rng = random.Random(
+        f"mcts:{session.seed}:{session.turn_number}:{session.active_player}:{session.phase}"
+    )
+    paired_result = _paired_root_rounds(
+        session, root, search_rng, start, budget_ms, max_iterations,
+    )
+    paired = paired_result is not None
+    if paired:
+        iterations, sampled_worlds = paired_result
+    else:
+        sampled_worlds = 0
+        while (
+            iterations < max_iterations
+            if max_iterations is not None
+            else (perf_counter() - start) * 1000 < budget_ms
+        ):
+            try:
+                sim = session.determinize_for_bot(search_rng)
+            except ValueError:
+                # See the paired path above: no search estimate is preferable
+                # to one derived from live opponent private zones.
                 break
-            # All children of a node are moves from the same position, so they
-            # share an actor. The bot maximises; the opponent minimises.
-            maximize = sim.active_player == "bot"
-            node = max(viable, key=lambda child: child.uct_score(
-                lo=reward_lo, hi=reward_hi, maximize=maximize))
-            apply_action(sim, node.action)
-            path.append(node)
+            opponent_profile = _sample_rollout_opponent_profile(sim, search_rng)
+            node = root
+            path = [node]
 
-        if node.untried_actions and not sim.winner:
-            legal = _legal_keys(sim)
-            # Leave actions that are illegal in this sample for a later one
-            # instead of discarding them.
-            action = next((a for a in node.untried_actions if _action_key(a) in legal), None)
-            if action is not None:
-                actor = sim.active_player
-                node.untried_actions.remove(action)
-                apply_action(sim, action)
-                child = Node(action=action, parent=node, actor=actor,
-                             untried_actions=_sorted_actions(legal_actions(sim)))
-                node.children.append(child)
-                node = child
+            if root.untried_actions:
+                action = root.untried_actions.pop(0)
+                node = Node(action=action, parent=root, actor="bot")
+                root.children.append(node)
+            else:
+                node = max(root.children, key=lambda child: child.uct_score(
+                    lo=reward_lo, hi=reward_hi, maximize=True))
+
+            # Root actions are all generated from the bot's public, unchanged
+            # state, but keep the check defensive if a caller supplies a custom
+            # session implementation.
+            if _action_key(node.action) in _legal_keys(sim):
+                apply_action(sim, node.action)
                 path.append(node)
 
-        reward = _rollout(sim)
-        reward_lo = min(reward_lo, reward)
-        reward_hi = max(reward_hi, reward)
+            raw_reward = (_rollout(sim, opponent_profile=opponent_profile)
+                          if opponent_profile is not None else _rollout(sim))
+            reward = _search_utility(raw_reward)
+            reward_lo = min(reward_lo, reward)
+            reward_hi = max(reward_hi, reward)
 
-        for item in path:
-            item.visits += 1
-            item.reward += reward
-        iterations += 1
+            for item in path:
+                item.visits += 1
+                item.reward += reward
+                item.raw_reward += raw_reward
+            iterations += 1
+            sampled_worlds += 1
 
-    candidates = _root_candidates_from_children(root)
+    candidates = _root_candidates_from_children(
+        root, rank_by="utility" if paired else "visits",
+    )
+    proposed: Node | None = None
     if root.children:
-        # Robust-child selection: take the most-visited root child.
-        #
-        # This used to track the best single rollout reward over any node at any
-        # depth, then map it back to a root child by (type, label). But
-        # "advance_phase"/"Next Phase" exists in every phase, so a pass from deep
-        # inside a rollout routinely matched the root's pass and overrode the
-        # search. Measured at one combat decision: attack scored 112.58 over 59
-        # visits, pass scored -10.58 over 1 visit, and the bot returned pass.
-        best = max(root.children, key=lambda child: (child.visits, child.reward / child.visits if child.visits else float("-inf")))
-        best_action = best.action
-        best_score = best.reward / best.visits if best.visits else 0.0
+        if paired:
+            # Complete paired rounds leave every action equally sampled, so
+            # choose the higher mean estimate rather than degenerating to the
+            # original public action order on tied visit counts.
+            proposed = max(root.children, key=lambda child: (
+                child.reward / child.visits if child.visits else float("-inf"),
+            ))
+        else:
+            # Robust-child selection: take the most-visited root child.
+            #
+            # This used to track the best single rollout reward from any node at
+            # any depth, then map it back to a root child by (type, label). But
+            # "advance_phase"/"Next Phase" exists in every phase, so a pass from
+            # deep inside a rollout routinely matched the root's pass and
+            # overrode the search.
+            proposed = max(root.children, key=lambda child: (
+                child.visits,
+                child.reward / child.visits if child.visits else float("-inf"),
+            ))
+    selected, best_action, selection, utility_advantage = _guarded_root_choice(
+        session, root, proposed,
+    )
+    if selected is not None and selected.visits:
+        best_score = selected.raw_reward / selected.visits
+    else:
+        best_score = 0.0
 
     return {
         **best_action,
         "score": round(best_score, 3),
         "iterations": iterations,
+        "worlds": sampled_worlds,
+        "rootSampling": "paired" if paired else "independent",
+        "selection": selection,
+        "utilityAdvantage": (round(utility_advantage, 6)
+                             if utility_advantage is not None else None),
         "elapsedMs": int((perf_counter() - start) * 1000),
         "algorithm": "mcts",
         "candidates": candidates[:5],
@@ -816,7 +1380,12 @@ def run_bot_turn(session, budget_ms: int = 60, algorithm: str = "mcts") -> dict[
             session.end_turn()
             break
 
-        chosen = choose_bot_action(session, max(20, budget_ms // 2), algorithm=algorithm)
+        # Buy decisions are the main unresolved root search after combat
+        # pruning: lethal/face/guard-forced combat normally has one retained
+        # action. Give the buy root the full turn slice so balanced opponents'
+        # draw/economy cards are not decided from only half the samples.
+        decision_budget = budget_ms if session.phase == "buy" else max(20, budget_ms // 2)
+        chosen = choose_bot_action(session, decision_budget, algorithm=algorithm)
         insight = chosen
         actions_taken.append(chosen)
         session.last_bot_insight = chosen

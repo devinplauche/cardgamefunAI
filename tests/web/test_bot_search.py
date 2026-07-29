@@ -11,6 +11,7 @@ All three guard bugs found while building hero_mcts_bench.py:
 
 import random
 import unittest
+from unittest.mock import patch
 
 from web.bot import apply_action, choose_bot_action, _heuristic_rollout_action
 from web.session import create_session
@@ -86,6 +87,30 @@ class TestClone(unittest.TestCase):
         clone.bot.hp = 1
         self.assertEqual(session.bot.hp, 50)
 
+    def test_clone_remaps_a_pending_ally_stun_to_its_board(self):
+        from hero_engine import BoardChampion
+
+        session = create_session(seed=5)
+        death_threat = next(card for card in session.cards if card.name == "Death Threat")
+        profit = next(card for card in session.cards if card.name == "Profit")
+        cron = next(card for card in session.cards if card.name == "Cron, the Berserker")
+        session.bot.hand = [death_threat, profit]
+        session.player.board = [BoardChampion(cron)]
+        session.active_player = "bot"
+        session.phase = "play"
+
+        session.play_card(death_threat.id, stun_target_index=0)
+        clone = session.clone()
+
+        pending_target = clone.bot.pending_stun_targets[0][1]
+        self.assertIs(pending_target, clone.player.board[0])
+        self.assertIsNot(pending_target, session.player.board[0])
+
+        clone.play_card(profit.id)
+        self.assertEqual(clone.player.board, [])
+        self.assertIn(cron, clone.player.discard)
+        self.assertTrue(session.player.board, "simulation must not stun the live board")
+
 
 class TestMctsSearch(unittest.TestCase):
     def test_mcts_completes_games_without_raising(self):
@@ -107,6 +132,211 @@ class TestMctsSearch(unittest.TestCase):
                 apply_action(session, action)
             else:
                 apply_action(session, _heuristic_rollout_action(session))
+
+
+class TestRootBuyProgressiveWidening(unittest.TestCase):
+    def setUp(self):
+        import web.bot as bot_module
+
+        self._previous_width = bot_module.MCTS_BUY_ROOT_WIDTH
+        self._previous_policy = bot_module.BUY_POLICY
+        self._previous_include = bot_module.MCTS_BUY_INCLUDE_BASELINE
+        bot_module.MCTS_BUY_ROOT_WIDTH = 2
+        bot_module.BUY_POLICY = "static"
+        bot_module.MCTS_BUY_INCLUDE_BASELINE = True
+        self.addCleanup(setattr, bot_module, "MCTS_BUY_ROOT_WIDTH", self._previous_width)
+        self.addCleanup(setattr, bot_module, "BUY_POLICY", self._previous_policy)
+        self.addCleanup(setattr, bot_module, "MCTS_BUY_INCLUDE_BASELINE", self._previous_include)
+
+    @staticmethod
+    def _rich_buy_state():
+        session = create_session(seed=41, algorithm="mcts")
+        session.active_player = "bot"
+        session.phase = "buy"
+        session.bot.gold = 99
+        return session
+
+    def test_root_keeps_only_the_two_highest_priority_buys(self):
+        from web.bot import _action_key, _root_search_actions
+
+        session = self._rich_buy_state()
+        legal = session.legal_actions()
+        expected = [action for action in legal if action["type"] == "buy_card"][:2]
+        narrowed = _root_search_actions(session, legal)
+
+        self.assertEqual([_action_key(action) for action in narrowed],
+                         [_action_key(action) for action in expected])
+        self.assertNotIn("advance_phase", {action["type"] for action in narrowed})
+        self.assertGreater(len(legal), len(narrowed),
+                           "root widening must not mutate the engine's full legal action list")
+
+    def test_choose_action_searches_only_the_narrowed_buy_root(self):
+        session = self._rich_buy_state()
+        with patch("web.bot._rollout", return_value=0.0):
+            result = choose_bot_action(session, algorithm="mcts", max_iterations=4)
+
+        self.assertEqual(len(result["candidates"]), 2)
+        self.assertEqual({candidate["type"] for candidate in result["candidates"]}, {"buy_card"})
+
+    def test_no_affordable_buy_preserves_advance_phase(self):
+        from web.bot import _root_search_actions
+
+        session = self._rich_buy_state()
+        session.bot.gold = 0
+        legal = session.legal_actions()
+        self.assertEqual(_root_search_actions(session, legal), legal)
+        self.assertIn("advance_phase", {action["type"] for action in legal})
+
+    def test_adaptive_baseline_is_always_in_the_narrowed_root(self):
+        from web.bot import _action_key, _root_search_actions, _heuristic_rollout_action
+        import web.bot as bot_module
+
+        session = self._rich_buy_state()
+        legal = session.legal_actions()
+        bot_module.BUY_POLICY = "adaptive"
+        baseline = _heuristic_rollout_action(session, legal)
+        narrowed = _root_search_actions(session, legal)
+
+        self.assertEqual(len(narrowed), 2)
+        self.assertIn(_action_key(baseline), {_action_key(action) for action in narrowed})
+
+class TestCombatSearchPruning(unittest.TestCase):
+    @staticmethod
+    def _session(combat, opponent_hp=50, champion_health=3):
+        from types import SimpleNamespace
+
+        champion = SimpleNamespace(instance_id="c1", alive=True,
+                                   current_health=champion_health)
+        bot = SimpleNamespace(combat=combat)
+        player = SimpleNamespace(hp=opponent_hp, board=[champion])
+        return SimpleNamespace(active_player="bot", bot=bot, player=player)
+
+    def test_lethal_keeps_only_face_attack(self):
+        from web.bot import _combat_search_actions
+
+        session = self._session(combat=5, opponent_hp=5)
+        attacks = [{"type": "attack_target", "target": "player"},
+                   {"type": "attack_target", "target": "champion",
+                    "championId": "c1"}]
+        self.assertEqual(_combat_search_actions(session, attacks), attacks[:1])
+
+    def test_nonlethal_searches_only_killable_champions(self):
+        from web.bot import _combat_search_actions
+
+        session = self._session(combat=3, opponent_hp=50, champion_health=3)
+        attacks = [{"type": "attack_target", "target": "player"},
+                   {"type": "attack_target", "target": "champion",
+                    "championId": "c1"}]
+        self.assertEqual(_combat_search_actions(session, attacks), attacks[1:])
+
+    def test_nonlethal_unfinishable_champion_keeps_only_face(self):
+        from web.bot import _combat_search_actions
+
+        session = self._session(combat=2, opponent_hp=50, champion_health=3)
+        attacks = [{"type": "attack_target", "target": "player"},
+                   {"type": "attack_target", "target": "champion",
+                    "championId": "c1"}]
+        self.assertEqual(_combat_search_actions(session, attacks), attacks[:1])
+
+
+class TestMctsOverrideGuard(unittest.TestCase):
+    def setUp(self):
+        import web.bot as bot_module
+
+        self._previous_margin = bot_module.MCTS_OVERRIDE_MARGIN
+        self._previous_gate = bot_module.MCTS_OVERRIDE_GATE
+        self._previous_z = bot_module.MCTS_CONFIDENCE_Z
+        self._previous_worlds = bot_module.MCTS_CONFIDENCE_MIN_WORLDS
+        bot_module.MCTS_OVERRIDE_MARGIN = 0.10
+        bot_module.MCTS_OVERRIDE_GATE = "margin"
+        bot_module.MCTS_CONFIDENCE_Z = 1.0
+        bot_module.MCTS_CONFIDENCE_MIN_WORLDS = 4
+        self.addCleanup(setattr, bot_module, "MCTS_OVERRIDE_MARGIN", self._previous_margin)
+        self.addCleanup(setattr, bot_module, "MCTS_OVERRIDE_GATE", self._previous_gate)
+        self.addCleanup(setattr, bot_module, "MCTS_CONFIDENCE_Z", self._previous_z)
+        self.addCleanup(setattr, bot_module, "MCTS_CONFIDENCE_MIN_WORLDS",
+                        self._previous_worlds)
+
+    @staticmethod
+    def _root(proposed_reward):
+        from web.bot import Node
+
+        baseline_action = {"type": "buy_card", "marketIndex": 0}
+        proposed_action = {"type": "buy_card", "marketIndex": 1}
+        root = Node(action=None)
+        baseline = Node(action=baseline_action, parent=root, visits=10, reward=5.0)
+        proposed = Node(action=proposed_action, parent=root, visits=10, reward=proposed_reward)
+        root.children = [baseline, proposed]
+        return root, baseline, proposed
+
+    def test_small_sampled_edge_keeps_the_heuristic_action(self):
+        from web.bot import _guarded_root_choice
+
+        root, baseline, proposed = self._root(5.5)  # +0.05 mean utility
+        with patch("web.bot._heuristic_rollout_action", return_value=baseline.action):
+            selected, action, mode, advantage = _guarded_root_choice(object(), root, proposed)
+
+        self.assertIs(selected, baseline)
+        self.assertEqual(action, baseline.action)
+        self.assertEqual(mode, "heuristic_guard")
+        self.assertAlmostEqual(advantage, 0.05)
+
+    def test_material_sampled_edge_allows_the_mcts_override(self):
+        from web.bot import _guarded_root_choice
+
+        root, baseline, proposed = self._root(6.1)  # +0.11 mean utility
+        with patch("web.bot._heuristic_rollout_action", return_value=baseline.action):
+            selected, action, mode, advantage = _guarded_root_choice(object(), root, proposed)
+
+        self.assertIs(selected, proposed)
+        self.assertEqual(action, proposed.action)
+        self.assertEqual(mode, "mcts_override")
+        self.assertAlmostEqual(advantage, 0.11)
+
+    def test_missing_baseline_sample_falls_back_safely(self):
+        from web.bot import _guarded_root_choice
+
+        root, baseline, proposed = self._root(9.0)
+        root.children.remove(baseline)
+        with patch("web.bot._heuristic_rollout_action", return_value=baseline.action):
+            selected, action, mode, advantage = _guarded_root_choice(object(), root, proposed)
+
+        self.assertIsNone(selected)
+        self.assertEqual(action, baseline.action)
+        self.assertEqual(mode, "heuristic_guard")
+        self.assertIsNone(advantage)
+
+    def test_confidence_gate_accepts_a_consistent_small_edge(self):
+        from web.bot import _guarded_root_choice
+        import web.bot as bot_module
+
+        root, baseline, proposed = self._root(5.5)
+        baseline.paired_utilities = [0.50] * 4
+        proposed.paired_utilities = [0.55] * 4
+        bot_module.MCTS_OVERRIDE_GATE = "confidence"
+        with patch("web.bot._heuristic_rollout_action", return_value=baseline.action):
+            selected, action, mode, advantage = _guarded_root_choice(object(), root, proposed)
+
+        self.assertIs(selected, proposed)
+        self.assertEqual(action, proposed.action)
+        self.assertEqual(mode, "mcts_override")
+        self.assertAlmostEqual(advantage, 0.05)
+
+    def test_confidence_gate_rejects_a_noisy_edge(self):
+        from web.bot import _guarded_root_choice
+        import web.bot as bot_module
+
+        root, baseline, proposed = self._root(5.5)
+        baseline.paired_utilities = [0.50] * 4
+        proposed.paired_utilities = [0.70, 0.40, 0.70, 0.40]
+        bot_module.MCTS_OVERRIDE_GATE = "confidence"
+        with patch("web.bot._heuristic_rollout_action", return_value=baseline.action):
+            selected, action, mode, advantage = _guarded_root_choice(object(), root, proposed)
+
+        self.assertIs(selected, baseline)
+        self.assertEqual(action, baseline.action)
+        self.assertEqual(mode, "heuristic_guard")
+        self.assertAlmostEqual(advantage, 0.05)
 
 
 class TestRootSelection(unittest.TestCase):
@@ -200,6 +430,16 @@ class TestEvaluateState(unittest.TestCase):
                 return session
             apply_action(session, _heuristic_rollout_action(session))
         return None
+
+    def test_shaped_evaluation_preserves_terminal_utility(self):
+        """Hybrid leaves must never price a finished game as an ordinary board."""
+        from web.bot import WIN_SCORE, evaluate_state_shaped
+
+        session = create_session(seed=17)
+        session.winner = "bot"
+        self.assertEqual(evaluate_state_shaped(session), WIN_SCORE)
+        session.winner = "player"
+        self.assertEqual(evaluate_state_shaped(session), -WIN_SCORE)
 
     def test_buying_scores_better_than_passing(self):
         # Contract of the *shaped* evaluator. The search-priced evaluate_state
@@ -480,6 +720,205 @@ class TestFastClone(unittest.TestCase):
         slow = perf_counter() - t0
         self.assertLess(fast, slow, "hand-written clone is not beating deepcopy")
 
+
+class TestInformationSetSearch(unittest.TestCase):
+    """MCTS must sample hidden zones instead of reading the live opponent hand."""
+
+    def test_determinization_samples_private_hand_without_mutating_session(self):
+        from collections import Counter
+        from hero_engine import HRCard
+
+        session = create_session(seed=5)
+        private_cards = [
+            HRCard(id=f"private-{index}", name=f"Private {index}", cost=0,
+                   faction="", card_type="action")
+            for index in range(5)
+        ]
+        session.player.hand = private_cards[:2]
+        session.player.deck = private_cards[2:]
+        original_hand = [card.id for card in session.player.hand]
+        original_deck = [card.id for card in session.player.deck]
+        original_market = [card.id for card in session.market.pool]
+
+        with self.assertRaisesRegex(ValueError, "Cannot fairly determinize"):
+            session.determinize_for_bot(random.Random(0))
+        sampled = session.determinize_for_bot(
+            random.Random(0), allow_private_test_fallback=True,
+        )
+
+        # The hidden-zone composition and visible counts stay valid, but the
+        # bot does not receive the real hand/deck split or market order.
+        self.assertEqual(len(sampled.player.hand), len(original_hand))
+        self.assertEqual(
+            Counter(card.id for card in sampled.player.hand + sampled.player.deck),
+            Counter(original_hand + original_deck),
+        )
+        self.assertNotEqual([card.id for card in sampled.player.hand], original_hand)
+        self.assertNotEqual([card.id for card in sampled.market.pool], original_market)
+
+        # Sampling is strictly simulation-only.
+        self.assertEqual([card.id for card in session.player.hand], original_hand)
+        self.assertEqual([card.id for card in session.player.deck], original_deck)
+        self.assertEqual([card.id for card in session.market.pool], original_market)
+
+    def test_standard_determinization_hides_human_owned_card_identities(self):
+        session = create_session(seed=7)
+        live_hand = [card.id for card in session.player.hand]
+        live_private = [card.id for card in (
+            session.player.hand + session.player.deck + session.player.discard + session.player.banish
+        )]
+        live_rng_state = session.rng.getstate()
+
+        sampled = session.determinize_for_bot(random.Random(0))
+
+        self.assertEqual(len(sampled.player.hand), len(session.player.hand))
+        self.assertEqual(len(sampled.player.deck), len(session.player.deck))
+        self.assertEqual(len(sampled.player.discard), len(session.player.discard))
+        self.assertEqual(len(sampled.player.banish), len(session.player.banish))
+        self.assertNotEqual([card.id for card in sampled.player.hand], live_hand)
+        self.assertNotEqual(
+            [card.id for card in sampled.player.hand + sampled.player.deck
+             + sampled.player.discard + sampled.player.banish],
+            live_private,
+        )
+        self.assertEqual(session.rng.getstate(), live_rng_state)
+
+    def test_inventory_mismatch_falls_back_to_public_heuristic(self):
+        from hero_engine import HRCard
+
+        session = create_session(seed=7)
+        session.bot.hand[0] = HRCard(
+            id="unknown-public",
+            name="Unknown Public",
+            cost=0,
+            faction="",
+            card_type="action",
+        )
+        session.active_player = "bot"
+        session.phase = "buy"
+        session.bot.gold = 99
+        expected = _heuristic_rollout_action(session)
+
+        result = choose_bot_action(
+            session, algorithm="mcts", max_iterations=8,
+        )
+
+        self.assertEqual(result["type"], expected["type"])
+        self.assertEqual(result.get("marketIndex"), expected.get("marketIndex"))
+        self.assertEqual(result["iterations"], 0)
+
+    def test_fixed_iteration_search_is_reproducible(self):
+        session = create_session(seed=13)
+        # Move to a bot buy decision with more than one legal choice.
+        session.end_turn()
+        for action in session.legal_actions():
+            if action["type"] == "play_card":
+                apply_action(session, action)
+        session.advance_phase()
+        session.advance_phase()
+        first = choose_bot_action(session, algorithm="mcts", max_iterations=8)
+        second = choose_bot_action(session, algorithm="mcts", max_iterations=8)
+
+        for result in (first, second):
+            result.pop("elapsedMs", None)
+        self.assertEqual(first, second)
+
+    def test_default_horizon_keeps_enough_turns_for_economy_to_cycle(self):
+        from web.bot import ROLLOUT_TURNS
+
+        self.assertEqual(ROLLOUT_TURNS, 16)
+
+    def test_bounded_search_utility_preserves_terminal_and_hp_ordering(self):
+        import web.bot as bot_module
+
+        previous = bot_module.MCTS_UTILITY_MODE
+        self.addCleanup(setattr, bot_module, "MCTS_UTILITY_MODE", previous)
+        bot_module.MCTS_UTILITY_MODE = "bounded"
+
+        self.assertEqual(bot_module._search_utility(bot_module.WIN_SCORE), 1.0)
+        self.assertEqual(bot_module._search_utility(-bot_module.WIN_SCORE), 0.0)
+        self.assertLess(bot_module._search_utility(-100.0), bot_module._search_utility(100.0))
+        self.assertGreater(bot_module._search_utility(0.0), 0.0)
+        self.assertLess(bot_module._search_utility(0.0), 1.0)
+
+
+class TestPairedRootSampling(unittest.TestCase):
+    """Common-random-number root rounds must stay fair and complete."""
+
+    def setUp(self):
+        import web.bot as bot_module
+
+        self._previous_mode = bot_module.ROOT_SAMPLING_MODE
+        self._previous_cap = bot_module.PAIRED_ROOT_MAX_ACTIONS
+        self._previous_buy_width = bot_module.MCTS_BUY_ROOT_WIDTH
+        bot_module.ROOT_SAMPLING_MODE = "paired"
+        bot_module.PAIRED_ROOT_MAX_ACTIONS = 3
+        bot_module.MCTS_BUY_ROOT_WIDTH = 0
+        self.addCleanup(setattr, bot_module, "ROOT_SAMPLING_MODE", self._previous_mode)
+        self.addCleanup(setattr, bot_module, "PAIRED_ROOT_MAX_ACTIONS", self._previous_cap)
+        self.addCleanup(setattr, bot_module, "MCTS_BUY_ROOT_WIDTH", self._previous_buy_width)
+
+    @staticmethod
+    def _three_action_buy_state():
+        from hero_engine import HRCard
+
+        session = create_session(seed=29, algorithm="mcts")
+        # Two visible, equally affordable buys plus pass gives exactly three
+        # public root actions. Synthetic cards deliberately exercise the
+        # determinizer's custom-state fallback without exposing the live human
+        # hand to search.
+        low = HRCard(id="paired_low", name="Paired Low", cost=2, faction="",
+                     card_type="action", effects={"combat": 5})
+        high = HRCard(id="paired_high", name="Paired High", cost=2, faction="",
+                      card_type="action", effects={"gold": 1})
+        session.active_player = "bot"
+        session.phase = "buy"
+        session.bot.gold = 2
+        session.bot.combat = 0
+        session.market.row = [low, high, None, None, None]
+        session.market.fire_gems_remaining = 0
+        return session
+
+    def test_paired_rounds_share_one_world_and_choose_highest_mean(self):
+        session = self._three_action_buy_state()
+        original_private_hand = [card.id for card in session.player.hand]
+        signatures = []
+
+        def fake_rollout(sim, **_):
+            # The root action has already been applied. Each branch inside a
+            # paired round must begin from the same sampled human zones and RNG
+            # state; only the public root action differs.
+            signatures.append((
+                tuple(card.id for card in sim.player.hand),
+                tuple(card.id for card in sim.player.deck),
+                sim.rng.getstate(),
+            ))
+            return 100.0 if any(card.id == "paired_high" for card in sim.bot.discard) else 0.0
+
+        original_determinize = session.determinize_for_bot
+        with patch.object(
+            session,
+            "determinize_for_bot",
+            side_effect=lambda rng: original_determinize(
+                rng, allow_private_test_fallback=True,
+            ),
+        ) as sample, \
+             patch("web.bot._rollout", side_effect=fake_rollout):
+            result = choose_bot_action(session, algorithm="mcts", max_iterations=8)
+
+        # 8 branches permits only two complete 3-action rounds. No partial
+        # round may add a one-sided visit, and one world is sampled per round.
+        self.assertEqual(result["rootSampling"], "paired")
+        self.assertEqual(result["iterations"], 6)
+        self.assertEqual(result["worlds"], 2)
+        self.assertEqual(sample.call_count, 2)
+        self.assertEqual([candidate["visits"] for candidate in result["candidates"]], [2, 2, 2])
+        self.assertEqual(int(result["marketIndex"]), 1,
+                         "paired selection must use mean utility, not input order")
+        self.assertEqual(signatures[:3], [signatures[0]] * 3)
+        self.assertEqual(signatures[3:], [signatures[3]] * 3)
+        self.assertEqual([card.id for card in session.player.hand], original_private_hand,
+                         "paired simulation must not mutate the live hidden hand")
 
 class TestMinimaxAlternation(unittest.TestCase):
     """Rewards are stored from the bot's perspective, so opponent nodes must be

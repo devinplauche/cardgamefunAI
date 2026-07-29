@@ -60,6 +60,10 @@ export interface BotInsight {
   target?: string;
   score?: number;
   iterations?: number;
+  worlds?: number;
+  rootSampling?: 'independent' | 'paired';
+  selection?: 'agreement' | 'heuristic_guard' | 'mcts_override';
+  utilityAdvantage?: number | null;
   elapsedMs?: number;
   actions?: Array<Record<string, unknown>>;
   lastAction?: Record<string, unknown> | null;
@@ -75,6 +79,7 @@ export interface BotInsight {
     score?: number;
     visits?: number;
     averageScore?: number;
+    averageUtility?: number | null;
     priority?: number;
   }>;
 }

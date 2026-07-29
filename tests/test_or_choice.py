@@ -109,5 +109,58 @@ class TestHealthBranchOverflow(unittest.TestCase):
         self.assertEqual(player.hp, 49, "health was not the chosen branch, so it must not change")
 
 
+class TestGuaranteedLethalBranch(unittest.TestCase):
+    def test_combat_lethal_overrides_low_gold_urgency(self):
+        from hero_engine import expend_champion
+
+        bc = _champion_with_or_choice(combat=2, gold=1,
+                                      or_choice=["combat", "gold"])
+        player = HRPlayer("P")
+        player.gold = 0
+        player.board.append(bc)
+        opponent = HRPlayer("O")
+        opponent.hp = 2
+
+        expend_champion(player, bc, opponent=opponent)
+
+        self.assertEqual(player.combat, 2)
+        self.assertEqual(player.gold, 0)
+
+    def test_combat_lethal_overrides_emergency_healing(self):
+        from hero_engine import expend_champion
+
+        bc = _champion_with_or_choice(combat=3, health=5,
+                                      or_choice=["combat", "health"])
+        player = HRPlayer("P")
+        player.hp = 10
+        player.board.append(bc)
+        opponent = HRPlayer("O")
+        opponent.hp = 3
+
+        expend_champion(player, bc, opponent=opponent)
+
+        self.assertEqual(player.combat, 3)
+        self.assertEqual(player.hp, 10)
+
+    def test_exhausted_living_guard_still_blocks_face_lethal(self):
+        from hero_engine import expend_champion
+
+        bc = _champion_with_or_choice(combat=2, gold=1,
+                                      or_choice=["combat", "gold"])
+        player = HRPlayer("P")
+        player.gold = 0
+        player.board.append(bc)
+        opponent = HRPlayer("O")
+        opponent.hp = 2
+        guard = _guard_champion(health=8)
+        guard.exhausted = True
+        opponent.board.append(guard)
+
+        expend_champion(player, bc, opponent=opponent)
+
+        self.assertEqual(player.combat, 0)
+        self.assertEqual(player.gold, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

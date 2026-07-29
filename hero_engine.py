@@ -122,6 +122,10 @@ class HRPlayer:
         # _apply_per_champion_bonus / _resolve_pending_per_champion.
         self.pending_per_champion: list[dict] = []
         self.pending_stun_targets: list[tuple[HRCard, Optional[BoardChampion]]] = []
+        # The UI/AI phase model plays all actions before champions can be
+        # expended. Prepare effects are therefore queued and applied to the
+        # first champion the player subsequently chooses to expend.
+        self.pending_prepares: int = 0
         # Sacrifice and discard targeting used to be resolved inline by
         # _find_worst_idx the moment the effect fired, which made them
         # unreachable to any agent - they are the decisions a strong player
@@ -380,14 +384,9 @@ def _should_self_sacrifice(player: HRPlayer, opponent: Optional[HRPlayer] = None
     guaranteed bonus now.
     """
     if requires_open_combat and opponent:
-        # Matches the guard check the neighbouring or_choice combat branch
-        # uses below, for the same "is this guard currently a threat"
-        # question. Note _resolve_combat's own guard check (used for real
-        # combat resolution) does not filter by exhausted at all, so whether
-        # exhaustion should affect guard-blocking here is itself an open
-        # question - out of scope for this fix, which is only about the two
-        # call sites agreeing with each other.
-        guards = [bc for bc in opponent.board if bc.guard and bc.alive and not bc.exhausted]
+        # Exhausting a guard uses its ability; it remains in play and continues
+        # to block combat until stunned.
+        guards = [bc for bc in opponent.board if bc.guard and bc.alive]
         if guards:
             return False
     owned_economy = sum(
@@ -555,6 +554,7 @@ class HRGame:
         player.pending_ally.clear()
         player.pending_per_champion.clear()
         player.pending_stun_targets.clear()
+        player.pending_prepares = 0
         player.cards_bought = 0
         player.next_buy_to_hand = False
         player.next_buy_to_top = False
@@ -709,7 +709,20 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
     # unconditional.
     sacrificed = False
     sac_combat = card.get("sacrifice_combat", 0)
-    if sac_combat > 0 and _should_self_sacrifice(player, opponent, requires_open_combat=True):
+    guard_hp = sum(
+        champion.current_health
+        for champion in opponent.board
+        if champion.alive and champion.guard
+    ) if opponent else 0
+    guaranteed_lethal = bool(
+        opponent
+        and sac_combat > 0
+        and player.combat + sac_combat >= guard_hp + opponent.hp
+    )
+    if sac_combat > 0 and (
+        guaranteed_lethal
+        or _should_self_sacrifice(player, opponent, requires_open_combat=True)
+    ):
         player.combat += sac_combat
         sacrificed = True
     sac_od = card.get("sacrifice_opponent_discard", 0)
@@ -773,10 +786,22 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
     or_choice = card.get("or_choice", [])
     if or_choice:
         options = []
+        force_lethal_combat = False
         if "combat" in or_choice:
             val = card.get("combat", 0)
             if val:
-                guards = [bc for bc in opponent.board if bc.guard and bc.alive and not bc.exhausted] if opponent else []
+                # Guards block face damage whether or not they have already
+                # been expended. If this branch creates an immediate open-face
+                # lethal, no economic/healing score can rationally beat it.
+                guards = [
+                    champion for champion in opponent.board
+                    if champion.guard and champion.alive
+                ] if opponent else []
+                force_lethal_combat = bool(
+                    opponent
+                    and not guards
+                    and player.combat + val >= opponent.hp
+                )
                 if guards:
                     # A veto regardless of magnitude was wrong: combat that
                     # kills the weakest guard is still worth taking (removes a
@@ -811,7 +836,11 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
                 score = actual_heal + (3 if player.hp <= 25 else 0)
                 options.append(("health", total, score))
         if options:
-            best = max(options, key=lambda x: x[2])
+            best = (
+                next(option for option in options if option[0] == "combat")
+                if force_lethal_combat
+                else max(options, key=lambda x: x[2])
+            )
             if best[0] == "combat":
                 player.combat += best[1]
             elif best[0] == "gold":
@@ -948,14 +977,23 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
         if ally_od > 0 and opponent:
             _force_opponent_discard(opponent, ally_od, player)
 
+    if player.pending_prepares > 0 and bc.alive and bc.exhausted:
+        bc.exhausted = False
+        player.pending_prepares -= 1
+
     return True
 
 
 def auto_expend_all(player: HRPlayer, opponent: HRPlayer = None):
     """Expend every ready champion on the board."""
-    for bc in list(player.board):
-        if bc.alive and not bc.exhausted:
-            expend_champion(player, bc, opponent)
+    while True:
+        ready = next(
+            (bc for bc in player.board if bc.alive and not bc.exhausted),
+            None,
+        )
+        if ready is None:
+            break
+        expend_champion(player, ready, opponent)
 
 
 def buy_card(player: HRPlayer, market: HRMarket, index: int) -> bool:
@@ -982,14 +1020,21 @@ def buy_card(player: HRPlayer, market: HRMarket, index: int) -> bool:
         if player.next_buy_to_hand:
             player.hand.append(bought)
             player.next_buy_to_hand = False
-        elif player.next_buy_to_top:
-            if player.next_buy_to_top_action_only and bought.card_type != "action":
-                # Bribe only puts actions on top; non-actions go to discard
-                player.discard.append(bought)
-            else:
+        elif player.next_buy_to_top or player.next_buy_to_top_action_only:
+            qualifies_for_action_effect = (
+                player.next_buy_to_top_action_only
+                and bought.card_type == "action"
+            )
+            if player.next_buy_to_top or qualifies_for_action_effect:
                 player.deck.insert(0, bought)
-            player.next_buy_to_top = False
-            player.next_buy_to_top_action_only = False
+            else:
+                # Bribe says "the next action you acquire this turn." A
+                # non-action neither qualifies nor consumes that effect.
+                player.discard.append(bought)
+            if player.next_buy_to_top:
+                player.next_buy_to_top = False
+            if qualifies_for_action_effect:
+                player.next_buy_to_top_action_only = False
         else:
             player.discard.append(bought)
         player.cards_bought += 1
@@ -1024,16 +1069,21 @@ def _apply_ally_effects(player: HRPlayer, card: HRCard, opponent: Optional[HRPla
             _discard_from_hand(player, ally_draw, opponent)
 
     if card.get("prepare", False):
+        prepared = False
         for bc in player.board:
             if bc.alive and bc.exhausted:
                 bc.exhausted = False
+                prepared = True
                 break
+        if not prepared:
+            player.pending_prepares += 1
     if card.get("to_hand", False):
         player.next_buy_to_hand = True
     if card.get("top_of_deck", False):
-        player.next_buy_to_top = True
         if card.get("top_of_deck_action_only", False):
             player.next_buy_to_top_action_only = True
+        else:
+            player.next_buy_to_top = True
     ally_od = card.get("ally_opponent_discard", 0)
     if ally_od > 0 and opponent:
         _force_opponent_discard(opponent, ally_od, player)

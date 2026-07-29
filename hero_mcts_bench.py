@@ -23,18 +23,9 @@ import argparse
 import random
 import time
 
-from hero_ai import _buy_val
 from web.bot import _heuristic_rollout_action, apply_action, choose_bot_action
+from web.opponent_profiles import PROFILE_WEIGHTS, profile_buy_action
 from web.session import create_session
-
-# Buy weights mirroring hero_ai's four profiles, so the opposition here matches
-# the opposition in hero_rl_eval.py as closely as the phase machine allows.
-PROFILE_WEIGHTS = {
-    "balanced": dict(gold_weight=2, combat_weight=2, health_weight=1, draw_weight=3),
-    "aggressive": dict(combat_weight=2, draw_weight=3, champ_weight=3),
-    "economic": dict(gold_weight=4, combat_weight=1, draw_weight=3, health_weight=1, champ_weight=2),
-    "champion": dict(combat_weight=2, champ_weight=6),
-}
 
 MAX_ACTIONS_PER_GAME = 4000
 
@@ -47,31 +38,7 @@ def _profile_action(session, profile):
 
     phase = session.phase
     if phase == "buy":
-        weights = dict(PROFILE_WEIGHTS[profile])
-        best, best_val = None, -1.0
-        for action in actions:
-            if action["type"] != "buy_card":
-                continue
-            idx = int(action["marketIndex"])
-            if idx == 5:  # Fire Gem: only as a fallback
-                continue
-            card = session.market.row_cards()[idx]
-            if card is None:
-                continue
-            w = dict(weights)
-            if profile == "balanced":
-                w["champ_weight"] = card.health // 2
-            val = float(_buy_val(card, **w))
-            if profile == "balanced":
-                val -= card.cost // 2
-            if val > best_val:
-                best_val, best = val, action
-        if best is not None:
-            return best
-        for action in actions:
-            if action["type"] == "buy_card" and int(action["marketIndex"]) == 5:
-                return action
-        return {"type": "advance_phase"}
+        return profile_buy_action(session, actions, profile)
 
     if phase == "combat":
         # legal_actions() now also offers non-guard champions as targets once
@@ -87,22 +54,56 @@ def _profile_action(session, profile):
             if lethal is not None:
                 return lethal
 
-        # attack_weakest: guards sorted by lowest remaining health first
-        guards = [a for a in actions if a["type"] == "attack_target" and a.get("target") == "champion"]
-        if guards:
-            board = {c.card.id: c for c in session.player.board + session.bot.board}
-            return min(guards, key=lambda a: board[a["championId"]].current_health
-                       if a["championId"] in board else 99)
-        for action in actions:
-            if action["type"] == "attack_target":
-                return action
+        face = next((a for a in actions if a["type"] == "attack_target"
+                     and a.get("target") == "player"), None)
+        champion_actions = [a for a in actions if a["type"] == "attack_target"
+                            and a.get("target") == "champion"]
+        board = {
+            str(champion.instance_id): champion
+            for champion in session.player.board + session.bot.board if champion.alive
+        }
+        # A missing face action means guards are still blocking. Damage that
+        # cannot finish one will expire, but choosing the weakest guard retains
+        # the profile's established attack-weakest policy.
+        if face is None and champion_actions:
+            return min(champion_actions, key=lambda action: (
+                board.get(action.get("championId")).current_health
+                if action.get("championId") in board else float("inf")
+            ))
+        killable = [
+            action for action in champion_actions
+            if action.get("championId") in board
+            and board[action["championId"]].current_health <= buyer.combat
+        ]
+        if killable:
+            return min(killable, key=lambda action: board[action["championId"]].current_health)
+        if face is not None:
+            return face
+        if champion_actions:
+            return champion_actions[0]
         return {"type": "advance_phase"}
 
     # play / champion phases: play everything, expend everything
     return _heuristic_rollout_action(session)
 
 
-def play_game(profile, algorithm, budget_ms, seed):
+def play_game(profile, algorithm, budget_ms, seed, max_iterations=None,
+              budget_scope="action"):
+    """Play one benchmark game.
+
+    ``budget_scope="action"`` preserves the original harness: every bot
+    decision gets ``budget_ms``.  ``"turn"`` instead goes through
+    ``GameSession.run_bot_turn()``, matching the web application's production
+    action-allocation path.  The distinction matters for long rollouts: a
+    buy followed by combat used to receive two independent 60 ms searches in
+    this harness, while production currently grants a half-budget (minimum
+    20 ms) slice to *each* searched choice.  It is therefore the right path
+    comparison, not a strict wall-clock turn cap.
+    """
+    if budget_scope not in {"action", "turn"}:
+        raise ValueError(f"Unknown budget scope: {budget_scope}")
+    if budget_scope == "turn" and max_iterations is not None:
+        raise ValueError("fixed iterations are only supported with action budget scope")
     random.seed(seed)
     session = create_session(seed=seed, algorithm=algorithm, budget_ms=budget_ms)
     steps = 0
@@ -110,7 +111,18 @@ def play_game(profile, algorithm, budget_ms, seed):
         if session.active_player == "player":
             apply_action(session, _profile_action(session, profile))
         else:
-            action = choose_bot_action(session, budget_ms=budget_ms, algorithm=algorithm)
+            if budget_scope == "turn":
+                # Use the identical entry point as web/backend.py.  Count the
+                # actions it performs so the benchmark's safety cap remains an
+                # action cap rather than silently becoming a turn cap.
+                session.run_bot_turn()
+                # GameSession returns a serialised state for the web API; the
+                # execution report itself is retained on the session.
+                insight = session.last_bot_insight or {}
+                steps += max(1, len(insight.get("actions", [])))
+                continue
+            action = choose_bot_action(session, budget_ms=budget_ms, algorithm=algorithm,
+                                       max_iterations=max_iterations)
             apply_action(session, action)
         steps += 1
     return session.winner, session.turn_number, steps >= MAX_ACTIONS_PER_GAME
@@ -122,25 +134,77 @@ def main():
     ap.add_argument("--budget", type=int, default=60)
     ap.add_argument("--seed", type=int, default=1000)
     ap.add_argument("--algorithms", nargs="*", default=["mcts", "heuristic"])
-    ap.add_argument("--eval", choices=["search", "shaped"], default="search",
+    ap.add_argument("--eval", choices=["search", "shaped", "hybrid"], default="search",
                     help="search: rollouts price everything; shaped: static card weights")
     ap.add_argument("--rollout-turns", type=int, default=None,
                     help="seat-turns simulated per rollout (default: web.bot.ROLLOUT_TURNS)")
+    ap.add_argument("--utility", choices=["bounded", "raw"], default="bounded",
+                    help="UCB reward scale: bounded is the production default; raw is a legacy A/B control")
+    ap.add_argument("--root-sampling", choices=["independent", "paired"], default="paired",
+                    help="independent UCB or paired common-random-number root rounds")
+    ap.add_argument("--buy-root-width", type=int, default=3,
+                    help="MCTS buy candidates retained at root; 0 keeps every legal action")
+    ap.add_argument("--override-margin", type=float, default=0.10,
+                    help="bounded-utility edge required to override the heuristic; -1 disables")
+    ap.add_argument("--override-gate", choices=["margin", "confidence"], default="margin",
+                    help="fixed mean margin or paired-delta confidence lower bound")
+    ap.add_argument("--confidence-z", type=float, default=1.0,
+                    help="one-sided standard-error multiplier for confidence gate")
+    ap.add_argument("--confidence-min-worlds", type=int, default=4)
+    ap.add_argument("--confidence-min-effect", type=float, default=0.0)
+    ap.add_argument("--iterations", type=int, default=None,
+                    help="root-simulation cap per decision (reproducible; paired rounds use complete batches)")
+    ap.add_argument("--budget-scope", choices=["action", "turn"], default="action",
+                    help="action: budget each bot choice (historical harness); "
+                         "turn: use the production run_bot_turn path")
     ap.add_argument("--profiles", nargs="*", default=list(PROFILE_WEIGHTS),
                     choices=list(PROFILE_WEIGHTS))
-    ap.add_argument("--buy-policy", choices=["situational", "static"], default="situational",
+    ap.add_argument("--buy-policy", choices=["situational", "static", "adaptive"], default="static",
+                    help="live heuristic/root fallback buy policy")
+    ap.add_argument("--rollout-buy-policy", choices=["situational", "static", "adaptive", "routed"],
+                    default="adaptive",
                     help="situational: gold/combat priced against opponent HP and gold density; "
-                         "static: original fixed-weight priority order")
+                         "static: original fixed-weight priority order; "
+                         "adaptive: tilt toward combat when an opposing draw engine is visible; "
+                         "routed: situational after public profile inference, adaptive otherwise")
+    ap.add_argument("--opponent-rollout-policy", choices=["adaptive", "inferred", "posterior", "mixture"],
+                    default="posterior",
+                    help="adaptive: historical shared rollout; posterior: public-purchase Bayesian mixture")
+    ap.add_argument("--opponent-model-min-observations", type=int, default=2,
+                    help="public opponent buys required before profile rollout activates")
     args = ap.parse_args()
+
+    if args.budget_scope == "turn" and args.iterations is not None:
+        ap.error("--iterations is only supported with --budget-scope action")
 
     import web.bot as bot_module
     bot_module.EVAL_MODE = args.eval
     bot_module.BUY_POLICY = args.buy_policy
+    bot_module.ROLLOUT_BUY_POLICY = args.rollout_buy_policy
+    bot_module.OPPONENT_ROLLOUT_POLICY = args.opponent_rollout_policy
+    bot_module.OPPONENT_MODEL_MIN_OBSERVATIONS = args.opponent_model_min_observations
+    bot_module.MCTS_UTILITY_MODE = args.utility
+    bot_module.ROOT_SAMPLING_MODE = args.root_sampling
+    bot_module.MCTS_BUY_ROOT_WIDTH = args.buy_root_width
+    bot_module.MCTS_OVERRIDE_MARGIN = args.override_margin
+    bot_module.MCTS_OVERRIDE_GATE = args.override_gate
+    bot_module.MCTS_CONFIDENCE_Z = args.confidence_z
+    bot_module.MCTS_CONFIDENCE_MIN_WORLDS = args.confidence_min_worlds
+    bot_module.MCTS_CONFIDENCE_MIN_EFFECT = args.confidence_min_effect
     if args.rollout_turns is not None:
         bot_module.ROLLOUT_TURNS = args.rollout_turns
-    print(f"eval={args.eval} rollout_turns={bot_module.ROLLOUT_TURNS} buy_policy={args.buy_policy}")
+    print(f"eval={args.eval} rollout_turns={bot_module.ROLLOUT_TURNS} "
+          f"buy_policy={args.buy_policy} rollout_buy_policy={args.rollout_buy_policy} "
+          f"opponent_rollout_policy={args.opponent_rollout_policy} "
+          f"opponent_model_min_observations={args.opponent_model_min_observations} "
+          f"utility={args.utility} "
+          f"root_sampling={args.root_sampling} buy_root_width={args.buy_root_width} "
+          f"override_gate={args.override_gate} override_margin={args.override_margin} "
+          f"confidence_z={args.confidence_z} confidence_min_worlds={args.confidence_min_worlds} "
+          f"confidence_min_effect={args.confidence_min_effect}")
 
-    print(f"{args.games} seeded games per profile, MCTS budget {args.budget}ms")
+    search_limit = f"{args.iterations} simulation cap" if args.iterations is not None else f"{args.budget}ms"
+    print(f"{args.games} seeded games per profile, MCTS {search_limit} per {args.budget_scope}")
     print("bot seat = second player (draws 5); see module docstring on comparability\n")
     header = f"{'algorithm':<14}" + "".join(f"{p:>12}" for p in args.profiles) + f"{'AVG':>9}{'s/game':>9}"
     print(header)
@@ -152,7 +216,9 @@ def main():
         for profile in args.profiles:
             wins = 0
             for i in range(args.games):
-                winner, _, stalled = play_game(profile, algorithm, args.budget, args.seed + i)
+                winner, _, stalled = play_game(profile, algorithm, args.budget, args.seed + i,
+                                                max_iterations=args.iterations,
+                                                budget_scope=args.budget_scope)
                 wins += winner == "bot"
                 stalls += stalled
             rates.append(wins / args.games)

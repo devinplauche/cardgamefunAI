@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,9 +11,14 @@ from typing import Any
 
 from hero_engine import (
     BoardChampion,
+    DAGGER,
+    FIRE_GEM,
+    GOLD,
     HRCard,
     HRMarket,
     HRPlayer,
+    RUBY,
+    SHORTSWORD,
     auto_expend_all,
     buy_card,
     expend_champion,
@@ -102,6 +108,7 @@ def _copy_player(player: HRPlayer, rng: random.Random) -> HRPlayer:
     clone.pending_ally = player.pending_ally[:]
     clone.pending_per_champion = [dict(e) for e in player.pending_per_champion]
     clone.pending_stun_targets = player.pending_stun_targets[:]
+    clone.pending_prepares = player.pending_prepares
     # Deferred sacrifice/discard targeting. Dicts are copied, not aliased -
     # apply_choice decrements "count" in place, so a shared dict would let a
     # simulated branch consume the real game's pending choice.
@@ -113,6 +120,28 @@ def _copy_player(player: HRPlayer, rng: random.Random) -> HRPlayer:
     clone.next_buy_to_top = player.next_buy_to_top
     clone.next_buy_to_top_action_only = player.next_buy_to_top_action_only
     return clone
+
+
+def _remap_pending_stun_targets(player: HRPlayer, opponent: HRPlayer) -> None:
+    """Point deferred stun effects at champions in the cloned game state.
+
+    ``pending_stun_targets`` is the only player field whose payload can hold a
+    mutable game object.  A shallow tuple copy leaves it pointing at the live
+    opponent board, which makes a later ally-triggered stun silently fail in a
+    simulation because that object is not one of the clone's legal targets.
+    """
+    cloned_targets = {champion.instance_id: champion for champion in opponent.board}
+    remapped: list[tuple[HRCard, BoardChampion | None]] = []
+    for card, target in player.pending_stun_targets:
+        if target is None:
+            remapped.append((card, None))
+            continue
+        # A target normally remains on the opponent's board until its pending
+        # ally fires.  Preserve the engine's "target no longer legal" behavior
+        # if a custom state has already removed it, without retaining a live
+        # BoardChampion reference in the clone.
+        remapped.append((card, cloned_targets.get(target.instance_id, _copy_champion(target))))
+    player.pending_stun_targets = remapped
 
 
 def _copy_market(market: HRMarket, rng: random.Random) -> HRMarket:
@@ -179,6 +208,15 @@ def _market_view(market: HRMarket) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True)
+class PublicOpponentPurchase:
+    """A buy observation visible to the bot, with no private-zone identities."""
+
+    gold_before_buy: int
+    buy_options: tuple[tuple[int, str], ...]
+    chosen_market_index: int
+
+
 @dataclass
 class GameSession:
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
@@ -196,10 +234,34 @@ class GameSession:
     log: list[dict[str, Any]] = field(default_factory=list)
     history: list[dict[str, Any]] = field(default_factory=list)
     last_bot_insight: dict[str, Any] | None = field(default=None)
+    opponent_purchase_observations: tuple[PublicOpponentPurchase, ...] = ()
     record_history: bool = field(default=True)
     rng: random.Random = field(init=False, repr=False)
+    _normal_market_cards: tuple[HRCard, ...] = field(init=False, repr=False)
+    _full_inventory: tuple[HRCard, ...] = field(init=False, repr=False)
+    _inventory_counts: Counter[str] = field(init=False, repr=False)
+    _inventory_cards_by_id: dict[str, HRCard] = field(init=False, repr=False)
+    _market_card_ids: frozenset[str] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        self._normal_market_cards = tuple(
+            card for card in self.cards if card.name.lower() != "fire gem"
+        )
+        self._full_inventory = (
+            self._normal_market_cards
+            + (FIRE_GEM,) * 16
+            + (GOLD,) * 14
+            + (SHORTSWORD,) * 2
+            + (DAGGER,) * 2
+            + (RUBY,) * 2
+        )
+        self._inventory_counts = Counter(card.id for card in self._full_inventory)
+        self._inventory_cards_by_id = {
+            card.id: card for card in self._full_inventory
+        }
+        self._market_card_ids = frozenset(
+            card.id for card in self._normal_market_cards
+        )
         self.rng = random.Random(self.seed)
         self.player = HRPlayer("Player", self.rng)
         self.bot = HRPlayer("Bot", self.rng)
@@ -236,6 +298,8 @@ class GameSession:
         clone.rng.setstate(self.rng.getstate())
         clone.player = _copy_player(self.player, clone.rng)
         clone.bot = _copy_player(self.bot, clone.rng)
+        _remap_pending_stun_targets(clone.player, clone.bot)
+        _remap_pending_stun_targets(clone.bot, clone.player)
         clone.market = _copy_market(self.market, clone.rng)
         clone.turn_number = self.turn_number
         clone.active_player = self.active_player
@@ -244,7 +308,130 @@ class GameSession:
         clone.log = []
         clone.history = []
         clone.last_bot_insight = None
+        clone.opponent_purchase_observations = self.opponent_purchase_observations
         clone.record_history = False
+        # Immutable card objects plus read-only-by-convention inventory
+        # templates are safe to share. Each determinization copies the Counter
+        # before subtracting public cards.
+        clone._normal_market_cards = self._normal_market_cards
+        clone._full_inventory = self._full_inventory
+        clone._inventory_counts = self._inventory_counts
+        clone._inventory_cards_by_id = self._inventory_cards_by_id
+        clone._market_card_ids = self._market_card_ids
+        return clone
+
+    def determinize_for_bot(self, rng: random.Random, *,
+                            allow_private_test_fallback: bool = False) -> "GameSession":
+        """Build one fair, sampled world for bot search.
+
+        The live session deliberately contains both players' complete zones,
+        while the UI exposes the human's zone *counts* only. Information-set
+        search therefore reconstructs every hidden human zone and the unseen
+        market from public inventory constraints. The original session is
+        never mutated.
+        """
+        clone = self.clone()
+
+        # The bot knows its own cards but not its future draw order.
+        rng.shuffle(clone.bot.deck)
+
+        # Reconstruct all hidden cards from the public inventory. Market cards
+        # come from the configured pool; Fire Gems and both starting decks are
+        # separate piles in the engine. Subtract only public zones: bot-owned
+        # cards, both boards/in-play cards, the visible market row, and the
+        # public Fire Gem side pile. Human hand/deck/discard/banish identities
+        # and the unseen market pool are deliberately never read back.
+        public_cards = (
+            clone.bot.deck + clone.bot.hand + clone.bot.discard + clone.bot.banish
+            + clone.bot.played_this_turn
+            + [champion.card for champion in clone.bot.board]
+            + clone.player.played_this_turn
+            + [champion.card for champion in clone.player.board]
+            + [card for card in clone.market.row if card is not None]
+            + [FIRE_GEM] * clone.market.fire_gems_remaining
+        )
+        inventory = clone._inventory_counts.copy()
+        for card in public_cards:
+            if inventory[card.id] <= 0:
+                if allow_private_test_fallback:
+                    return self._fallback_determinization(clone, rng)
+                raise ValueError(
+                    "Cannot fairly determinize: public card is absent from "
+                    "the configured inventory"
+                )
+            inventory[card.id] -= 1
+
+        unknown_cards = [
+            clone._inventory_cards_by_id[card_id]
+            for card_id, count in inventory.items()
+            for _ in range(count)
+        ]
+        human_zone_sizes = (
+            len(clone.player.hand), len(clone.player.deck),
+            len(clone.player.discard), len(clone.player.banish),
+        )
+        market_pool_size = len(clone.market.pool)
+        if len(unknown_cards) != sum(human_zone_sizes) + market_pool_size:
+            if allow_private_test_fallback:
+                return self._fallback_determinization(clone, rng)
+            raise ValueError(
+                "Cannot fairly determinize: public inventory does not match "
+                "the hidden-zone sizes"
+            )
+
+        # Starting cards and Fire Gems cannot be in the market deck. Choose
+        # the hidden market first, then distribute the remaining cards through
+        # the human's hidden zones while preserving every visible count.
+        market_candidates = [
+            card for card in unknown_cards if card.id in clone._market_card_ids
+        ]
+        if len(market_candidates) < market_pool_size:
+            if allow_private_test_fallback:
+                return self._fallback_determinization(clone, rng)
+            raise ValueError(
+                "Cannot fairly determinize: configured market inventory is "
+                "too small for the hidden market"
+            )
+        rng.shuffle(market_candidates)
+        clone.market.pool = market_candidates[:market_pool_size]
+        selected_market = Counter(card.id for card in clone.market.pool)
+        human_unknown = []
+        for card in unknown_cards:
+            if selected_market[card.id]:
+                selected_market[card.id] -= 1
+            else:
+                human_unknown.append(card)
+        rng.shuffle(human_unknown)
+        hand_size, deck_size, discard_size, banish_size = human_zone_sizes
+        clone.player.hand = human_unknown[:hand_size]
+        clone.player.deck = human_unknown[hand_size:hand_size + deck_size]
+        clone.player.discard = human_unknown[hand_size + deck_size:hand_size + deck_size + discard_size]
+        clone.player.banish = human_unknown[hand_size + deck_size + discard_size:
+                                             hand_size + deck_size + discard_size + banish_size]
+
+        # Future reshuffles need an independent sampled RNG as well.  Both
+        # players share the game RNG, matching the live session's mechanics.
+        clone.rng = random.Random(rng.getrandbits(128))
+        clone.player._rng = clone.rng
+        clone.bot._rng = clone.rng
+        return clone
+
+    @staticmethod
+    def _fallback_determinization(clone: "GameSession", rng: random.Random) -> "GameSession":
+        """Test-only sampler for synthetic states with no public inventory.
+
+        This reads private-zone composition and must never be selected
+        implicitly by production search.
+        """
+        hand_size = len(clone.player.hand)
+        private_cards = clone.player.hand + clone.player.deck
+        rng.shuffle(private_cards)
+        clone.player.hand = private_cards[:hand_size]
+        clone.player.deck = private_cards[hand_size:]
+        rng.shuffle(clone.market.pool)
+        clone.rng = random.Random(rng.getrandbits(128))
+        clone.player._rng = clone.rng
+        clone.bot._rng = clone.rng
         return clone
 
     def _start_turn(self, player: HRPlayer) -> None:
@@ -255,6 +442,7 @@ class GameSession:
         player.pending_ally.clear()
         player.pending_per_champion.clear()
         player.pending_stun_targets.clear()
+        player.pending_prepares = 0
         player.pending_choices.clear()
         player.cards_bought = 0
         player.next_buy_to_hand = False
@@ -490,7 +678,35 @@ class GameSession:
             current_card = self.market.row_cards()[market_index]
             label = current_card.name if current_card else "Market card"
 
+        observation = None
+        if self.record_history and self.active_player == "player":
+            # Capture the public legal choices before this purchase mutates the
+            # row or spends gold. The player is MCTS's opponent; their private
+            # zones are deliberately not present in this immutable record.
+            buy_options = tuple(
+                (int(action["marketIndex"]), str(action["label"]))
+                for action in self.legal_actions()
+                if action["type"] == "buy_card"
+            )
+            # Labels are names for presentation, but card ids are needed to
+            # replay profile valuation exactly. Resolve them only from the
+            # visible row / Fire Gem side pile, never from a private zone.
+            visible_ids = {
+                index: card.id for index, card in enumerate(self.market.row_cards()) if card is not None
+            }
+            if self.market.can_buy_fire_gem():
+                visible_ids[5] = FIRE_GEM.id
+            observation = PublicOpponentPurchase(
+                gold_before_buy=player.gold,
+                buy_options=tuple(
+                    (index, visible_ids[index]) for index, _ in buy_options if index in visible_ids
+                ),
+                chosen_market_index=market_index,
+            )
+
         if buy_card(player, self.market, market_index):
+            if observation is not None:
+                self.opponent_purchase_observations += (observation,)
             self.record_event("buy", f"Bought {label}")
         else:
             raise ValueError("Purchase failed")
