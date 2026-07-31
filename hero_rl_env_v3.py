@@ -67,8 +67,28 @@ class HeroRealmsChoiceEnv(HeroRealmsMaskedEnv):
         return obs, info
 
     def _pending(self, side=None):
+        """The next *answerable* pending choice.
+
+        A deferred choice can have no legal candidate at all - a sacrifice with
+        nothing left in hand or discard, for instance. The engine's inline path
+        simply resolves such an effect to nothing, but a deferred one sat at the
+        head of the queue blocking every other action: `_action_table` returned
+        an empty dict, so the state offered no legal action while the game was
+        not over. `action_masks` papered over it by falling back to ADVANCE,
+        which never clears the choice, so the episode then burned steps until
+        max_steps.
+
+        Found when the economic specialist crashed on `max()` over an empty
+        action table. It is latent in v3, which V19 and V20 both trained on -
+        with the 4-profile mixture it is rare enough to have gone unnoticed.
+        """
         me, _ = self._seats(side)
-        return me.pending_choices[0] if me.pending_choices else None
+        while me.pending_choices:
+            choice = me.pending_choices[0]
+            if distinct_candidates(me, choice):
+                return choice
+            me.pending_choices.pop(0)
+        return None
 
     def _action_table(self, side=None):
         """A pending choice blocks everything else.

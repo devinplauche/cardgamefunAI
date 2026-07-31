@@ -60,8 +60,20 @@ SHORTSWORD = HRCard(id="shortsword", name="Shortsword", cost=0, faction="",
                     card_type="action", effects={"combat": 2})
 DAGGER = HRCard(id="dagger", name="Dagger", cost=0, faction="",
                 card_type="action", effects={"combat": 1})
+# Ruby is a *treasure worth 2 gold*, not a 1-health action. It was wrong here
+# from the start, which cost every player 2 gold per deck cycle - a 29% cut to
+# starting economy (7 gold per cycle instead of 9).
+#
+# How it survived: tools/audit_cards.py compares printed text to the effects
+# dict for the 55 cards in data/hero_realms_cards.json, and these five starting
+# cards are hardcoded here instead, so they were never in its scope. BASELINE.md
+# records that audit concluding "the card data is clean". The QA documents tick
+# "Starting deck: 7 Gold + 1 Shortsword + 1 Dagger + 1 Ruby" - which verifies
+# the deck's *composition* and never any card's *effects*. The one card checked
+# by neither was the one that was wrong. See test_starting_cards.py, which now
+# pins all five against the printed rules.
 RUBY = HRCard(id="ruby", name="Ruby", cost=0, faction="",
-              card_type="action", effects={"health": 1})
+              card_type="treasure", effects={"gold": 2})
 FIRE_GEM = HRCard(id="fire_gem", name="Fire Gem", cost=2, faction="",
                   card_type="item", effects={"gold": 2, "sacrifice_combat": 3})
 
@@ -248,11 +260,12 @@ def _deck_gold_density(player: HRPlayer) -> float:
 
 
 # Reference scale for the gold-diminishing-returns discount below: the
-# starting deck's own gold density (7 Gold among 10 cards) is 0.7, and this
-# is 4x that so a fresh deck sits at a mild discount (~0.8) rather than a
-# severe one - matches GOLD_DISCOUNT_SCALE in web/bot.py, which discounts the
-# *buying* side of this same tradeoff.
-_GOLD_DENSITY_DISCOUNT_SCALE = 0.7 * 4.0
+# starting deck's own gold density. 7 Gold at 1 each plus Ruby at 2, over 10
+# cards, is 0.9 - it read 0.7 while Ruby was mis-encoded as a 1-health action,
+# so this constant was derived from the bug. 4x that so a fresh deck sits at a
+# mild discount rather than a severe one - matches GOLD_DISCOUNT_SCALE in
+# web/bot.py, which discounts the *buying* side of this same tradeoff.
+_GOLD_DENSITY_DISCOUNT_SCALE = 0.9 * 4.0
 
 
 def _contextual_card_value(card: HRCard, player: HRPlayer,
@@ -277,8 +290,11 @@ def _contextual_card_value(card: HRCard, player: HRPlayer,
     _worth_sacrificing already assumes.
     """
     score = float(_card_score(card))
-    if card.id in ("gold", "shortsword", "dagger", "ruby"):
-        return score
+    if card.id in _STARTER_IDS:
+        # Still exempt from every situational adjustment below - these are junk
+        # in any context. Only their ordering among themselves is in question,
+        # and that is what _starter_value decides.
+        return _starter_value(card, player, opponent)
 
     if opponent is not None:
         opp_hp_ratio = min(max(opponent.hp, 0), HRGame.STARTING_HP) / HRGame.STARTING_HP
@@ -315,6 +331,82 @@ def _contextual_card_value(card: HRCard, player: HRPlayer,
         score -= card.get("gold", 0) * 3 * (1.0 - discount)
 
     return score
+
+
+_STARTER_IDS = ("gold", "shortsword", "dagger", "ruby")
+
+# "fixed" keeps _card_score's constants (gold -100, shortsword -75, dagger -60,
+# ruby -50) and is byte-identical to the previous behaviour. "phased" orders the
+# four starting cards by what they are worth *now*.
+#
+# Why this is worth a knob at all: _find_worst_idx fires 14.1 times per game and
+# lands on one of these four cards 95.9% of the time (measured over 24 games).
+# So the great majority of every discard and sacrifice decision in this engine -
+# for the MCTS bot, the heuristic profiles, and RL training alike - is resolved
+# by a four-entry lookup table, while the rich situational model in
+# _contextual_card_value applies only to the remaining 4%.
+#
+# The constants also disagree with every strategy source consulted. They dump
+# Gold first unconditionally, stripping early economy, and hold Dagger (1
+# combat, nearly worthless early) until third. Sources are consistent that gold
+# matters early and much less late, and that non-economy cards should go first.
+STARTER_ORDER_MODE = "fixed"  # "fixed" or "phased"
+
+# Which seat the phased ordering applies to. This is a *measurement device*
+# first: _find_worst_idx is engine-level, so improving it symmetrically improves
+# the benchmark opponents too and the win rate can stay flat while play genuinely
+# improves. "bot" isolates the effect - and happens also to be the honest
+# shipping configuration, since it is the bot's decision policy that is being
+# changed, not the game's rules.
+STARTER_ORDER_SEATS = "bot"  # "bot" or "all"
+
+
+def _starter_value(card: HRCard, player: Optional[HRPlayer],
+                   opponent: Optional[HRPlayer]) -> float:
+    """Context-aware junk ordering for the four starting cards.
+
+    Both terms are anchored at the same -100 floor so these stay far below any
+    purchased card and remain the default target, exactly as _worth_sacrificing
+    assumes. Only their order relative to *each other* changes.
+
+    The four starters in *this* engine are gold (1 gold), shortsword (2 combat),
+    dagger (1 combat) and ruby (1 health) - note ruby is a heal here, not the
+    2-gold treasure of the printed base set, so it needs the healing axis rather
+    than the economy one. Getting that wrong ranks it worst in every state.
+
+    Each axis is priced by when it is actually worth something:
+
+      gold    decays as the game progresses - nothing left worth buying;
+      combat  rises as the game progresses - damage is how the game ends;
+      health  rises as the *player's own* HP falls, matching the shape
+              _contextual_card_value already uses for healing on real cards.
+
+    Early at full health this ranks dagger ~ ruby < shortsword < gold: thin the
+    near-useless combat and heal starters while gold is still buying cards. Late
+    and hurt it becomes gold < dagger ~ ruby < shortsword. The shipped constants
+    (gold < shortsword < dagger < ruby) match neither end.
+
+    Progress is read from total HP depleted rather than turn count because that
+    is what this function has access to - it takes players, not a session.
+    """
+    if (STARTER_ORDER_MODE != "phased" or player is None or opponent is None
+            or (STARTER_ORDER_SEATS == "bot" and player.name != "Bot")):
+        return float(_card_score(card))
+    remaining = max(player.hp, 0) + max(opponent.hp, 0)
+    progress = min(1.0, max(0.0, 1.0 - remaining / (2.0 * HRGame.STARTING_HP)))
+    own_hp_ratio = min(max(player.hp, 0), HRGame.STARTING_HP) / HRGame.STARTING_HP
+    gold = card.get("gold", 0)
+    combat = card.get("combat", 0)
+    health = card.get("health", 0)
+    return (
+        -100.0
+        + gold * 25.0 * (1.0 - progress)
+        + combat * 25.0 * progress
+        + health * 25.0 * (1.0 - own_hp_ratio)
+        # Breaks ties between starters carrying the same amount of a currently
+        # worthless resource, by raw printed power.
+        + (gold + combat + health) * 1.0
+    )
 
 
 def _find_worst_idx(cards: list, player: Optional[HRPlayer] = None,

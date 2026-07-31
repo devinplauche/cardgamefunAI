@@ -10,6 +10,61 @@ baseline.
 import random
 import unittest
 
+from hero_rl_env_v3 import HeroRealmsChoiceEnv
+
+
+class TestUnanswerableChoice(unittest.TestCase):
+    """A deferred choice with no legal candidate must not block the env.
+
+    A sacrifice with nothing left in hand or discard produced an empty
+    _action_table while the game was not over: greedy crashed on max() over an
+    empty table, and a policy fell through action_masks' ADVANCE fallback,
+    which never clears the choice, so the episode burned steps to max_steps.
+
+    Latent in v3, which V19 and V20 both trained on. It surfaced only when a
+    specialist trained against `economic` for every episode instead of the
+    4-profile mixture.
+    """
+
+    def _env_with_unanswerable_choice(self, zone):
+        env = HeroRealmsChoiceEnv(opponent_profile="economic")
+        env.reset(seed=0)
+        me, _ = env._seats()
+        me.hand.clear()
+        me.discard.clear()
+        me.pending_choices.append({"kind": "sacrifice", "count": 1, "zone": zone})
+        return env, me
+
+    def test_unanswerable_choice_is_dropped_not_offered(self):
+        for zone in ("hand", "discard"):
+            with self.subTest(zone=zone):
+                env, me = self._env_with_unanswerable_choice(zone)
+                table = env._action_table()
+                self.assertTrue(table, "no legal action offered mid-game")
+                self.assertEqual(me.pending_choices, [])
+
+    def test_answerable_choice_is_still_offered(self):
+        """The fix must not eat choices that do have candidates."""
+        env = HeroRealmsChoiceEnv(opponent_profile="economic")
+        env.reset(seed=0)
+        me, _ = env._seats()
+        self.assertTrue(me.hand, "expected a starting hand to sacrifice from")
+        me.pending_choices.append({"kind": "sacrifice", "count": 1, "zone": "hand"})
+        self.assertIsNotNone(env._pending())
+        self.assertEqual(len(me.pending_choices), 1)
+
+    def test_greedy_never_sees_an_empty_action_table(self):
+        """The exact crash: max() over an empty table during BC collection."""
+        env = HeroRealmsChoiceEnv(opponent_profile="economic")
+        for episode in range(40):
+            obs, _ = env.reset(seed=episode)
+            done = truncated = False
+            while not (done or truncated):
+                table = env._action_table()
+                self.assertTrue(table, "empty action table while the game is live")
+                action = max(table, key=lambda k: table[k].get("priority", 0))
+                obs, _, done, truncated, _ = env.step(action)
+
 from hero_engine import (GOLD, DAGGER, RUBY, SHORTSWORD, HRMarket, HRPlayer,
                          apply_choice, auto_resolve_choices, choice_candidates,
                          load_hero_cards, play_card)
