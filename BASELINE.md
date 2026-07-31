@@ -1,3 +1,83 @@
+> **⚠ Ruby was mis-encoded for the entire life of this project. Every number
+> below it in this file was measured on a starting deck 29% poorer than the real
+> one, and the MCTS-minus-heuristic delta more than halves when it is fixed.
+> See "The Ruby bug" immediately below. Treat every historical figure here as
+> describing a different game until re-baselined.**
+
+## The Ruby bug: the starting deck was 29% poorer than the real game
+
+`RUBY` was defined in `hero_engine.py` as
+`card_type="action", effects={"health": 1}`. The printed card is a **treasure
+worth 2 gold**. So every player's starting deck produced **7 gold per cycle
+instead of 9**, and carried a point of healing that does not exist.
+
+### How it survived every audit
+
+- `tools/audit_cards.py` compares printed text to the effects dict for the
+  **55 cards in `data/hero_realms_cards.json`**. The five starting/Fire Gem
+  cards are hardcoded in `hero_engine.py` and were never in its scope. The
+  audit's conclusion, recorded in this file, was "the card data is clean".
+- `RULES_COMPLIANCE.md`, `QA_FINAL_REPORT.md` and `QA_RULES_VERIFICATION.md`
+  each tick "Starting deck: 7 Gold + 1 Shortsword + 1 Dagger + 1 Ruby". That
+  verifies the deck's **composition** and never any card's **effects**.
+- No test anywhere asserted Ruby's effect: fixing it broke **zero** of 301
+  existing tests.
+
+The one card checked by neither the automated audit nor the manual QA was the
+one that was wrong. `tests/test_starting_cards.py` now pins all five faces and
+the deck's aggregate economy.
+
+### Two tuning constants were derived from the bug
+
+Both were documented as following from the starting gold density, which read
+0.7 instead of 0.9:
+
+- `web/bot.py: STARTING_GOLD_DENSITY` 0.7 → 0.9
+- `hero_engine.py: _GOLD_DENSITY_DISCOUNT_SCALE` 0.7*4 → 0.9*4
+
+The Spark-vs-Taxation calibration recorded in `web/bot.py`'s comments was
+carried out against the poorer deck and is not necessarily still right.
+
+### Measured impact, same seeds (block 1000+, 400 games/arm, 60 ms)
+
+| | buggy | corrected | change |
+| --- | --- | --- | --- |
+| heuristic | 46.0% | **53.8%** | +7.8pp |
+| MCTS | 57.0% | **58.5%** | +1.5pp |
+| **MCTS − heuristic** | **+11.0pp** | **+4.7pp** | **−6.3pp** |
+| mean game length (turn_number) | 26.1 | 23.3 | −11% |
+
+**More than half of search's measured advantage over the heuristic was an
+artifact of the broken starting deck.** The heuristic gains 7.8pp from correct
+economy; MCTS gains 1.5pp. A 29%-poorer deck makes games longer and leaves more
+decisions live, which is the regime where search converts; restore the economy
+and the game is faster and more decided by deck quality.
+
+### Re-baseline confirmed on two disjoint blocks (100 games/profile each)
+
+| block | heuristic | MCTS | delta |
+| --- | --- | --- | --- |
+| 1000+ | 53.8% | 57.8% | +4.0pp |
+| 60000+ | 46.8% | 53.0% | +6.2pp |
+
+Both land in the same 4-6pp range, down from 8.7-11.0pp pre-fix on these same
+blocks. **The corrected reference delta for MCTS over the same-seat heuristic is
+~5pp, not ~11pp.** Any future work should be judged against this, not the
+figures below.
+
+Consequences:
+
+- Every MCTS-vs-heuristic figure recorded below was measured on the broken
+  engine and overstates search's contribution.
+- The override-gate curve (heuristic 46.0% → gated 57.0%) was measured on it
+  too, so its +11pp headline is really ~+4.7pp. The *shape* of the curve - an
+  inverted U peaking at the shipped setting - has not been re-measured.
+- The RL results are affected identically, since `hero_rl_env_*` all drive the
+  same engine.
+- Anything calibrated against game length (`ROLLOUT_TURNS = 16` seat-turns,
+  `EXPECTED_GAME_TURNS = 26`) is now mis-scaled: 26 was measured on the buggy
+  engine and should be ~23.
+
 # Verified Baseline — 2026-07-22
 
 Authoritative agent-strength numbers. Supersedes the per-opponent tables in
@@ -603,6 +683,370 @@ v2 baselines were measured against. V19 still reads 50.0% against the corrected
 opponent, so the distortion did not manufacture its result, but V20 reruns it
 cleanly as the fair test.
 
+## V20 — the clean rerun landed exactly on greedy
+
+V19's caveat above (it trained against an opponent whose sacrifices and discards
+were silently deleted) was retested with `defer_opponent` handled correctly.
+Result, on the in-training eval seeds: BC clone 33.0%, fine-tuned **37.5%** —
+**identical to greedy's 37.5% on the same seeds**, peaking at 43.0% around 450k
+and oscillating with no trend for the remaining 550k steps.
+
+So V19's +2.0pp was not reproduced by its own clean rerun. Six methods have now
+landed in the ~45-50% band.
+
+## V21 — the observation was broken, fixing it changed nothing
+
+### The defects (real, and confirmed against the card set)
+
+Every run from V15 to V20 shared v2's card encoding. Measured against the
+96-card set:
+
+| what | scope | status in v2 |
+| --- | --- | --- |
+| `ally_faction` | 55 of 96 cards | not encoded |
+| `ally_*` payloads | 43 cards | not encoded |
+| faction, per card | 80 of 96 cards | not encoded |
+| `sacrifice_*` | 33 cards | counted as `c.get("sacrifice")` — **no such effect key exists**, so this input was a constant 0.0 since v15 |
+| opponent deck composition | — | `_deck_features` called for self only |
+| v3 choice candidates | actions 30-39 | actions exposed, candidates never encoded |
+
+The last one predicts V20's result exactly: choosing among options the policy
+cannot observe is choosing uniformly, and V20 finished at greedy's number. It
+also reconciles with the play-data section above — Taxation, The Rot and Death
+Touch all win on ally and sacrifice text, which is precisely what the policy
+could never see.
+
+`hero_rl_env_v4.py` repairs all six, keeping v3's action space byte-identical so
+the comparison holds. Beyond raw one-hots it adds three derived features:
+`has_ally(card, me)` (is the ally live *right now*, including cards played this
+turn), own concentration in the card's faction, and own concentration in the
+faction its ally needs. Verified live, not dead inputs: faction one-hots vary at
+sd≈0.43, `ally_live` fires in 18.8% of states, opponent deck features at
+sd≈0.20.
+
+### The result
+
+Three arms x three training seeds, V16's recipe otherwise unchanged, 500k
+fine-tune steps. Held-out is seeds 900000+, n=600 per seed (1800 games per arm).
+
+| arm | tuning (n=200) | held-out (n=600x3) | shift |
+| --- | --- | --- | --- |
+| A: v3 env (control) | 43.8% | **49.6% ± 1.3** | +5.8pp |
+| B: v4 env, obs repair | 45.2% | **46.8% ± 2.6** | +1.6pp |
+| C: v4 env + PBRS | 49.2% | **49.2% ± 1.6** | +0.1pp |
+| V16 (v2 env) | — | 45.5% | |
+| greedy (v3/v4 env) | — | 28.7% | |
+
+- B − A = **−2.8pp**, SE 2.9, z=−0.98 — rules out effects beyond ±5.7pp
+- C − A = **−0.4pp**, SE 2.1, z=−0.18 — rules out effects beyond ±4.1pp
+
+**Neither the observation repair nor potential-based shaping moved held-out win
+rate.** The control arm reproduces V19's 50.0%, which cross-checks the harness.
+The defects were real and the information is now genuinely present in the
+observation; the policy simply was not bottlenecked on it. `hero_rl_env_v4.py`
+is kept as the correct env but is **not** promoted to default — nothing is
+promoted without a confirmed held-out win.
+
+### Two methodology traps this run walked into, recorded so the next one does not
+
+**1. The in-training eval set cannot rank arms.** On tuning seeds the order was
+C (49.2) > B (45.2) > A (43.8). Held out it was A (49.6) ≈ C (49.2) > B (46.8).
+The ordering fully reversed, and every arm shifted upward by a different amount.
+At n=200 one SE is 3.5pp while the arm differences were 1-5pp, so the sweep was
+underpowered from the start. Rank arms on held-out seeds or not at all.
+
+**2. Complete separation across training seeds is not a permutation test.** On
+the tuning block every C seed (47.5 / 49.5 / 50.5) beat every A seed (40.5 /
+44.5 / 46.5), which looks like an exact p=0.05. It did not survive held-out, and
+the reason is structural: **training seeds vary the run, not the evaluation
+set.** All three seeds of an arm are measured on the same 200 eval seeds, so any
+arm-level bias on those seeds is common to all of them and the seeds are not
+independent samples of the arm's performance. Between-seed spread understates
+total uncertainty. Use disjoint eval seeds, or vary the eval set per seed.
+
+### A bound worth keeping
+
+Pending sacrifice/discard choices occur in **2.9% of decision states**. Even
+perfect targeting there can only touch 3% of the policy's decisions, which caps
+what V19/V20/v3's premise could ever have been worth and is consistent with all
+three measuring nothing.
+
+Tooling: `hero_rl_env_v4.py`, `hero_rl_train_v21.py` (parameterized, `--seed`
+for independent runs), `hero_rl_eval_masked.py` (the first held-out evaluator
+for masked envs — every earlier number came from an `evaluate()` defined inside
+the training script that produced it), `hero_rl_summarize.py`,
+`run_v21_ablation.sh`.
+
+## The ceiling probe: search converts ~15pp, then saturates at ~55%
+
+The standing claim above is a ~78% ceiling against ~50% best measured play, i.e.
+~28pp unconverted. That correction rests on probing 30 always-lost seeds and
+converting 8. This tests it a different way: instead of partitioning seeds by
+whether *any* policy wins, give the strongest available agent more compute on
+one fixed held-out block and see how much it actually converts.
+
+Bot seat, held-out seeds 60000+, 40 games/profile (160/arm), same harness and
+same seeds throughout:
+
+| agent | balanced | aggressive | economic | champion | AVG | s/game |
+| --- | --- | --- | --- | --- | --- | --- |
+| heuristic (greedy) | 40.0% | 40.0% | 40.0% | 37.5% | **39.4%** | 0.03 |
+| MCTS 60 ms (shipped) | 55.0% | 42.5% | 60.0% | 35.0% | **48.1%** | 0.80 |
+| MCTS 240 ms | 55.0% | 57.5% | 62.5% | 50.0% | **56.2%** | 3.12 |
+| MCTS 960 ms | 55.0% | 52.5% | 60.0% | 50.0% | **54.4%** | 12.21 |
+
+| comparison | delta | z |
+| --- | --- | --- |
+| heuristic → 960 ms | **+15.0pp** | **2.72 (significant)** |
+| heuristic → 60 ms | +8.7pp | 1.57 |
+| 60 ms → 240 ms | +8.2pp | 1.46 |
+| 240 ms → 960 ms | **−1.8pp** | −0.33 |
+
+Two conclusions, and they point in opposite directions:
+
+**1. Headroom above greedy is real and search converts it.** +15.0pp from
+heuristic to MCTS at depth, z=2.72. This is the one clean positive measurement
+in a long run of negatives, and it is a *search* result, not a training one.
+
+**2. It saturates hard between 240 ms and 960 ms.** A 4x compute increase past
+240 ms buys −1.8pp. The marginal value of search compute reaches zero at roughly
+a quarter second per action, at about 55%.
+
+So the ~78% ceiling is not reachable by more of this search, and the "~37pp of
+headroom" framing should not be read as 37pp that more compute will collect.
+What this bounds is *this algorithm's* asymptote (~55%), not what is achievable
+in principle — the variance-ceiling partition measures a different quantity
+(whether any policy in a set wins a seed) and is not refuted by this. But any
+plan whose payoff depends on search converting the gap between 55% and 78% now
+has a measurement against it.
+
+### The budget lead did not replicate, and the reason matters
+
+The obvious reading above was that the shipped 60 ms sits on the steep part of
+the budget curve and leaves ~8pp on the table. Confirmed on a *disjoint* block
+(300000+, 100 games/profile, 400/arm, 2.5x the power):
+
+| budget | balanced | aggressive | economic | champion | AVG |
+| --- | --- | --- | --- | --- | --- |
+| heuristic | 47.0% | 53.0% | 54.0% | 50.0% | **51.0%** |
+| MCTS 60 ms | 52.0% | 58.0% | 62.0% | 59.0% | **57.8%** |
+| MCTS 240 ms | 56.0% | 58.0% | 56.0% | 58.0% | **57.0%** |
+
+**60 ms → 240 ms = −0.8pp, z=−0.23.** The effect is gone. The +8.2pp on block
+60000+ was that block's *60 ms arm reading low*, not its 240 ms arm reading
+high. `budget_ms` stays at 60.
+
+## The seed-block effect is ~10pp and invalidates cross-block absolutes
+
+This is the most important measurement in this section and it was found by
+accident. The same **fully deterministic** heuristic, same seat, same harness,
+same opponents, n=160-400:
+
+| seed block | heuristic | MCTS 60 ms | delta |
+| --- | --- | --- | --- |
+| 1000+ | 45.6% | 50.0% | +4.4pp |
+| 60000+ | 39.4% | 48.1% | +8.7pp |
+| 300000+ | 51.0% | 57.8% | +6.8pp |
+
+The heuristic spans **11.6pp across blocks with no randomness in it at all**, and
+MCTS spans 9.7pp. The paired *delta* is far more stable (4.4 / 8.7 / 6.8, mean
+~6.6pp), which is exactly what `hero_mcts_bench.py`'s docstring already says:
+the MCTS-minus-heuristic delta is the signal and the absolute number is not.
+
+Consequences, and they are not small:
+
+- **A single block cannot pin an absolute win rate to better than about
+  ±10pp** at these sample sizes. Many absolutes recorded in this file are
+  single-block numbers and should be read with that band.
+- **Any comparison of two configurations measured on different blocks is
+  worthless.** This is the mechanism behind both this session's false
+  positives: ISMCTS d1 (+4.4pp tuning, −2.5pp held out) and the budget lead
+  (+8.2pp on one block, −0.8pp on another).
+- The right unit of measurement here is a **paired delta within one block**,
+  never an absolute across blocks.
+
+So the corrected reading of the ceiling probe: what search buys over greedy is
+roughly **+6.6pp at 60 ms**, and more search buys approximately nothing. The
++15.0pp heuristic→960 ms figure above is inflated by block 60000+ having an
+unusually weak heuristic arm, and should not be quoted on its own.
+
+Reproduce with `ceiling_probe.log`'s three commands (`hero_mcts_bench.py
+--games 40 --seed 60000 --budget {60,240,960}`), run sequentially: the budget is
+wall-clock, so running them concurrently corrupts the result.
+
+## Specialists: the plateau is not a generalization tax
+
+Every run from V15 to V21 trained against `opponent_profile="random"` - one
+policy against a mixture of four deterministic opponents. So nothing in this
+repo separated "this is as well as the game can be played from this seat" from
+"this is as well as one policy can play four opponents at once". The opponents
+are deterministic given state, so they are exploitable in principle.
+
+Four specialists, each trained 500k steps against a single fixed profile, two
+training seeds each, v4 env. Measured against *that same profile* on held-out
+seeds 900000+, n=300, alongside the three generalists from V21 arm B:
+
+| profile | specialist | generalist | delta |
+| --- | --- | --- | --- |
+| balanced | 43.5% | 40.7% | +2.8 |
+| aggressive | 46.3% | 41.8% | +4.5 |
+| economic | 49.2% | 52.0% | −2.8 |
+| champion | 46.2% | 46.2% | −0.1 |
+| **mean** | | | **+1.1pp ± 1.6** |
+
+**Training against nothing but one opponent does not beat that opponent any
+better than training against all four.** Signs go both ways. So the plateau is
+not a generalization tax, and these opponents are not sitting un-exploited.
+
+Together with the ceiling probe this is two independent agents - a search agent
+given 16x compute, and a learner given a single fixed target - stopping in the
+same place.
+
+### Training-seed noise is ~6pp, and it is not in any earlier number
+
+The two training seeds of a *single* specialist configuration, on the same
+held-out seeds, differ by:
+
+| config | spread between two seeds |
+| --- | --- |
+| balanced | 8.4pp |
+| economic | 7.0pp |
+| aggressive | 6.0pp |
+| champion | 3.7pp |
+
+Every RL result in this file from V15 onward is **one training seed reported as
+a point estimate**. So roughly ±6pp of each is run-to-run variance rather than
+method. Combined with the ~10pp seed-block effect recorded above, this largely
+explains why five or six methods "all landed in the same band": a good part of
+the band is measurement, not the methods agreeing.
+
+Minimum standard going forward: >= 3 training seeds, held-out evaluation, and
+report the spread.
+
+### A latent env bug found by pinning the opponent
+
+`hero_rl_env_v3.py` could deadlock on an *unanswerable* deferred choice - a
+sacrifice with nothing left in hand or discard. That choice sat at the head of
+`pending_choices` and blocked everything: `_action_table()` returned empty while
+the game was still live, so greedy crashed on `max()` over it, and a policy fell
+through `action_masks`' ADVANCE fallback, which never clears the choice, burning
+the episode to `max_steps=1000`.
+
+This is latent in v3, the env **V19 and V20 both trained on**. With the
+4-profile mixture it is rare enough to have gone unnoticed; pinning the opponent
+to `economic` for all 3000 BC episodes hit it immediately. Any episode that
+triggered it during V19/V20 contributed ~1000 steps of garbage. It does not
+explain their results, but it is contamination that was not known about.
+
+Fixed in `_pending()` by dropping choices with no legal candidate, matching the
+engine's inline behaviour (an effect with no legal target resolves to nothing).
+Covered by `tests/test_choice_actions.py::TestUnanswerableChoice`, including a
+test that drives 40 full episodes asserting the action table is never empty
+mid-game.
+
+## The game-phase term made the bot worse (default unchanged)
+
+Every Hero Realms strategy source consulted states the same timing rule as the
+most important one: economy carries "a two-deck delay from the time you purchase
+the economy card to the time you can play the card you purchased", so gold
+bought late is never converted, while damage scales into the endgame. The bot
+could not express this. `_resource_weights` ramps gold down and combat up, but
+only against *opponent HP* - a proxy that fails exactly where it matters, since
+two players at high HP on turn 20 are in a grind where gold is nearly worthless
+and the proxy scores that identically to turn 2.
+
+`GAME_PHASE_WEIGHT` (default 0.0) adds an explicit progress term:
+`_game_progress` takes whichever is further along of turn count (against a
+*measured* `EXPECTED_GAME_TURNS = 26`; median final turn_number 24.5, mean 26.1
+over 48 games) and total HP depleted. Applied to `_resource_weights`, to
+`_adaptive_buy_action` (the default *rollout* policy, so it reaches every MCTS
+evaluation), and to the thinning bonus.
+
+400 games/arm at 60 ms, within-block paired against a control in the same block:
+
+| arm | balanced | aggressive | economic | champion | avg | delta |
+| --- | --- | --- | --- | --- | --- | --- |
+| w=0.0 (control) | 59.0% | 48.0% | 72.0% | 49.0% | **57.0%** | — |
+| w=0.3 | 57.0% | 49.0% | 61.0% | 52.0% | 54.8% | −2.2 |
+| w=0.6 | 58.0% | 50.0% | 62.0% | 46.0% | 54.0% | −3.0 |
+| w=0.9 | 52.0% | 46.0% | 65.0% | 48.0% | 52.8% | −4.2 |
+| heuristic (ref) | 45.0% | 40.0% | 56.0% | 43.0% | 46.0% | |
+
+Monotone dose-response **in the wrong direction**, so this is a real effect and
+not noise. `GAME_PHASE_WEIGHT` stays 0.0.
+
+The likely mechanism is one this file already documents twice: the term was
+applied to the rollout policy, and "a stronger rollout policy does not imply a
+stronger search" (static 22.5% vs situational 15.8%). A greedier, more
+domain-aware default policy narrows the distribution of simulated outcomes and
+biases the value estimates. That is now three separate attempts to put domain
+knowledge into the rollout, all negative. **The rollout is not the place to add
+knowledge in this codebase.**
+
+## The override gate is the mechanism that works, and it is already tuned
+
+The shipped bot does not replace the heuristic with search. It runs the
+heuristic as the default policy and lets MCTS deviate only when it clears
+`_guarded_root_choice`. That is the only mechanism here with a confirmed win
+behind it (49/80 vs 39/80, discordant 12-2, exact paired p=.013), and it had
+never been swept.
+
+`hero_override_ab.py`, 400 games/arm at 60 ms, tuning block, every arm on the
+same seeds and compared by **exact McNemar on discordant games** rather than by
+marginal win rate. Ordered by how often each gate actually lets search deviate:
+
+| override rate | gate | win rate | vs shipped |
+| --- | --- | --- | --- |
+| 0.0% | heuristic (never) | 46.0% | 22-66, p<0.0005 |
+| 3.1% | confidence z=2.0 | 50.0% | 26-54, p=0.002 |
+| 4.0% | margin 0.15 | 50.5% | 13-39, p<0.0005 |
+| **8.9%** | **margin 0.10 (shipped)** | **57.0%** | — |
+| 16.8% | confidence z=1.0 | 55.0% | 35-43, p=0.428 |
+| 20.8% | margin 0.05 | 55.0% | 43-51, p=0.470 |
+| 41.4% | unguarded (-1.0) | 53.5% | 71-85, p=0.298 |
+
+**An inverted U with the peak at the shipped setting.** Deviating on ~9% of
+decisions beats both never deviating (46.0%) and deviating whenever search
+prefers something else (53.5%). No arm beat the shipped gate. The good region is
+a plateau over override rates of roughly 9-21%, not a knife edge, and the
+failure is asymmetric: **tightening the gate hurts far faster than loosening
+it.**
+
+Ungated, search wants to overrule the heuristic on ~41% of decisions. The gate
+admits 9%. The remaining ~32% are deviations that search believes in and that
+cost win rate - at ~66 rollouts per decision, most are sampling noise.
+
+Also worth knowing: `MCTS_OVERRIDE_MARGIN = 0.20` fires **0.0%** of the time -
+it is silently identical to the pure heuristic. Anyone sweeping that value would
+"discover" the heuristic twice.
+
+### margin 0.00 is the same policy as unguarded, and it calibrated the harness
+
+`proposed` is chosen as the max-mean-utility root child and `baseline_child` is
+one of those same children, so `advantage = proposed_mean - baseline_mean` is
+**always >= 0**. A margin of 0.00 therefore never blocks anything, exactly like
+-1.0. Measured override rates confirm it: 41.1% vs 41.4%.
+
+Those two identical policies scored **48.2% and 53.5%**, and against the shipped
+arm gave **p=0.006 and p=0.298**. The same policy landed in two different
+significance classes.
+
+So **paired McNemar removes seed difficulty but not wall-clock jitter.** The
+budget is wall-clock, so iteration counts drift with machine load and the same
+configuration picks different moves between runs. Every p-value in the table
+above is uncalibrated for that.
+
+The fix, verified: run gate comparisons with `--iterations` instead of
+`--budget`. Under a fixed simulation count the search is deterministic given the
+seed - a same-config null replicate produces **0/0 discordant games**, and
+margin 0.00 and unguarded become bit-identical as they must. `--null-control`
+adds that replicate arm permanently, because a harness whose null is not
+measured cannot support a p-value.
+
+This is the third time a duplicate arm has exposed a noise floor here (ISMCTS
+d1 vs d1+oppnodes, 2.5pp; the budget confirmation's block effect, ~10pp; this,
+5.3pp). Duplicate arms have been more informative than any deliberate control.
+
 ## Play data vs the engine's valuation
 
 Four months of real play (936 games, baseline **56.84%**; 2026 61.71% over 538,
@@ -888,6 +1332,136 @@ Caveats, held honestly:
 
 Next: sweep horizon at the 60ms interactive budget to find the budget-matched
 sweet spot before adopting a new default.
+
+## True ISMCTS did not beat root determinization (default unchanged)
+
+The search had ISMCTS-flavoured comments but was not ISMCTS: `_paired_root_rounds`
+sampled one world, cloned it once per root action, ran exactly one rollout per
+branch and committed. The tree never went below depth 1, so no statistics were
+ever shared across determinizations at an interior node — there were no interior
+nodes. `MCTS_BUY_ROOT_WIDTH = 3` and `PAIRED_ROOT_MAX_ACTIONS = 3` existed to
+stop visits spreading too thin, which is a symptom of having no tree to
+concentrate them in.
+
+Built proper single-observer ISMCTS (Cowling, Powley & Whitehouse 2012) behind
+`ROOT_SAMPLING_MODE = "ismcts"`: one determinization per iteration, a persistent
+tree keyed by information sets, UCB restricted to the actions legal in the
+current determinization, expand / roll out / back up. Single-observer is the
+right variant here because only one seat is being played and the opponent is
+already a known policy class with a public posterior over it (see
+`web/opponent_profiles.py`), so there is no second agent whose information sets
+need their own tree — and at 60 ms there is budget for one tree, not two.
+
+**No strategy fusion, structurally.** A node's identity is `info_key`: the
+sequence of public actions from the root and nothing else. No sampled card, no
+opponent hand, no draw order, no other product of determinization enters it, so
+every determinization consistent with an action sequence lands on the same node.
+The tree has nowhere to store "buy A when the hidden hand is X, B when it is Y".
+The key is deliberately a *coarsening* of the bot's true information partition
+(opponent public actions are left out to stop statistics fragmenting at 60 ms);
+a coarsening averages, only a refinement past the information set would be
+fusion. Covered by `tests/web/test_bot_search.py::TestISMCTS`.
+
+### Budget reality, measured first
+
+12 games at 60 ms/action. The committed search gets **65.6 rollouts per
+decision**, not the ~28 recorded earlier in this file — that figure predates the
+clone/telemetry fixes. So a tree is affordable. What each mode buys:
+
+| mode | rollouts/decision | interior nodes/decision |
+| --- | --- | --- |
+| paired (committed) | 65.6 | **0** (by construction) |
+| ismcts depth 2 | 49.0 | 12.3 |
+| ismcts depth 3 | 50.6 | 29.3 |
+
+ISMCTS loses ~25% of its iterations because it pays one determinization per
+iteration where paired amortizes one across the ~2.7-action root fan. That is an
+inherent cost of the method, not an implementation artifact.
+
+Note depth 3 spreads ~50 iterations over ~29 interior nodes: **~1.7 visits per
+interior node.** The tree is real but the statistics in it are not.
+
+### Result: no configuration separated from the control
+
+`hero_ismcts_ab.py`, 40 games/profile (160/arm), 60 ms/action, bot seat, tuning
+seeds 1000+. Control is the committed `paired` search at the same budget, seat
+and seeds — not a strawman.
+
+| arm | balanced | aggressive | economic | champion | avg |
+| --- | --- | --- | --- | --- | --- |
+| **paired (committed control)** | 50.0% | 40.0% | 70.0% | 40.0% | **50.0%** |
+| ismcts d1 (builds no tree) | 57.5% | 37.5% | 65.0% | 57.5% | **54.4%** |
+| ismcts d1 +oppnodes (≡ d1) | 57.5% | 35.0% | 60.0% | 55.0% | **51.9%** |
+| ismcts d2 | 55.0% | 32.5% | 62.5% | 40.0% | **47.5%** |
+| ismcts d2 +oppnodes | 47.5% | 40.0% | 62.5% | 60.0% | **52.5%** |
+| ismcts d3 | 52.5% | 42.5% | 67.5% | 35.0% | **49.4%** |
+| ismcts d3 +oppnodes | 50.0% | 45.0% | 60.0% | 52.5% | **51.9%** |
+| heuristic (same seat) | 42.5% | 37.5% | 57.5% | 45.0% | **45.6%** |
+
+The four arms that actually build a tree (d2, d3, ±oppnodes) average **50.3%
+over 640 games** against the control's 50.0% — z=0.07. **The tree buys nothing
+at this budget.**
+
+Held-out confirmation of the selected best arm (d1), seeds 60000+:
+
+| arm | avg |
+| --- | --- |
+| paired (committed) | 50.0% |
+| ismcts d1 | 47.5% |
+
+**+4.4pp on tuning → −2.5pp held out, z=−0.45.** Textbook selection bias, and
+the reason the sweep-then-confirm discipline exists. `ROOT_SAMPLING_MODE` stays
+`"paired"`.
+
+### The noise floor, measured accidentally and worth keeping
+
+At depth 1 the descent breaks before `_advance_to_decision` is ever called, and
+`ISMCTS_OPPONENT_NODES` is only read inside it — so `d1` and `d1 +oppnodes` are
+the *same algorithm*. They scored 54.4% and 51.9% on identical seeds. That 2.5pp
+(4-game) spread is pure wall-clock jitter changing how many iterations each
+60 ms slice buys.
+
+**Any MCTS arm in this harness carries ~2.5pp of irreducible noise that seeds do
+not control for**, on top of sampling error. The `heuristic` row is unaffected
+(45.6%, reproducing the standing figure exactly) because it is deterministic and
+does not consume the budget. Two consequences: never read a sub-3pp MCTS gap as
+real here, and prefer `--iterations` over `--budget` when the question is about
+search *mechanism* rather than shipped performance.
+
+Per-arm wall clock was 126–139 s across all nine segments, so this run has no
+sleep anomaly of the kind that affected the horizon sweep.
+
+### Opponent nodes: measured, and they stay in the rollout
+
+Opponent nodes are implemented and gated (`ISMCTS_OPPONENT_NODES`, default off),
+swept as their own arms rather than argued from preference. They land at 52.5%
+(d2) and 51.9% (d3) against 47.5% and 49.4% without — inside the noise floor
+above, so the measurement does not support turning them on.
+
+The mechanism agrees with that read. Single-observer ISMCTS pools every opponent
+information set sharing a public history, so the searched opponent cannot
+condition on its own hidden hand, and it expands in the engine's public buy
+priority order rather than as the sampled profile. It is therefore a *weaker and
+differently-behaved* opponent than the profile posterior the rollout already
+uses — while costing budget. Keeping the opponent in the rollout is both the
+measured and the principled choice.
+
+### What this does and does not rule out
+
+- **Ruled out:** that root-only determinization was the binding constraint on
+  the shipped bot at 60 ms. It is not. The tree was built, it reaches depth 2–3,
+  and it changes nothing.
+- **Not ruled out:** that ISMCTS pays off at a larger budget. Every number here
+  is at 60 ms, where the tree gets ~1.7 visits per interior node at depth 3. The
+  horizon work already showed this bot's behaviour is strongly budget-dependent
+  and crosses over between 240 ms and 960 ms. A fixed-iteration comparison at
+  960 ms would answer the mechanism question the 60 ms budget cannot.
+- **Not tested:** persisting the tree *across* decisions within a turn. Each
+  `choose_bot_action` currently rebuilds the root from scratch, so the ~50
+  iterations bought at the buy node are discarded before the combat node.
+
+`_paired_root_rounds` is gated, not deleted; all three modes remain switchable
+via `hero_mcts_bench.py --root-sampling`.
 
 ## RL vs MCTS, head to head
 

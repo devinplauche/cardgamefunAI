@@ -19,3 +19,7 @@ logs/
 # --- Runtime junk ---
 web-*.log
 nul
+
+# Specialist checkpoints from the opponent-exploitability probe (~11 MB),
+# same policy as models_v*/ above.
+models_spec/
