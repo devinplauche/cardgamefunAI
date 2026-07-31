@@ -920,6 +920,476 @@ class TestPairedRootSampling(unittest.TestCase):
         self.assertEqual([card.id for card in session.player.hand], original_private_hand,
                          "paired simulation must not mutate the live hidden hand")
 
+class TestGamePhaseTerm(unittest.TestCase):
+    """Economy has a delayed payoff, so its value depends on how much game is
+    left. The bot priced that only through opponent HP, which is a proxy that
+    fails in a grind (both players healthy on turn 20) and in a race."""
+
+    def setUp(self):
+        import web.bot as bot_module
+
+        self.bot_module = bot_module
+        self.addCleanup(setattr, bot_module, "GAME_PHASE_WEIGHT",
+                        bot_module.GAME_PHASE_WEIGHT)
+
+    def test_default_weight_is_the_inert_control(self):
+        self.assertEqual(self.bot_module.GAME_PHASE_WEIGHT, 0.0)
+
+    def test_zero_weight_leaves_every_weight_untouched(self):
+        """The A/B control has to be byte-identical, not merely similar."""
+        from web.bot import _phase_scales, _resource_weights
+
+        session = create_session(seed=5)
+        session.turn_number = 20
+        session.bot.hp, session.player.hp = 12, 9
+        self.bot_module.GAME_PHASE_WEIGHT = 0.0
+        self.assertEqual(_phase_scales(session), (1.0, 1.0))
+        baseline = _resource_weights(session, "bot")
+
+        # Recompute under a fresh session at the same state to be sure nothing
+        # is cached across the knob.
+        again = _resource_weights(session, "bot")
+        self.assertEqual(baseline, again)
+
+    def test_progress_rises_with_turns_at_constant_health(self):
+        """The grind case: the opponent-HP proxy cannot see this at all."""
+        from web.bot import _game_progress
+
+        session = create_session(seed=5)
+        scores = []
+        for turn in (1, 8, 16, 26):
+            session.turn_number = turn
+            scores.append(_game_progress(session))
+        self.assertEqual(scores, sorted(scores))
+        self.assertLess(scores[0], scores[-1])
+
+    def test_progress_rises_with_damage_at_constant_turn(self):
+        """The race case: ending on turn 8 is late-game even at a low turn."""
+        from web.bot import _game_progress
+
+        session = create_session(seed=5)
+        session.turn_number = 4
+        early = _game_progress(session)
+        session.bot.hp, session.player.hp = 8, 6
+        self.assertGreater(_game_progress(session), early)
+
+    def test_progress_is_bounded(self):
+        from web.bot import _game_progress
+
+        session = create_session(seed=5)
+        session.turn_number = 500
+        self.assertEqual(_game_progress(session), 1.0)
+        session.turn_number = 0
+        session.bot.hp = session.player.hp = 50
+        self.assertGreaterEqual(_game_progress(session), 0.0)
+
+    def test_gold_falls_and_combat_rises_as_the_game_progresses(self):
+        from web.bot import _resource_weights
+
+        self.bot_module.GAME_PHASE_WEIGHT = 0.6
+        session = create_session(seed=5)
+        gold, combat = [], []
+        for turn in (2, 13, 26):
+            session.turn_number = turn
+            weights = _resource_weights(session, "bot")
+            gold.append(weights["gold"])
+            combat.append(weights["combat"])
+        self.assertEqual(gold, sorted(gold, reverse=True), "gold must decay late")
+        self.assertEqual(combat, sorted(combat), "combat must rise late")
+
+    def test_gold_weight_never_reaches_zero(self):
+        """A card still has to be bought to be played."""
+        from web.bot import _resource_weights
+
+        self.bot_module.GAME_PHASE_WEIGHT = 5.0  # far past any swept value
+        session = create_session(seed=5)
+        session.turn_number = 60
+        self.assertGreater(_resource_weights(session, "bot")["gold"], 0.0)
+
+    def test_the_default_rollout_policy_is_actually_affected(self):
+        """_resource_weights only feeds the 'situational' policy, which is off
+        by default. The knob has to reach ROLLOUT_BUY_POLICY='adaptive' or the
+        A/B would measure a code path the shipped bot never runs."""
+        from hero_engine import HRCard
+        from web.bot import _adaptive_buy_action
+
+        # 4 gold against 3 combat, equal cost. At the adaptive policy's base
+        # weights (2.0 / 2.0) the economy card is genuinely ahead, so a flip
+        # late is the term doing work rather than a tie being broken. A 3/3
+        # pair scores exactly equal and would flip on any tilt at all.
+        gold_card = HRCard(id="ph_gold", name="Phase Gold", cost=2, faction="",
+                           card_type="action", effects={"gold": 4})
+        combat_card = HRCard(id="ph_combat", name="Phase Combat", cost=2, faction="",
+                             card_type="action", effects={"combat": 3})
+        session = create_session(seed=5)
+        session.active_player = "bot"
+        session.phase = "buy"
+        session.bot.gold = 2
+        session.market.row = [gold_card, combat_card, None, None, None]
+        session.market.fire_gems_remaining = 0
+        actions = [a for a in session.legal_actions() if a["type"] == "buy_card"]
+        self.assertEqual(len(actions), 2)
+
+        # Early game with an untilted policy: the gold card wins on weights
+        # 2.0 gold vs 2.0 combat only via its higher printed value, so pin the
+        # comparison by checking the choice actually flips by end of game.
+        self.bot_module.GAME_PHASE_WEIGHT = 0.9
+        session.turn_number = 1
+        early = _adaptive_buy_action(session, actions)
+        session.turn_number = 26
+        session.bot.hp, session.player.hp = 10, 10
+        late = _adaptive_buy_action(session, actions)
+        self.assertEqual(int(early["marketIndex"]), 0, "early game should favour economy")
+        self.assertEqual(int(late["marketIndex"]), 1, "late game should favour damage")
+
+    def test_thinning_bonus_decays_late(self):
+        """Thinning pays out over the draws that are left."""
+        from hero_engine import HRCard
+        from web.bot import _sacrifice_bonus
+
+        thin = HRCard(id="ph_thin", name="Phase Thin", cost=1, faction="",
+                      card_type="action", effects={"sacrifice_up_to": 2})
+        self.bot_module.GAME_PHASE_WEIGHT = 0.9
+        session = create_session(seed=5)
+        session.turn_number = 2
+        early = _sacrifice_bonus(session, "bot", thin)
+        session.turn_number = 26
+        late = _sacrifice_bonus(session, "bot", thin)
+        self.assertGreater(early, late)
+
+
+class TestISMCTS(unittest.TestCase):
+    """True Information Set MCTS: a persistent tree keyed by information sets.
+
+    The property under test throughout is the one root determinization cannot
+    have and this can: statistics that survive a change of determinization at
+    interior nodes. The no-fusion tests are the other half - the tree must gain
+    that persistence *without* gaining the ability to condition on hidden
+    information it does not have.
+    """
+
+    def setUp(self):
+        import web.bot as bot_module
+
+        for name in ("ROOT_SAMPLING_MODE", "ISMCTS_MAX_DEPTH", "ISMCTS_OPPONENT_NODES",
+                     "MCTS_BUY_ROOT_WIDTH", "BUY_POLICY"):
+            self.addCleanup(setattr, bot_module, name, getattr(bot_module, name))
+        bot_module.ROOT_SAMPLING_MODE = "ismcts"
+        bot_module.ISMCTS_MAX_DEPTH = 2
+        bot_module.ISMCTS_OPPONENT_NODES = False
+        bot_module.MCTS_BUY_ROOT_WIDTH = 3
+        bot_module.BUY_POLICY = "static"
+
+    @staticmethod
+    def _buy_state(seed=41, gold=99):
+        session = create_session(seed=seed, algorithm="mcts")
+        session.active_player = "bot"
+        session.phase = "buy"
+        session.bot.gold = gold
+        return session
+
+    @staticmethod
+    def _run(session, iterations):
+        """Drive _ismcts_rounds directly so the tree itself can be inspected."""
+        from web.bot import Node, _ismcts_rounds, _search_actions
+
+        actions = _search_actions(session)
+        root = Node(action=None, untried_actions=actions[:])
+        rng = random.Random(f"test:{session.seed}")
+        result = _ismcts_rounds(session, root, rng, 0.0, 10_000, iterations)
+        return root, actions, result
+
+    @staticmethod
+    def _walk(node):
+        yield node
+        for child in node.children:
+            yield from TestISMCTS._walk(child)
+
+    # -- the thing root determinization cannot do -------------------------
+
+    def test_statistics_persist_below_the_root_across_determinizations(self):
+        session = self._buy_state()
+        root, actions, (iterations, worlds) = self._run(session, 60)
+
+        self.assertEqual(iterations, 60)
+        self.assertEqual(worlds, 60, "ISMCTS samples one world per iteration")
+        interior = [node for node in self._walk(root)
+                    if node.parent is not None and node.parent.parent is not None]
+        self.assertTrue(interior, "the tree never got below depth 1")
+        # The point of ISMCTS: an interior node is visited by many different
+        # sampled worlds and accumulates their statistics in one place.
+        self.assertGreater(max(node.visits for node in interior), 1)
+
+    def test_paired_mode_builds_no_interior_nodes(self):
+        """The A/B control, stated as a property rather than a comment."""
+        import web.bot as bot_module
+
+        bot_module.ROOT_SAMPLING_MODE = "paired"
+        session = self._buy_state()
+        from web.bot import Node, _paired_root_rounds, _search_actions
+
+        actions = _search_actions(session)
+        root = Node(action=None, untried_actions=actions[:])
+        _paired_root_rounds(session, root, random.Random(0), 0.0, 10_000, 60)
+        self.assertTrue(root.children)
+        self.assertEqual([child.children for child in root.children],
+                         [[] for _ in root.children])
+
+    def test_depth_limit_bounds_the_tree(self):
+        import web.bot as bot_module
+
+        bot_module.ISMCTS_MAX_DEPTH = 1
+        session = self._buy_state()
+        root, _, _ = self._run(session, 40)
+        self.assertTrue(root.children)
+        for child in root.children:
+            self.assertEqual(child.children, [],
+                             "depth 1 must not expand below the root children")
+
+    # -- information-set keying -------------------------------------------
+
+    def test_node_key_is_exactly_the_public_action_sequence(self):
+        from web.bot import _action_key
+
+        session = self._buy_state()
+        root, _, _ = self._run(session, 60)
+
+        self.assertEqual(root.info_key, ())
+        for node in self._walk(root):
+            for child in node.children:
+                self.assertEqual(child.info_key,
+                                 node.info_key + (_action_key(child.action),))
+
+    def test_no_hidden_state_reaches_the_node_key(self):
+        """Every key component must be an action key and nothing else.
+
+        _action_key is a closed tuple of six public action fields. If a future
+        change ever threaded a sampled card, a hand, or an RNG draw into node
+        identity, it would have to appear here.
+        """
+        from web.bot import _action_key
+
+        session = self._buy_state()
+        root, _, _ = self._run(session, 60)
+
+        legal_everywhere = set()
+        for node in self._walk(root):
+            for child in node.children:
+                legal_everywhere.add(_action_key(child.action))
+        for node in self._walk(root):
+            for component in node.info_key:
+                self.assertIn(component, legal_everywhere)
+                self.assertIsInstance(component, tuple)
+                self.assertEqual(len(component), 6)
+
+    def test_one_node_per_information_set_regardless_of_sampled_world(self):
+        """The no-fusion property, as a count.
+
+        60 iterations sample 60 different hidden worlds. If any sampled detail
+        - the opponent's hand, the market order, a draw - leaked into node
+        identity, the same action sequence would split into several nodes and
+        the tree would be free to play a different move per hidden world. It
+        must not: distinct info_keys equal distinct nodes, exactly.
+        """
+        session = self._buy_state()
+        root, actions, _ = self._run(session, 60)
+
+        keys = [node.info_key for node in self._walk(root)]
+        self.assertEqual(len(keys), len(set(keys)),
+                         "an information set was represented by more than one node")
+        self.assertLessEqual(len(root.children), len(actions),
+                             "root branched on more than the public action set")
+
+    def test_hidden_worlds_that_differ_share_one_root_child(self):
+        """Directly: force wildly different determinizations, count children.
+
+        Each patched world reshuffles the opponent's hidden zones, so every
+        iteration descends through a materially different position. All of them
+        must still pool into the same handful of public-action nodes.
+        """
+        session = self._buy_state()
+        original = session.determinize_for_bot
+        hands = []
+
+        def scrambled(rng, **kwargs):
+            world = original(rng, **kwargs)
+            rng.shuffle(world.player.deck)
+            rng.shuffle(world.player.hand)
+            hands.append(tuple(card.id for card in world.player.hand))
+            return world
+
+        with patch.object(session, "determinize_for_bot", side_effect=scrambled):
+            root, actions, _ = self._run(session, 40)
+
+        self.assertGreater(len(set(hands)), 1, "worlds were not actually distinct")
+        self.assertEqual(len(root.children), len(actions))
+        self.assertEqual(sum(child.visits for child in root.children), 40)
+
+    # -- subset-armed bandit ------------------------------------------------
+
+    def test_ucb_uses_availability_not_parent_visits(self):
+        """An action legal in few determinizations must not look unexplored.
+
+        Both children below have five visits. The rarely-legal one was offered
+        five times, the common one fifty. Under a parent-visit denominator
+        their exploration bonuses would be identical; under availability the
+        one that has been offered more often and still only taken five times is
+        the one that looks under-explored.
+        """
+        from web.bot import Node, _ismcts_uct
+
+        parent = Node(action=None, visits=50)
+        rare = Node(action={"type": "a"}, parent=parent, visits=5, reward=2.5)
+        rare.availability = 5
+        common = Node(action={"type": "b"}, parent=parent, visits=5, reward=2.5)
+        common.availability = 50
+
+        self.assertLess(_ismcts_uct(rare, 0.7, True), _ismcts_uct(common, 0.7, True))
+
+    def test_availability_never_exceeds_the_iteration_count(self):
+        session = self._buy_state()
+        root, _, _ = self._run(session, 40)
+        for child in root.children:
+            self.assertLessEqual(child.visits, child.availability)
+            self.assertLessEqual(child.availability, 40)
+
+    def test_opponent_node_selection_minimises_bot_utility(self):
+        from web.bot import Node, _ismcts_uct
+
+        parent = Node(action=None, visits=20)
+        good = Node(action={"type": "a"}, parent=parent, visits=10, reward=9.0)
+        good.availability = 10
+        bad = Node(action={"type": "b"}, parent=parent, visits=10, reward=1.0)
+        bad.availability = 10
+
+        self.assertGreater(_ismcts_uct(good, 0.7, True), _ismcts_uct(bad, 0.7, True))
+        self.assertLess(_ismcts_uct(good, 0.7, False), _ismcts_uct(bad, 0.7, False))
+
+    def test_opponent_nodes_are_absent_by_default_and_present_when_enabled(self):
+        import web.bot as bot_module
+
+        session = self._buy_state()
+        root, _, _ = self._run(session, 60)
+        self.assertEqual({node.actor for node in self._walk(root) if node.parent}, {"bot"})
+
+        bot_module.ISMCTS_OPPONENT_NODES = True
+        bot_module.ISMCTS_MAX_DEPTH = 3
+        # A realistic gold total, not the 99 the other tests use: with unlimited
+        # gold the bot simply keeps buying, so the descent never leaves its own
+        # buy phase and there is no opponent decision to reach.
+        root, _, _ = self._run(self._buy_state(gold=3), 200)
+        self.assertIn("player", {node.actor for node in self._walk(root) if node.parent})
+
+    # -- horizon ------------------------------------------------------------
+
+    def test_lookahead_horizon_is_measured_from_the_root(self):
+        """Deeper leaves must roll out less far, not further.
+
+        Otherwise total lookahead grows with tree depth and the search prefers
+        deep lines for a reason unrelated to the moves in them.
+        """
+        import web.bot as bot_module
+
+        session = self._buy_state()
+        horizon_end = session.turn_number + bot_module.ROLLOUT_TURNS
+        seen = []
+        real_rollout = bot_module._rollout
+
+        def recording(world, turn_limit=None, **kwargs):
+            seen.append((world.turn_number, turn_limit))
+            return real_rollout(world, turn_limit=turn_limit, **kwargs)
+
+        with patch("web.bot._rollout", side_effect=recording):
+            self._run(session, 40)
+
+        self.assertTrue(seen)
+        for turn_number, turn_limit in seen:
+            self.assertEqual(turn_number + turn_limit, horizon_end)
+
+    # -- production path ----------------------------------------------------
+
+    def test_ismcts_plays_a_full_game_and_returns_legal_actions(self):
+        random.seed(4)
+        session = create_session(seed=4, algorithm="mcts", budget_ms=15)
+        for _ in range(400):
+            if session.winner:
+                break
+            if session.active_player == "bot":
+                action = choose_bot_action(session, budget_ms=15, algorithm="mcts")
+                self.assertIn(action["type"], {a["type"] for a in session.legal_actions()})
+                apply_action(session, action)
+            else:
+                apply_action(session, _heuristic_rollout_action(session))
+
+    def test_choose_bot_action_reports_the_ismcts_mode_and_tree(self):
+        session = self._buy_state()
+        result = choose_bot_action(session, algorithm="mcts", max_iterations=40)
+        self.assertEqual(result["rootSampling"], "ismcts")
+        self.assertEqual(result["iterations"], 40)
+        self.assertGreater(result["treeNodes"], 1 + len(result["candidates"]),
+                           "no interior nodes were built")
+
+    def test_fixed_iteration_ismcts_is_reproducible(self):
+        first = choose_bot_action(self._buy_state(), algorithm="mcts", max_iterations=24)
+        second = choose_bot_action(self._buy_state(), algorithm="mcts", max_iterations=24)
+        for result in (first, second):
+            result.pop("elapsedMs", None)
+        self.assertEqual(first, second)
+
+    def test_unfair_determinization_falls_back_to_the_public_heuristic(self):
+        """Same fail-closed contract as the other two sampling modes."""
+        from hero_engine import HRCard
+
+        session = self._buy_state(seed=7)
+        session.bot.hand[0] = HRCard(id="unknown-public", name="Unknown Public",
+                                     cost=0, faction="", card_type="action")
+        expected = _heuristic_rollout_action(session)
+        result = choose_bot_action(session, algorithm="mcts", max_iterations=8)
+
+        self.assertEqual(result["type"], expected["type"])
+        self.assertEqual(result.get("marketIndex"), expected.get("marketIndex"))
+        self.assertEqual(result["iterations"], 0)
+
+
+class TestDefaultPolicyExtraction(unittest.TestCase):
+    """The tree descent and the rollout must share one default policy.
+
+    _default_policy_action was lifted out of _rollout so ISMCTS can advance
+    unsearched decisions with it. If they diverged, a node's value would
+    describe a continuation the rollout beneath it never plays.
+    """
+
+    def test_rollout_uses_the_shared_default_policy(self):
+        from web.bot import _default_policy_action, _rollout
+
+        session = create_session(seed=8)
+        expected = []
+        real = _default_policy_action
+
+        def recording(sim, actions, profile):
+            action = real(sim, actions, profile)
+            expected.append(action)
+            return action
+
+        clone = session.clone()
+        with patch("web.bot._default_policy_action", side_effect=recording):
+            _rollout(clone, turn_limit=3)
+        self.assertTrue(expected, "the rollout bypassed the shared default policy")
+
+    def test_profile_buying_still_routes_to_the_opponent_model(self):
+        from web.bot import _default_policy_action
+
+        session = create_session(seed=8)
+        session.active_player = "player"
+        session.phase = "buy"
+        session.player.gold = 99
+        actions = session.legal_actions()
+        with patch("web.bot.profile_buy_action", return_value={"type": "sentinel"}) as spy:
+            chosen = _default_policy_action(session, actions, "economic")
+        spy.assert_called_once()
+        self.assertEqual(chosen, {"type": "sentinel"})
+
+
 class TestMinimaxAlternation(unittest.TestCase):
     """Rewards are stored from the bot's perspective, so opponent nodes must be
     selected by minimising them. Without this the tree chose the opponent's

@@ -45,11 +45,24 @@ class Node:
     # only by paired root search so candidate-minus-baseline uncertainty can be
     # estimated without pretending independent rollouts are paired samples.
     paired_utilities: list[float] = None
+    # ISMCTS only. The number of iterations in which this action was legal in
+    # the sampled determinization, which is the denominator the subset-armed
+    # bandit needs in place of the parent's visit count (Cowling, Powley &
+    # Whitehouse 2012, sec. IV): an action that is rarely legal must not look
+    # under-explored merely because the parent was visited often without it.
+    availability: int = 0
+    # ISMCTS only. The information-set key this node represents: the sequence
+    # of public actions from the root. See _ismcts_child for why this is the
+    # whole no-strategy-fusion argument.
+    info_key: tuple = ()
+    # ISMCTS only. action key -> child, so selection does not rescan children.
+    child_index: dict[tuple, "Node"] = None
 
     def __post_init__(self) -> None:
         self.children = [] if self.children is None else self.children
         self.untried_actions = [] if self.untried_actions is None else self.untried_actions
         self.paired_utilities = [] if self.paired_utilities is None else self.paired_utilities
+        self.child_index = {} if self.child_index is None else self.child_index
 
     def uct_score(self, exploration: float = 1.35, lo: float = 0.0, hi: float = 1.0,
                   maximize: bool = True) -> float:
@@ -122,7 +135,12 @@ def _deck_quality(player) -> float:
     return sum(_card_value(card) for card in cards) / len(cards)
 
 
-# Starting deck gold density (7 Gold among 10 cards, 1 gold each) is 0.7. The
+# Starting deck gold density: 7 Gold at 1 each plus Ruby at 2, over 10 cards,
+# is 0.9. This read 0.7 while Ruby was mis-encoded as a 1-health action rather
+# than the 2-gold treasure it is (see the note on RUBY in hero_engine.py), so
+# the constant below was derived from that bug and every calibration resting on
+# it - including the Spark-vs-Taxation check in the comment - was done against a
+# starting deck 29% poorer than the real one. The
 # discount below divides by 4x this, so a fresh deck sits at a mild discount
 # (0.8) rather than a severe one (0.5). At 0.5 the very first buy decision of
 # every game already halved gold's weight before a single purchase, and against
@@ -131,7 +149,7 @@ def _deck_quality(player) -> float:
 # health - real cards, not synthetic test ones. The rollout would then never
 # build an economy at all. Verified: Spark scored 5.7 against Taxation's 2.2
 # under the 1x scale; recalibrated here.
-STARTING_GOLD_DENSITY = 0.7
+STARTING_GOLD_DENSITY = 0.9
 GOLD_DISCOUNT_SCALE = STARTING_GOLD_DENSITY * 4.0
 
 # Ids of the four starting cards. _card_score in hero_engine.py scores these as
@@ -152,6 +170,66 @@ def _junk_count(player) -> int:
     return sum(1 for c in cards if c.id in _STARTING_JUNK_IDS)
 
 
+# Median final session.turn_number is 24.5 and the mean 26.1 over 48 benchmark
+# games (p25 23, p75 30). turn_number increments once per *seat*, so this is
+# ~13 rounds. Measured rather than guessed: the whole point of the term below is
+# to know how much game is left, and a wrong scale makes it noise.
+# Re-measured after the Ruby fix: median 22.5, mean 23.3 (it was 24.5 / 26.1
+# with the 29%-poorer starting deck). turn_number increments once per *seat*,
+# so this is ~11 rounds.
+EXPECTED_GAME_TURNS = 23
+
+# How hard to tilt resource valuation from economy toward damage as the game
+# progresses. 0.0 reproduces the previous behaviour byte-for-byte and is the
+# A/B control.
+#
+# Every strategy source consulted states this as the single most important
+# timing rule, and the bot could not express it at all: economy carries "a
+# two-deck delay from the time you purchase the economy card to the time you
+# can play the card you purchased", so gold bought late is never converted,
+# while damage scales into the endgame. _resource_weights already ramps combat
+# up and gold down, but only against *opponent HP*, which is a proxy that fails
+# exactly where it matters - two players at high HP on turn 20 are in a grind
+# where gold is nearly worthless, and the HP proxy scores that identically to
+# turn 2.
+GAME_PHASE_WEIGHT = 0.0
+
+# Gold never becomes literally worthless - a card still has to be bought to be
+# played - so the tilt is floored rather than allowed to reach zero.
+_GOLD_PHASE_FLOOR = 0.25
+
+
+def _game_progress(session) -> float:
+    """0.0 at the opening, 1.0 at the expected end of the game.
+
+    Estimates how much game is *left*, which is what decides whether a delayed
+    payoff will ever be collected. Two independent signals, taking whichever is
+    further along:
+
+    - turn count, which catches the slow grind where nobody is dying yet;
+    - total HP depleted, which catches the race that will end well before the
+      median turn count.
+
+    Neither alone is sufficient. Using only HP is what the existing
+    opponent-HP-ratio scaling already does, and it is blind to a long game at
+    high health; using only turns is blind to a game about to end on turn 8.
+    """
+    turn_progress = session.turn_number / EXPECTED_GAME_TURNS
+    total_hp = session.bot.hp + session.player.hp
+    hp_progress = 1.0 - total_hp / (2.0 * HRGame.STARTING_HP)
+    return min(1.0, max(0.0, max(turn_progress, hp_progress)))
+
+
+def _phase_scales(session) -> tuple[float, float]:
+    """(gold_scale, combat_scale) for the current point in the game."""
+    if not GAME_PHASE_WEIGHT:
+        return 1.0, 1.0
+    progress = _game_progress(session)
+    gold_scale = max(_GOLD_PHASE_FLOOR, 1.0 - GAME_PHASE_WEIGHT * progress)
+    combat_scale = 1.0 + GAME_PHASE_WEIGHT * progress
+    return gold_scale, combat_scale
+
+
 def _resource_weights(session, seat: str) -> dict[str, float]:
     """Per-resource weights, scaled by the two things a real player conditions
     on: how close the opponent is to dead, and how urgently the buyer needs
@@ -165,17 +243,21 @@ def _resource_weights(session, seat: str) -> dict[str, float]:
     own_hp_ratio = min(max(buyer.hp, 0), HRGame.STARTING_HP) / HRGame.STARTING_HP
 
     gold_discount = 1.0 / (1.0 + max(_deck_gold_density(buyer), 0.0) / GOLD_DISCOUNT_SCALE)
+    # Multiplicative on top of the opponent-HP ramps below, not a replacement:
+    # the two encode different things (how close the kill is vs how much game
+    # is left) and they come apart in grinds and races alike.
+    gold_phase, combat_phase = _phase_scales(session)
 
     return {
         # 2.0 at full opponent health, ramping to 4.0 near lethal: closing out
         # a game matters more than incremental damage, but not so much more
         # that it swamps everything else the way the first version did.
-        "combat": 2.0 + (1.0 - opp_hp_ratio) * 2.0,
+        "combat": (2.0 + (1.0 - opp_hp_ratio) * 2.0) * combat_phase,
         # 3.0 at full opponent health, decaying to 1.5 near lethal, discounted
         # by the buyer's own gold density (diminishing returns on gold
         # specifically - see _deck_gold_density's own docstring for why it
         # can't be overall deck quality instead).
-        "gold": (1.5 + opp_hp_ratio * 1.5) * gold_discount,
+        "gold": (1.5 + opp_hp_ratio * 1.5) * gold_discount * gold_phase,
         # Card advantage is close to context-independent: more selection is
         # good whether ahead or behind.
         "draw": 4.0,
@@ -350,7 +432,12 @@ def _sacrifice_bonus(session, seat: str, card, weights: dict[str, float] | None 
         sac_count = card.get("sacrifice_up_to", 0)
 
     if sac_count:
-        bonus += _thinning_value(buyer, sac_count)
+        # Thinning is a delayed payoff like economy - it pays out over the
+        # draws you have left, and sources are consistent that sacrifice
+        # outlets want acquiring "before the first shuffle". Decayed by the
+        # same gold scale rather than a second knob, so the A/B has one degree
+        # of freedom instead of two.
+        bonus += _thinning_value(buyer, sac_count) * _phase_scales(session)[0]
     return bonus
 
 
@@ -470,6 +557,14 @@ def _adaptive_buy_action(session, buy_actions: list[dict[str, Any]]) -> dict[str
     gold_weight, combat_weight, draw_weight = (
         (1.0, 3.0, 1.0) if draw_engine >= 1 else (2.0, 2.0, 3.0)
     )
+    # This is the *default rollout* buy policy (ROLLOUT_BUY_POLICY="adaptive"),
+    # so unlike _resource_weights - which only feeds the "situational" policy
+    # that is off by default - a change here reaches every MCTS evaluation the
+    # shipped bot makes. Gated on the same knob so both move together or
+    # neither does.
+    gold_phase, combat_phase = _phase_scales(session)
+    gold_weight *= gold_phase
+    combat_weight *= combat_phase
 
     def card_for(action):
         idx = int(action.get("marketIndex", -1))
@@ -501,6 +596,15 @@ def _adaptive_buy_action(session, buy_actions: list[dict[str, Any]]) -> dict[str
 
 
 WIN_SCORE = 10_000.0
+
+# Diagnostic tally of what _guarded_root_choice decided: "agreement" (search
+# picked the heuristic move anyway), "heuristic_guard" (search disagreed but did
+# not clear the gate), "mcts_override" (search deviated). Written by
+# choose_bot_action, never read by the search. Callers that care reset it; the
+# override *rate* is the quantity that makes a gate sweep interpretable, since
+# two gates can post the same win rate while deviating on wildly different
+# numbers of decisions.
+SELECTION_COUNTS: dict[str, int] = {}
 
 # UCB needs rewards on a stable scale. The legacy raw mode remains useful for
 # controlled A/Bs; the default bounds nonterminal positions smoothly between
@@ -568,8 +672,47 @@ OPPONENT_MODEL_MIN_OBSERVATIONS = 2
 # root action from a clone of it, so their difference is less noisy. It won the
 # fixed-effort A/B, while independent UCB remains the fallback for larger root
 # action sets where a complete paired round would consume the search slice.
-ROOT_SAMPLING_MODE = "paired"  # "independent" or "paired"
+#
+# "ismcts" replaces both with a real Information Set MCTS tree: statistics
+# persist across determinizations at interior nodes, so the search can express
+# "buy this, and then next turn the position is good because of how I will play
+# it" instead of only "buy this, then play greedily to the horizon". The other
+# two modes are retained as A/B controls and "paired" remains the default until
+# ISMCTS is confirmed on held-out seeds at the shipped budget.
+ROOT_SAMPLING_MODE = "paired"  # "independent", "paired", or "ismcts"
 PAIRED_ROOT_MAX_ACTIONS = 3
+
+# --- ISMCTS (Cowling, Powley & Whitehouse 2012), single-observer -----------
+#
+# Single-observer (SO-ISMCTS) is the right variant here for two reasons that
+# are properties of this game, not preferences. First, only one seat is being
+# played: choose_bot_action is called for the bot, the opponent is modelled by
+# a *known* policy class (the four benchmark buy profiles) with a public
+# posterior over it, so there is no adversary whose information sets need
+# their own trees. Multiple-observer ISMCTS buys the ability to model an
+# opponent reasoning about its own hidden hand; here that hand is already
+# integrated over by determinization plus the profile posterior. Second, the
+# shipping constraint is 60 ms, which buys ~66 rollouts per decision - one
+# tree, not two.
+#
+# Exploration constant. Rewards are the bounded [0, 1] utility from
+# _search_utility, so this is on the same scale as the UCT constant used by
+# the legacy path (1.35 there, against an observed-range normalisation).
+ISMCTS_EXPLORATION = 0.7
+
+# Searched bot decisions below the root before the default policy takes over.
+# Not a ply count: the play and champion phases, forced combat, and the whole
+# opponent turn are advanced by the default policy without creating nodes (see
+# _advance_to_decision), so depth 2 already spans "this buy, then my next
+# turn's buy". Depth is what a tree has that root determinization does not, but
+# every extra level splits ~66 iterations further, so this is a real tradeoff
+# and is swept, not assumed.
+ISMCTS_MAX_DEPTH = 2
+
+# Whether the opponent gets real tree nodes (minimax-selected) or stays inside
+# the default policy. Off by default; see hero_ismcts_ab.py --opponent-nodes
+# for the measurement that decides it.
+ISMCTS_OPPONENT_NODES = False
 
 # At the interactive simulation count, spreading root visits across every
 # affordable market card plus pass is substantially worse than the static
@@ -909,6 +1052,34 @@ def _combat_search_actions(session, attacks: list[dict[str, Any]]) -> list[dict[
     return face[:1]
 
 
+def _default_policy_action(session, actions: list[dict[str, Any]],
+                           opponent_profile: str | None) -> dict[str, Any]:
+    """One action of the simulation default policy.
+
+    Extracted from _rollout so the ISMCTS tree descent advances unsearched
+    decisions (the play/champion phases, forced combat, the opponent's whole
+    turn) with exactly the policy the rollout would have used. If the two ever
+    diverged, a node's value would describe a continuation the rollout beneath
+    it never plays.
+    """
+    if (opponent_profile is not None and session.active_player == "player"
+            and session.phase == "buy"):
+        return profile_buy_action(session, actions, opponent_profile)
+    rollout_buy_policy = ROLLOUT_BUY_POLICY
+    if rollout_buy_policy == "routed":
+        # Public purchase observations can identify the opponent's broad
+        # economy profile after a few turns. Situational buying is more useful
+        # against the three card-selection profiles; retain adaptive buying
+        # while evidence is sparse or points to the champion profile, where it
+        # is less reliable.
+        rollout_buy_policy = "adaptive"
+        if session.active_player == "bot" and session.phase == "buy":
+            inferred = inferred_profile(session, OPPONENT_MODEL_MIN_OBSERVATIONS)
+            if inferred in {"balanced", "aggressive", "economic"}:
+                rollout_buy_policy = "situational"
+    return _heuristic_rollout_action(session, actions, buy_policy=rollout_buy_policy)
+
+
 def _rollout(session, turn_limit: int | None = None, action_cap: int = 400,
              opponent_profile: str | None = None) -> float:
     """Play both seats forward greedily, then score the resulting position.
@@ -933,28 +1104,7 @@ def _rollout(session, turn_limit: int | None = None, action_cap: int = 400,
         actions = legal_actions(session)
         if not actions:
             break
-        if (opponent_profile is not None and session.active_player == "player"
-                and session.phase == "buy"):
-            action = profile_buy_action(session, actions, opponent_profile)
-        else:
-            rollout_buy_policy = ROLLOUT_BUY_POLICY
-            if rollout_buy_policy == "routed":
-                # Public purchase observations can identify the opponent's
-                # broad economy profile after a few turns. Situational buying
-                # is more useful against the three card-selection profiles;
-                # retain adaptive buying while evidence is sparse or points
-                # to the champion profile, where it is less reliable.
-                rollout_buy_policy = "adaptive"
-                if session.active_player == "bot" and session.phase == "buy":
-                    inferred = inferred_profile(
-                        session, OPPONENT_MODEL_MIN_OBSERVATIONS,
-                    )
-                    if inferred in {"balanced", "aggressive", "economic"}:
-                        rollout_buy_policy = "situational"
-            action = _heuristic_rollout_action(
-                session, actions, buy_policy=rollout_buy_policy,
-            )
-        apply_action(session, action)
+        apply_action(session, _default_policy_action(session, actions, opponent_profile))
         steps += 1
     return _leaf_value(session)
 
@@ -1020,6 +1170,31 @@ def _root_search_actions(session, actions: list[dict[str, Any]]) -> list[dict[st
         narrowed.append(action)
         seen.add(_action_key(action))
     return narrowed
+
+
+def _search_actions(session, actions: list[dict[str, Any]] | None = None,
+                    algorithm: str = "mcts") -> list[dict[str, Any]]:
+    """The action set search is allowed to branch on at one decision point.
+
+    Factored out of choose_bot_action unchanged so ISMCTS interior nodes branch
+    on exactly the same set the root does - buy progressive widening plus the
+    combat pruning that drops rules-forced targets. An interior node built from
+    a different action set than the root would make depth and breadth
+    incomparable across the very A/B this is being measured in.
+    """
+    if actions is None:
+        actions = _sorted_actions(legal_actions(session))
+    if algorithm == "mcts":
+        actions = _root_search_actions(session, actions)
+    # Remaining combat vanishes at end of turn. Once at least one legal combat
+    # target exists, advancing the phase is therefore strictly dominated; keep
+    # MCTS focused on the meaningful target-selection decision instead of
+    # occasionally spending its shallow search budget on a pass.
+    if session.phase == "combat":
+        attacks = [action for action in actions if action["type"] == "attack_target"]
+        if attacks:
+            actions = _combat_search_actions(session, attacks)
+    return actions
 
 
 def _root_candidates_from_children(root: Node, rank_by: str = "visits") -> list[dict[str, Any]]:
@@ -1206,20 +1381,216 @@ def _paired_root_rounds(session, root: Node, search_rng: random.Random,
     return iterations, worlds
 
 
+def _ismcts_uct(child: Node, exploration: float, maximize: bool) -> float:
+    """UCB1 for the subset-armed bandit at an information-set node.
+
+    The exploration denominator is the child's *availability* - how many
+    iterations offered this action - not the parent's visit count. An action
+    that is only legal in a minority of determinizations would otherwise be
+    permanently mis-ranked: the parent's visits grow on iterations where the
+    action was not even on the table, inflating its exploration bonus.
+    """
+    if child.visits == 0:
+        return float("inf")
+    exploit = child.reward / child.visits
+    # Rewards are stored from the bot's perspective at every depth, so an
+    # opponent node maximises 1 - utility rather than storing negated rewards.
+    if not maximize:
+        exploit = 1.0 - exploit
+    return exploit + exploration * math.sqrt(
+        math.log(max(child.availability, 1)) / child.visits
+    )
+
+
+def _is_decision_node(session) -> bool:
+    """Does this state deserve a tree node?
+
+    Only the phases search has ever been able to help in (see the note in
+    choose_bot_action on why play/champion are auto-resolved). Opponent
+    decisions are included only when ISMCTS_OPPONENT_NODES is on.
+    """
+    if session.winner or session.phase not in SEARCHED_PHASES:
+        return False
+    if session.active_player == "bot":
+        return True
+    return ISMCTS_OPPONENT_NODES
+
+
+def _advance_to_decision(session, opponent_profile: str | None, horizon_end: int,
+                         action_cap: int = 200) -> list[dict[str, Any]] | None:
+    """Play forward with the default policy until the next searched decision.
+
+    Everything between two tree nodes - the play and champion phases, combat
+    whose target is forced by the rules, and (by default) the opponent's entire
+    turn - is advanced here rather than expanded. That is what makes a depth-2
+    tree span two of the bot's own turns instead of two of its phase
+    transitions, which is the only way a 60 ms budget buys real lookahead.
+
+    Returns the branchable action set at that decision, or None if the game
+    ended, the horizon ran out, or nothing is left to choose.
+    """
+    steps = 0
+    while (not session.winner
+           and session.turn_number < horizon_end
+           and steps < action_cap):
+        if _is_decision_node(session):
+            actions = _search_actions(session)
+            # A single legal action is not a decision; applying it here keeps
+            # the tree free of forced nodes that would only dilute visits.
+            if len(actions) > 1:
+                return actions
+        legal = legal_actions(session)
+        if not legal:
+            return None
+        apply_action(session, _default_policy_action(session, legal, opponent_profile))
+        steps += 1
+    return None
+
+
+def _ismcts_child(node: Node, action: dict[str, Any], actor: str) -> Node:
+    """Create the child for `action`, keyed by information set, not by state.
+
+    This is the no-strategy-fusion guarantee, and it is structural rather than
+    checked at runtime. A node's identity is `info_key`: the sequence of
+    *public actions* from the root and nothing else. No sampled card identity,
+    no opponent hand, no draw order, and no other product of determinization
+    ever enters it. Every determinization consistent with that action sequence
+    therefore lands on the same node and updates the same statistics, so the
+    tree has nowhere to record "play A when the hidden hand is X, B when it is
+    Y" - the policy it represents is one action distribution per information
+    set, which is exactly the constraint the real bot plays under.
+
+    Note this key is a *coarsening* of the bot's true information partition:
+    the bot also observes the opponent's public actions between its own, and
+    those are deliberately left out to stop statistics fragmenting at 60 ms. A
+    coarsening averages distinguishable positions together, which costs
+    precision; only a *refinement* past the information set would be fusion.
+    """
+    key = _action_key(action)
+    child = Node(action=action, parent=node, actor=actor,
+                 info_key=node.info_key + (key,))
+    node.children.append(child)
+    node.child_index[key] = child
+    return child
+
+
+def _ismcts_iteration(root: Node, world, opponent_profile: str | None,
+                      horizon_end: int) -> None:
+    """One ISMCTS iteration over an already-determinized world.
+
+    Select, expand, roll out, back up - with selection restricted at every node
+    to the actions legal in *this* determinization.
+
+    Caveat on opponent nodes (ISMCTS_OPPONENT_NODES): this is single-observer
+    ISMCTS, so an opponent node pools every opponent information set sharing the
+    same public history. The opponent modelled there cannot condition on its own
+    hidden hand, and its expansion order follows the engine's public buy
+    priority rather than the sampled profile. That makes the searched opponent
+    *weaker and differently-behaved* than the profile the rollout would have
+    used - which is the substantive reason to expect this to lose, and why it is
+    measured rather than assumed.
+    """
+    node = root
+    path = [root]
+    depth = 0
+    actions = _search_actions(world)
+
+    while True:
+        available: list[Node] = []
+        untried: list[dict[str, Any]] = []
+        for action in actions:
+            child = node.child_index.get(_action_key(action))
+            if child is None:
+                untried.append(action)
+            else:
+                available.append(child)
+        for child in available:
+            child.availability += 1
+
+        if untried:
+            # Expansion. Priority order rather than a random draw: the engine
+            # already sorts actions by a public priority, so this doubles as
+            # progressive widening when the budget runs out mid-node.
+            child = _ismcts_child(node, untried[0], world.active_player)
+            child.availability += 1
+            apply_action(world, child.action)
+            path.append(child)
+            break
+
+        if not available:
+            break
+
+        child = max(available, key=lambda item: _ismcts_uct(
+            item, ISMCTS_EXPLORATION, world.active_player == "bot"))
+        apply_action(world, child.action)
+        path.append(child)
+        node = child
+        depth += 1
+        if depth >= ISMCTS_MAX_DEPTH:
+            break
+        actions = _advance_to_decision(world, opponent_profile, horizon_end)
+        if actions is None:
+            break
+
+    # The horizon is measured from the *root*, not from the leaf. Letting each
+    # node roll out a further ROLLOUT_TURNS would evaluate deep paths further
+    # into the future than shallow ones, so the tree would prefer depth for
+    # reasons that have nothing to do with the moves it contains.
+    raw_reward = _rollout(world, turn_limit=max(0, horizon_end - world.turn_number),
+                          opponent_profile=opponent_profile)
+    reward = _search_utility(raw_reward)
+    for item in path:
+        item.visits += 1
+        item.reward += reward
+        item.raw_reward += raw_reward
+
+
+def _ismcts_rounds(session, root: Node, search_rng: random.Random,
+                   start: float, budget_ms: int,
+                   max_iterations: int | None) -> tuple[int, int] | None:
+    """Drive true ISMCTS: one determinization per iteration, one shared tree.
+
+    The tree persists across determinizations - that is the entire difference
+    from _paired_root_rounds, which rebuilds a depth-1 fan of independent
+    branches every round and therefore cannot accumulate anything below the
+    root. Returns ``(iterations, sampled_worlds)``, or None if this mode does
+    not apply so the caller can fall back.
+    """
+    if ROOT_SAMPLING_MODE != "ismcts":
+        return None
+    if len(root.untried_actions) < 2:
+        return None
+    root.untried_actions = []
+    horizon_end = session.turn_number + ROLLOUT_TURNS
+    iterations = 0
+    while (
+        iterations < max_iterations
+        if max_iterations is not None
+        else (perf_counter() - start) * 1000 < budget_ms
+    ):
+        try:
+            world = session.determinize_for_bot(search_rng)
+        except ValueError:
+            # A mismatched/custom public inventory cannot be sampled fairly.
+            # Fail closed to the public heuristic rather than reading the live
+            # opponent's private zones, matching the other two modes.
+            return 0, 0
+        opponent_profile = _sample_rollout_opponent_profile(world, search_rng)
+        _ismcts_iteration(root, world, opponent_profile, horizon_end)
+        iterations += 1
+    # One determinization per iteration, unlike paired rounds where one world
+    # serves every root branch.
+    return iterations, iterations
+
+
+def _tree_size(root: Node) -> int:
+    return 1 + sum(_tree_size(child) for child in root.children)
+
+
 def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts",
                       max_iterations: int | None = None) -> dict[str, Any]:
     start = perf_counter()
-    actions = _sorted_actions(legal_actions(session))
-    if algorithm == "mcts":
-        actions = _root_search_actions(session, actions)
-    # Remaining combat vanishes at end of turn. Once at least one legal combat
-    # target exists, advancing the phase is therefore strictly dominated; keep
-    # MCTS focused on the meaningful target-selection decision instead of
-    # occasionally spending its shallow search budget on a pass.
-    if session.phase == "combat":
-        attacks = [action for action in actions if action["type"] == "attack_target"]
-        if attacks:
-            actions = _combat_search_actions(session, attacks)
+    actions = _search_actions(session, algorithm=algorithm)
     if not actions:
         return {"type": "advance_phase", "label": "Next Phase", "score": 0.0, "iterations": 0, "elapsedMs": 0}
 
@@ -1252,11 +1623,14 @@ def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts",
             "candidates": candidates,
         }
 
-    # This is root-only information-set Monte Carlo. Independent mode samples
-    # a fresh hidden world per rollout; paired mode samples one fair world per
-    # complete public-action round. Both keep later bot moves inside a greedy
-    # rollout rather than persisting sampled descendants, avoiding strategy
-    # fusion across incompatible hidden hands.
+    # Three search modes share this root. "ismcts" builds a real information-set
+    # tree whose statistics persist across determinizations. The other two are
+    # root-only information-set Monte Carlo, kept as A/B controls: independent
+    # mode samples a fresh hidden world per rollout, paired mode samples one
+    # fair world per complete public-action round. All three avoid strategy
+    # fusion, but for different reasons - the root-only modes because they have
+    # no interior nodes at all, ISMCTS because its nodes are keyed by public
+    # action sequence (see _ismcts_child).
     root = Node(action=None, untried_actions=actions[:])
     iterations = 0
     best_action = actions[0]
@@ -1271,11 +1645,17 @@ def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts",
     search_rng = random.Random(
         f"mcts:{session.seed}:{session.turn_number}:{session.active_player}:{session.phase}"
     )
-    paired_result = _paired_root_rounds(
+    ismcts_result = _ismcts_rounds(
+        session, root, search_rng, start, budget_ms, max_iterations,
+    )
+    ismcts = ismcts_result is not None
+    paired_result = None if ismcts else _paired_root_rounds(
         session, root, search_rng, start, budget_ms, max_iterations,
     )
     paired = paired_result is not None
-    if paired:
+    if ismcts:
+        iterations, sampled_worlds = ismcts_result
+    elif paired:
         iterations, sampled_worlds = paired_result
     else:
         sampled_worlds = 0
@@ -1349,6 +1729,7 @@ def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts",
     selected, best_action, selection, utility_advantage = _guarded_root_choice(
         session, root, proposed,
     )
+    SELECTION_COUNTS[selection] = SELECTION_COUNTS.get(selection, 0) + 1
     if selected is not None and selected.visits:
         best_score = selected.raw_reward / selected.visits
     else:
@@ -1359,7 +1740,8 @@ def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts",
         "score": round(best_score, 3),
         "iterations": iterations,
         "worlds": sampled_worlds,
-        "rootSampling": "paired" if paired else "independent",
+        "rootSampling": "ismcts" if ismcts else ("paired" if paired else "independent"),
+        "treeNodes": _tree_size(root),
         "selection": selection,
         "utilityAdvantage": (round(utility_advantage, 6)
                              if utility_advantage is not None else None),

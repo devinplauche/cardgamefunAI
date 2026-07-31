@@ -140,8 +140,15 @@ def main():
                     help="seat-turns simulated per rollout (default: web.bot.ROLLOUT_TURNS)")
     ap.add_argument("--utility", choices=["bounded", "raw"], default="bounded",
                     help="UCB reward scale: bounded is the production default; raw is a legacy A/B control")
-    ap.add_argument("--root-sampling", choices=["independent", "paired"], default="paired",
-                    help="independent UCB or paired common-random-number root rounds")
+    ap.add_argument("--root-sampling", choices=["independent", "paired", "ismcts"], default="paired",
+                    help="independent UCB, paired common-random-number root rounds, "
+                         "or a persistent information-set tree")
+    ap.add_argument("--ismcts-depth", type=int, default=None,
+                    help="searched bot decisions below the root (ismcts only)")
+    ap.add_argument("--ismcts-exploration", type=float, default=None,
+                    help="UCB exploration constant on bounded utility (ismcts only)")
+    ap.add_argument("--ismcts-opponent-nodes", action="store_true",
+                    help="give the opponent real minimax tree nodes (ismcts only)")
     ap.add_argument("--buy-root-width", type=int, default=3,
                     help="MCTS buy candidates retained at root; 0 keeps every legal action")
     ap.add_argument("--override-margin", type=float, default=0.10,
@@ -152,6 +159,8 @@ def main():
                     help="one-sided standard-error multiplier for confidence gate")
     ap.add_argument("--confidence-min-worlds", type=int, default=4)
     ap.add_argument("--confidence-min-effect", type=float, default=0.0)
+    ap.add_argument("--game-phase-weight", type=float, default=0.0,
+                    help="tilt gold->combat as the game progresses; 0 is the control")
     ap.add_argument("--iterations", type=int, default=None,
                     help="root-simulation cap per decision (reproducible; paired rounds use complete batches)")
     ap.add_argument("--budget-scope", choices=["action", "turn"], default="action",
@@ -185,7 +194,13 @@ def main():
     bot_module.OPPONENT_MODEL_MIN_OBSERVATIONS = args.opponent_model_min_observations
     bot_module.MCTS_UTILITY_MODE = args.utility
     bot_module.ROOT_SAMPLING_MODE = args.root_sampling
+    bot_module.ISMCTS_OPPONENT_NODES = args.ismcts_opponent_nodes
+    if args.ismcts_depth is not None:
+        bot_module.ISMCTS_MAX_DEPTH = args.ismcts_depth
+    if args.ismcts_exploration is not None:
+        bot_module.ISMCTS_EXPLORATION = args.ismcts_exploration
     bot_module.MCTS_BUY_ROOT_WIDTH = args.buy_root_width
+    bot_module.GAME_PHASE_WEIGHT = args.game_phase_weight
     bot_module.MCTS_OVERRIDE_MARGIN = args.override_margin
     bot_module.MCTS_OVERRIDE_GATE = args.override_gate
     bot_module.MCTS_CONFIDENCE_Z = args.confidence_z
@@ -199,6 +214,10 @@ def main():
           f"opponent_model_min_observations={args.opponent_model_min_observations} "
           f"utility={args.utility} "
           f"root_sampling={args.root_sampling} buy_root_width={args.buy_root_width} "
+          f"ismcts_depth={bot_module.ISMCTS_MAX_DEPTH} "
+          f"ismcts_exploration={bot_module.ISMCTS_EXPLORATION} "
+          f"ismcts_opponent_nodes={bot_module.ISMCTS_OPPONENT_NODES} "
+          f"game_phase_weight={bot_module.GAME_PHASE_WEIGHT} "
           f"override_gate={args.override_gate} override_margin={args.override_margin} "
           f"confidence_z={args.confidence_z} confidence_min_worlds={args.confidence_min_worlds} "
           f"confidence_min_effect={args.confidence_min_effect}")
