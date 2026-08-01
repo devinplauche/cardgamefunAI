@@ -4,6 +4,47 @@
 > See "The Ruby bug" immediately below. Treat every historical figure here as
 > describing a different game until re-baselined.**
 
+---
+
+# How to read this file
+
+This is a **lab notebook**, in rough chronological order. Later sections
+supersede earlier ones without saying so, and several earlier claims are now
+known to be wrong. It is not the place to start.
+
+- **Starting work?** Read `CLAUDE.md` instead. It holds the measurement
+  protocol, the current defaults and their evidence, what has been ruled out,
+  and the gotchas that have produced wrong numbers. It is ~120 lines.
+- **Running an experiment?** Use `hero_ab.paired_experiment` and the
+  `ab-experiment` skill. Do not hand-roll a harness; three of the five
+  hand-rolled ones shipped bugs that produced confident wrong answers.
+- **Adding a result here?** Record negatives too, with the arm table. Most
+  results in this project are negative and this record is what stops them being
+  re-run.
+
+## Current state, at a glance
+
+| | |
+| --- | --- |
+| MCTS vs same-seat heuristic | **~5pp** (was ~11pp before the Ruby fix) |
+| Best RL model held out | ~48-50%, six methods in the same band |
+| Search compute | saturates by ~240ms; 960ms buys nothing |
+| Mirror match (equal players) | ~48.5%, so ~50% is the even-strength value |
+
+**Known-stale claims below, corrected later in this file:**
+
+- The champion-denial blind spot is described as the top open problem. It is
+  **already fixed** - `_combat_search_actions` prunes face away when a champion
+  is killable, so the snipe rate is 100% across all six champions where 0-35%
+  is recorded.
+- The horizon sweep's "+28pp at 200ms" chose `ROLLOUT_TURNS=16`. Re-measured at
+  the shipped budget it is a **null** vs 24 and 32 over 2800 games.
+- Any absolute win rate quoted from a single seed block carries ~±10pp.
+- "~28 iterations per decision at 60ms" predates the clone/telemetry fixes; the
+  real figure is ~66.
+
+---
+
 ## The Ruby bug: the starting deck was 29% poorer than the real game
 
 `RUBY` was defined in `hero_engine.py` as
