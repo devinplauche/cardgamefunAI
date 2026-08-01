@@ -1487,6 +1487,42 @@ differently-behaved* opponent than the profile posterior the rollout already
 uses — while costing budget. Keeping the opponent in the rollout is both the
 measured and the principled choice.
 
+### Re-measured at fixed iterations: the tree was never fairly tested
+
+The A/B above ran at a 60ms wall clock, which handicaps ISMCTS twice over. It
+pays one `determinize_for_bot` per iteration where paired mode amortises one
+across the whole root fan, so it ran **49 simulations to paired's 65.6** - a 25%
+sample deficit before the algorithm acted - and it was scored against a ~4pp
+wall-clock jitter floor that was not yet known.
+
+Re-run at a fixed 40 simulations per decision, where the search is deterministic
+given the seed and the null replicate reads exactly 0/0:
+
+| arm | TUNE | vs paired | HOLDOUT | vs paired |
+| --- | --- | --- | --- | --- |
+| paired (control) | 55.2% | — | 53.2% | — |
+| paired (null) | 55.2% | 0/0, p=1.000 | 53.2% | 0/0, p=1.000 |
+| **ismcts depth 2** | **60.0%** | **72/53, p=0.107** | **55.0%** | **56/49, p=0.558** |
+| ismcts depth 3 | 54.0% | 54/59, p=0.707 | — | — |
+
+Pooled: **+26 net over 230 discordant pairs, p=0.099** (need +30 for p<0.05).
+
+**The sign flipped.** At wall clock ISMCTS d2 was −2.5pp on both blocks; at equal
+samples it is positive on both. Not significant, and the effect decayed +19 → +7
+held out - but it held direction on the disjoint block, which none of this
+session's six other candidates did.
+
+Depth 3 measuring worse matches the earlier node-count measurement: ~12 interior
+nodes at depth 2 versus ~29 at depth 3, i.e. ~4 visits per interior node versus
+1.7. The tree becomes noise when spread that thin, and the result agrees with the
+mechanism rather than being a post-hoc pick from a sweep.
+
+**Reading:** the tree mechanism is probably mildly positive; it does not pay for
+its determinization cost at 60ms. The actionable target is therefore making
+`determinize_for_bot` cheaper or amortising it across iterations - it rebuilds a
+Counter over ~100 cards and reshuffles on every call - not abandoning the tree.
+`ROOT_SAMPLING_MODE` stays `paired` until that is resolved.
+
 ### What this does and does not rule out
 
 - **Ruled out:** that root-only determinization was the binding constraint on

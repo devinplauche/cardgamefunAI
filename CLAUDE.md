@@ -51,7 +51,8 @@ are lost. Prefer it for diagnosis; use win rate only for final acceptance.
   (situational buy scoring, routed buy policy, game-phase term). A greedier,
   more informed default policy narrows the simulated outcome distribution and
   biases the value estimates more than the better play gains.
-- **True ISMCTS** at 60ms wall clock — builds a real tree, changes nothing.
+- **True ISMCTS at 60ms wall clock** — negative, but *not* because the tree is
+  useless. See the open thread below; this one is mis-stated if you shorten it.
 - **RL observation repair** (faction, ally text, sacrifice keys, opponent deck)
   and **potential-based reward shaping** — both null held out.
 - **Opponent specialists** — training against one fixed profile beats that
@@ -60,6 +61,40 @@ are lost. Prefer it for diagnosis; use win rate only for final acceptance.
 - **More search compute** — saturates by ~240ms; 960ms buys nothing.
 - **Rollout horizon** 16 vs 24 vs 32 — null over 2800 games and four blocks.
 - **Banning Fire Gem** — flips 20-30% of games, nets zero.
+
+## The one open thread worth pulling
+
+**ISMCTS is bottlenecked by determinization cost, not by the tree.**
+
+Measured two ways, and they disagree in a way that is informative rather than
+contradictory:
+
+| protocol | ISMCTS d2 vs paired |
+| --- | --- |
+| 60ms wall clock | −2.5pp tuning, −2.5pp held out |
+| fixed 40 simulations | **+4.8pp tuning, +1.8pp held out** (pooled +26/230 discordant, p=0.099) |
+
+The sign flips because at a fixed wall clock ISMCTS pays one
+`determinize_for_bot` per iteration where paired mode amortises one across the
+whole root fan - it ran **49 simulations to paired's 65.6**, a 25% sample
+deficit before the algorithm did anything. Give both the same simulation count
+and the tree is positive on both blocks against a null of exactly 0/0.
+
+Not significant (p=0.099, and the effect decayed +19 → +7 held out, which is the
+pattern that has been wrong six times). But it held *direction* on the disjoint
+block, which none of the six did.
+
+So the target is **making determinization cheaper**, not a better search.
+`determinize_for_bot` rebuilds a `Counter` over ~100 cards and reshuffles on
+every call; amortising it across several iterations, or caching the inventory
+reconciliation, would close the sample gap that is currently eating the gain.
+Resolving whether the effect is real needs ~1200 more games at fixed iterations
+(need net +30 discordant, currently +26).
+
+Depth matters and the mechanism explains it: at 60ms depth 2 builds ~12 interior
+nodes and depth 3 builds ~29, which over ~50 iterations is ~4 visits per node
+versus 1.7. Depth 3 measured −1.2pp; the tree becomes noise when spread that
+thin.
 
 ## Current defaults and how well each is evidenced
 
