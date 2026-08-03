@@ -64,7 +64,7 @@ are lost. Prefer it for diagnosis; use win rate only for final acceptance.
 
 ## The one open thread worth pulling
 
-**ISMCTS is bottlenecked by determinization cost, not by the tree.**
+**ISMCTS was never fairly tested. Whether the tree actually helps is unresolved.**
 
 Measured two ways, and they disagree in a way that is informative rather than
 contradictory:
@@ -74,22 +74,39 @@ contradictory:
 | 60ms wall clock | −2.5pp tuning, −2.5pp held out |
 | fixed 40 simulations | **+4.8pp tuning, +1.8pp held out** (pooled +26/230 discordant, p=0.099) |
 
-The sign flips because at a fixed wall clock ISMCTS pays one
-`determinize_for_bot` per iteration where paired mode amortises one across the
-whole root fan - it ran **49 simulations to paired's 65.6**, a 25% sample
-deficit before the algorithm did anything. Give both the same simulation count
-and the tree is positive on both blocks against a null of exactly 0/0.
+The sign flips because at a fixed wall clock ISMCTS runs fewer simulations than
+paired mode for the same time, so it was being judged on a rigged comparison —
+and against a ~4pp jitter floor that was not yet known. Give both the same
+simulation count and the tree is positive on both blocks against a null of
+exactly 0/0.
 
 Not significant (p=0.099, and the effect decayed +19 → +7 held out, which is the
 pattern that has been wrong six times). But it held *direction* on the disjoint
 block, which none of the six did.
 
-So the target is **making determinization cheaper**, not a better search.
-`determinize_for_bot` rebuilds a `Counter` over ~100 cards and reshuffles on
-every call; amortising it across several iterations, or caching the inventory
-reconciliation, would close the sample gap that is currently eating the gain.
-Resolving whether the effect is real needs ~1200 more games at fixed iterations
-(need net +30 discordant, currently +26).
+**Where the overhead actually is — profiled, not inferred.** At equal
+simulations ISMCTS costs 13.7% more wall time (1903ms vs 1673ms for 960 sims).
+Unit costs: `_rollout` 1.612 ms, `determinize_for_bot` 0.107 ms, `clone`
+0.023 ms — so determinization is only **6.6% of a single rollout**, and its
+share of search wall time is 2.2% in paired mode against 5.4% in ISMCTS. That
+~3pp difference is a small part of the 14pp gap; **the rest is tree-descent
+overhead** (`_search_actions` at every node, `_advance_to_decision`, node
+bookkeeping).
+
+So making determinization cheaper would recover about a fifth of the gap, not
+all of it. An earlier version of this section claimed determinization was the
+bottleneck; that was inferred from an iteration count without profiling, and is
+wrong.
+
+**Correct order of work:** settle whether the effect is real *before* optimising
+anything, because a perfect optimisation only buys wall-clock ISMCTS its
+fixed-iteration result, which is currently p=0.099. Needs ~1200 more games at
+fixed iterations (net must clear ~1.96·√pairs; currently +26 over 230).
+
+Depth matters and the mechanism explains it: at 60ms depth 2 builds ~12 interior
+nodes and depth 3 builds ~29, which over ~50 iterations is ~4 visits per node
+versus 1.7. Depth 3 measured −1.2pp; the tree becomes noise when spread that
+thin.
 
 Depth matters and the mechanism explains it: at 60ms depth 2 builds ~12 interior
 nodes and depth 3 builds ~29, which over ~50 iterations is ~4 visits per node

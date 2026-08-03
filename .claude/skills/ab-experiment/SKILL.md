@@ -62,6 +62,27 @@ their limit. Determinization strategy does: ISMCTS pays one per iteration.)
 5. **Exclusive CPU for wall-clock runs.** Contention starves the search. Launch
    detached, one at a time. Step-count RL runs parallelise safely.
 
+## Profile before attributing a cost
+
+`preflight` catches "is this arm configured the way its label says". It does not
+catch "is my explanation for the result correct", which is a separate and
+equally expensive mistake.
+
+Worked example: ISMCTS ran 49 simulations to paired's 65.6 at a fixed wall
+clock. The obvious story was that it pays one `determinize_for_bot` per
+iteration where paired amortises one across the root fan, so the fix was to make
+determinization cheaper. A two-minute `cProfile` showed determinization is 6.6%
+of a single rollout and only ~3pp of a 14pp overhead gap - the rest is
+tree-descent cost. The optimisation would have recovered a fifth of what was
+claimed.
+
+If a result rests on "X is expensive", measure X before acting on it. Unit costs
+worth knowing here: `_rollout` ~1.6 ms, `determinize_for_bot` ~0.11 ms,
+`clone` ~0.02 ms, `legal_actions` ~8 us and called ~250k times per profiled run.
+
+Also: do not optimise toward an unconfirmed effect. Establish that the effect is
+real first, or the best case is making an artifact shippable.
+
 ## Sizing
 
 400 games/arm (100 per profile) is the working default; a wall-clock arm is
