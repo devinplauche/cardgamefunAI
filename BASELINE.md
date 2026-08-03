@@ -1599,6 +1599,72 @@ concluding the competition-winning approach genuinely does not transfer here.
 `_paired_root_rounds` is gated, not deleted; all three modes remain switchable
 via `hero_mcts_bench.py --root-sampling`.
 
+## The value network: cheap-and-noisy loses to slow-and-good
+
+Prior art research pointed at the one combination never tried here: MCTS paired
+with a learned value function, the mechanism behind every strong published
+deckbuilder result (Dominion's shipped AlphaZero-style AI, the Tales of Tribute
+competition winner's tuned weights). Built as `hero_value_net.py` -
+`LEAF_EVAL_MODE="value_net"` replaces `_rollout`'s playout with a trained
+network's forward pass, default off.
+
+The target was never leaf accuracy - the horizon work above already showed
+truncated HP-diff is a *good* estimator of the eventual outcome. The target was
+**cost**: `_rollout` is ~1.6ms, the network is ~50us in isolation. Measured
+whole-decision speedup at 60ms: **~13x** (33 iterations -> 438) - real, but far
+short of the isolated-cost ratio, since cloning/apply_action/node bookkeeping
+cost the same regardless of which leaf evaluator runs. Still the mechanism that
+starved ISMCTS and ensemble determinization (as few as ~13 iterations/tree).
+
+Two real bugs surfaced building this, both now regression-tested. The first
+`TinyMLP.load` call costs ~330ms - enough to consume an entire 60ms budget on
+its own, and `_paired_root_rounds` discards an incomplete round rather than
+commit partial stats, so an unwarmed first call didn't run slow, it silently
+returned `iterations=0`. And `_search_utility`'s nonterminal branch maps into
+the *open* interval (0.1, 0.9), not (0,1); training labels average in exact
+0.0/1.0 from rollouts that reach a real terminal (82-99% of them at
+ROLLOUT_TURNS=16), so the network legitimately predicts outside (0.1, 0.9)
+whenever confident, and the naive inversion crashed on `math.atanh` within the
+first few games of the first real run.
+
+Training itself needed real regularization: a first pass (200 positions, 8
+rollouts/label) overfit badly enough that held-out MAE (0.34) was *worse* than
+predicting a constant (0.11) - labels are strongly bimodal, so a handful of
+noisy averages is not enough signal. Fixed with L2, a real validation split, and
+early stopping. The shipped model (3000 positions, 20 rollouts/label) beat a
+constant-prediction baseline on a held-out test split (0.309 vs 0.411 MAE) but
+that is a modest margin, not a strong fit.
+
+### Result: negative, cleanly
+
+`hero_value_net_ab.py`, wall clock (the actual premise - more iterations at a
+fixed time budget), 400 games/arm, seed block 1000+:
+
+| arm | win rate | vs control | p |
+| --- | --- | --- | --- |
+| rollout (control) | 58.5% | - | - |
+| rollout (null) | 58.0% | 4/6 | 0.754 |
+| **value_net** | **53.2%** | **42/63** | **0.050** |
+
+**−5.3pp against a clean null (4-6 discordant, p=0.754).** The harness's
+own stopping rule ended it here rather than spending a holdout block on an arm
+that lost on tuning. 13x more iterations of the cheap evaluator did not buy back
+what each sample lost in fidelity - the same saturation shape as the 60->240ms
+budget experiment, arrived at from the opposite direction (quantity vs quality
+instead of raw compute).
+
+**What this does and does not establish.** It shows *this* network - 3000
+positions, ~24 hand-picked features, 0.309 held-out MAE against its own
+training oracle - is not accurate enough to win back its speed advantage. It
+does not cleanly separate "the value-net approach doesn't help this game" from
+"this particular network is too inaccurate" - a substantially better-trained net
+(more positions, more rollouts per label, or a richer feature set) has not been
+ruled out, only this one. Given the size of the loss (5.3pp, not a coin flip)
+and that model quality (MAE ~0.31) was already known to be mediocre going in,
+the mechanism read is that leaf noise compounds through UCB selection faster
+than raw iteration count can average it out - but that is inference, not a
+second measurement.
+
 ## RL vs MCTS, head to head
 
 `hero_rl_vs_mcts.py`, 30 games per policy, sides split evenly, MCTS in its

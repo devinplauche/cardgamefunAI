@@ -139,9 +139,33 @@ Gathered 2026-08-01. This project had explored almost entirely inward.
   suggests the null was about the policy, not the features.)
 
 Recurring theme: **MCTS coupled with a learned value function**, not MCTS with a
-hand-written rollout. That combination is the main untried thing here — this
-repo has built policies (V16-V21) and built search, and never joined them.
-Slay the Spire work has largely moved to LLM agents and is less applicable.
+hand-written rollout. That combination has now been tried (`hero_value_net.py`,
+below) and lost. Slay the Spire work has largely moved to LLM agents and is
+less applicable.
+
+## The value network lost, but did not cleanly settle the question
+
+`LEAF_EVAL_MODE="value_net"` replaces `_rollout`'s playout with a trained
+network's forward pass — ~13x more iterations at 60ms (33 → 438), aimed
+squarely at the sample-starvation that killed ISMCTS and ensemble
+determinization. A/B, wall clock, 400 games/arm: **−5.3pp against a clean null**
+(value_net 53.2% vs control 58.5%, discordant 42/63 vs null's 4/6, p=0.050).
+`LEAF_EVAL_MODE` stays `rollout`.
+
+This does **not** cleanly rule out the mechanism, only this network — 3000
+positions, ~24 features, 0.309 held-out MAE against its own oracle, which was
+already known to be a mediocre fit before the A/B ran. A materially
+better-trained net (more positions, more rollouts/label, richer features) is a
+different, untested claim. Given the size and clean separation of the loss,
+inference — not a second measurement — says leaf noise compounds through UCB
+faster than iteration count averages it out.
+
+Two bugs found building it are worth knowing if this is revisited: the first
+model load costs ~330ms, enough to eat an entire budgeted decision if not
+warmed first (`warm_value_net()`); and the network's outputs legitimately fall
+outside `_search_utility`'s nonterminal range `(0.1, 0.9)`, since training
+labels include exact terminal 0/1 — the naive inverse-tanh crashed on this
+within the first few games of the first real run.
 
 ## Current defaults and how well each is evidenced
 
