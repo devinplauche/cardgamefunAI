@@ -89,14 +89,35 @@ real first, or the best case is making an artifact shippable.
 ~6 minutes. Under fixed iterations, power scales normally, so more games help.
 Under a wall clock they do not below ~5pp, because the noise is inside the arms.
 
-## Diagnose before you measure
+## Diagnose before you measure — run `hero_regret.py` first
 
-Win rate needs thousands of games to see 3pp. **Decision-level regret** sees the
-same in a minute and localises *which* decisions are lost: sample ~30 positions,
-score every option with a heavy-rollout oracle (`max_iterations=1320`), and
-compare each policy's pick to the oracle's. That measurement found buy decisions
-are worth ~3.6 HP and combat ~0.6 HP, which explains a great deal of this
-project's history. Use it to decide whether a win-rate A/B is even worth running.
+Win rate needs thousands of games to see 3pp. **Decision-level regret** resolves
+in about a minute, has no game-outcome variance, and localises *which* decisions
+are lost.
+
+```bash
+python hero_regret.py                      # buy and combat, 25 positions each
+python hero_regret.py --positions 40 --oracle 2000
+```
+
+It reports, per phase: **stakes** (the oracle's best option minus its worst, so
+how much choosing well is worth at all), **regret** (what each policy gives up),
+and agreement with the oracle — all in HP, against a 50 HP starting total.
+
+Use it to decide whether a win-rate A/B is worth running at all. If stakes at
+the decision you are changing are ~0.5 HP, no policy change there will show up
+in win rate and you should not spend an hour finding that out. Measured:
+
+    phase     n   stakes   search regret   heuristic regret
+    buy      25   3.6 HP          0.3 HP             1.2 HP
+    combat   25   0.6 HP          0.1 HP             0.5 HP
+
+Caveat: the oracle uses the same rollout the search does, so this is the
+objective's opinion of itself. Near-zero stakes means *this objective does not
+separate these options*, which is not the same as the options being equivalent —
+they differ exactly when the objective is wrong. Combat reads 0.6 HP partly
+because `_combat_search_actions` resolves the high-stakes cases by rule before
+search ever sees them.
 
 ## Interpreting
 
