@@ -62,51 +62,39 @@ are lost. Prefer it for diagnosis; use win rate only for final acceptance.
 - **Rollout horizon** 16 vs 24 vs 32 — null over 2800 games and four blocks.
 - **Banning Fire Gem** — flips 20-30% of games, nets zero.
 
-## The one open thread worth pulling
+## ISMCTS is settled: negative, at equal simulation counts
 
-**ISMCTS was never fairly tested. Whether the tree actually helps is unresolved.**
+Four independent blocks at a fixed 40 simulations per decision, where the search
+is deterministic given the seed and a null replicate reads exactly 0/0:
 
-Measured two ways, and they disagree in a way that is informative rather than
-contradictory:
+| block | discordant (ismcts-heavy / paired-heavy) | pooled net | pooled p |
+| --- | --- | --- | --- |
+| TUNE | 72/53 | +19 | 0.107 |
+| HOLDOUT | 56/49 | +26 | 0.099 |
+| BLOCK-C | 81/101 | +6 | 0.805 |
+| BLOCK-D | 93/106 | **−7** | **0.808** |
 
-| protocol | ISMCTS d2 vs paired |
-| --- | --- |
-| 60ms wall clock | −2.5pp tuning, −2.5pp held out |
-| fixed 40 simulations | **+4.8pp tuning, +1.8pp held out** (pooled +26/230 discordant, p=0.099) |
+**Final: −7 net over 611 discordant pairs, p=0.808.** The effect looked real
+through two blocks (p=0.099, the best-powered positive signal in the project all
+session), then crossed zero and finished slightly negative. This is not "ISMCTS
+doesn't pay for its wall-clock cost" - that was the earlier, weaker reading. At
+*equal* simulation counts the tree provides no benefit at all. `ROOT_SAMPLING_MODE`
+stays `paired`.
 
-The sign flips because at a fixed wall clock ISMCTS runs fewer simulations than
-paired mode for the same time, so it was being judged on a rigged comparison —
-and against a ~4pp jitter floor that was not yet known. Give both the same
-simulation count and the tree is positive on both blocks against a null of
-exactly 0/0.
+The lesson to keep, independent of ISMCTS specifically: **a result significant
+through two blocks can still be a false positive.** Two positive blocks felt
+like enough to call it, and it would have been wrong. Confirm on a disjoint
+block is necessary; it is not always sufficient. When a pooled effect is close
+to the threshold, run a third block before believing it.
 
-Not significant (p=0.099, and the effect decayed +19 → +7 held out, which is the
-pattern that has been wrong six times). But it held *direction* on the disjoint
-block, which none of the six did.
-
-**Where the overhead actually is — profiled, not inferred.** At equal
-simulations ISMCTS costs 13.7% more wall time (1903ms vs 1673ms for 960 sims).
-Unit costs: `_rollout` 1.612 ms, `determinize_for_bot` 0.107 ms, `clone`
-0.023 ms — so determinization is only **6.6% of a single rollout**, and its
-share of search wall time is 2.2% in paired mode against 5.4% in ISMCTS. That
-~3pp difference is a small part of the 14pp gap; **the rest is tree-descent
-overhead** (`_search_actions` at every node, `_advance_to_decision`, node
-bookkeeping).
-
-So making determinization cheaper would recover about a fifth of the gap, not
-all of it. An earlier version of this section claimed determinization was the
-bottleneck; that was inferred from an iteration count without profiling, and is
-wrong.
-
-**Correct order of work:** settle whether the effect is real *before* optimising
-anything, because a perfect optimisation only buys wall-clock ISMCTS its
-fixed-iteration result, which is currently p=0.099. Needs ~1200 more games at
-fixed iterations (net must clear ~1.96·√pairs; currently +26 over 230).
-
-Depth matters and the mechanism explains it: at 60ms depth 2 builds ~12 interior
-nodes and depth 3 builds ~29, which over ~50 iterations is ~4 visits per node
-versus 1.7. Depth 3 measured −1.2pp; the tree becomes noise when spread that
-thin.
+Structurally, ISMCTS is not ruled out forever - only the specific choice of
+pooling statistics in one tree across determinizations, at depth 2-3, with these
+UCB settings, on this game. See **ensemble determinization**
+(`ROOT_SAMPLING_MODE="ensemble"`) for the other design point in the same space:
+N independent trees per determinization, combined only at the root instead of
+sharing statistics below it - the approach with actual competition-winning
+precedent for a two-player deckbuilder. Being A/B'd; not yet resolved as of this
+writing.
 
 Depth matters and the mechanism explains it: at 60ms depth 2 builds ~12 interior
 nodes and depth 3 builds ~29, which over ~50 iterations is ~4 visits per node

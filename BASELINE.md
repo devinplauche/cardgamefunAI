@@ -1523,6 +1523,33 @@ its determinization cost at 60ms. The actionable target is therefore making
 Counter over ~100 cards and reshuffles on every call - not abandoning the tree.
 `ROOT_SAMPLING_MODE` stays `paired` until that is resolved.
 
+### Settled: negative, at equal simulation counts
+
+Two more independent blocks at fixed 40 simulations per decision, following up
+the +26/230 (p=0.099) reading above:
+
+| block | discordant (ismcts/paired) | pooled net | pooled p |
+| --- | --- | --- | --- |
+| TUNE | 72/53 | +19 | 0.107 |
+| HOLDOUT | 56/49 | +26 | 0.099 |
+| BLOCK-C | 81/101 | +6 | 0.805 |
+| BLOCK-D | 93/106 | **−7** | **0.808** |
+
+**Final: −7 net over 611 discordant pairs, p=0.808.** The effect held through
+two blocks - the best-powered positive signal measured all session - then
+crossed zero and finished slightly negative. At equal simulation counts the tree
+provides **no benefit**. This supersedes the "probably mildly positive" reading
+above; `ROOT_SAMPLING_MODE` stays `paired`.
+
+Worth keeping as the canonical illustration of why this file insists on a
+disjoint confirmation block: two positive blocks in a row, at good power, still
+missed a coin flip. See `CLAUDE.md` for the corresponding operating-manual note.
+
+Structurally this rules out pooling statistics in one tree across
+determinizations at depth 2-3 with these UCB settings - not determinization
+sharing in general. See "Ensemble determinization" below for the other design
+point in the same space.
+
 ### What this does and does not rule out
 
 - **Ruled out:** that root-only determinization was the binding constraint on
