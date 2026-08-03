@@ -1550,6 +1550,38 @@ determinizations at depth 2-3 with these UCB settings - not determinization
 sharing in general. See "Ensemble determinization" below for the other design
 point in the same space.
 
+## Ensemble determinization also lost - and lost cleanly
+
+The other point in the determinization-sharing space: N independent trees, one
+per determinization, combined only at the root (no statistics shared below it -
+the opposite tradeoff from ISMCTS). This is the approach with actual external
+evidence - it won the 2023 Tales of Tribute AI competition (a two-player
+deckbuilder) as root-parallelised MCTS over five per-seed trees, and Cowling et
+al. report it working for Magic: The Gathering.
+
+`ROOT_SAMPLING_MODE="ensemble"`, `ENSEMBLE_TREES` controlling the split. A/B at
+fixed 40 simulations (the null replicate reads exactly 0/0), swept over 3/5/10
+trees, both blocks:
+
+| trees | TUNE | HOLDOUT | pooled net | p |
+| --- | --- | --- | --- | --- |
+| x3 | 52.2% | 48.5% | −31 | 0.075 |
+| x5 | 54.0% | 49.5% | −20 | 0.185 |
+| x10 | 52.0% | 50.2% | −25 | 0.066 |
+
+**Every tree count lost to `paired` on every block.** Unlike ISMCTS this never
+had a positive phase - it read negative on the very first arm of the very first
+block, which makes it a more trustworthy negative despite neither individual
+result clearing significance alone.
+
+Caveat worth keeping: at 40 total simulations split across even 3 trees, each
+tree gets only ~13 iterations - likely too few to expand meaningfully before the
+budget is gone. So this rules out ensemble *at this simulation budget*, not the
+mechanism in general; a result at 200+ simulations per decision (splitting to a
+still-workable ~20-65 per tree) has not been measured and would be needed before
+concluding the competition-winning approach genuinely does not transfer here.
+`ROOT_SAMPLING_MODE` stays `paired`.
+
 ### What this does and does not rule out
 
 - **Ruled out:** that root-only determinization was the binding constraint on

@@ -89,12 +89,25 @@ to the threshold, run a third block before believing it.
 
 Structurally, ISMCTS is not ruled out forever - only the specific choice of
 pooling statistics in one tree across determinizations, at depth 2-3, with these
-UCB settings, on this game. See **ensemble determinization**
-(`ROOT_SAMPLING_MODE="ensemble"`) for the other design point in the same space:
-N independent trees per determinization, combined only at the root instead of
-sharing statistics below it - the approach with actual competition-winning
-precedent for a two-player deckbuilder. Being A/B'd; not yet resolved as of this
-writing.
+UCB settings, on this game.
+
+**Ensemble determinization also lost.** N independent trees per determinization,
+combined only at the root (`ROOT_SAMPLING_MODE="ensemble"`, the approach with
+competition-winning precedent for a two-player deckbuilder) - swept at 3/5/10
+trees, fixed 40 sims, both blocks. Every tree count lost to `paired` on every
+block (pooled net −20 to −31, best p=0.066). Unlike ISMCTS this was never
+positive, which makes it the more trustworthy negative of the two. Caveat: at
+40 total sims split across even 3 trees, each tree gets only ~13 iterations,
+likely too few to expand meaningfully - this rules out ensemble *at this
+budget*, not necessarily at 200+ sims/decision, which has not been tested.
+`ROOT_SAMPLING_MODE` stays `paired` either way.
+
+So both ways of sharing information across determinizations - pool it in one
+tree (ISMCTS), or don't pool it at all (ensemble) - lose to the simplest option,
+a depth-1 fan with common random numbers, at the simulation counts this bot
+actually gets. If this thread is picked up again, test ensemble at a
+simulation count large enough for each tree to build real depth before
+concluding the mechanism itself does not transfer.
 
 Depth matters and the mechanism explains it: at 60ms depth 2 builds ~12 interior
 nodes and depth 3 builds ~29, which over ~50 iterations is ~4 visits per node
