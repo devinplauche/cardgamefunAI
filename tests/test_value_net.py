@@ -132,6 +132,27 @@ class TestRolloutWiring(unittest.TestCase):
             raw = self.bot_module._rollout(session)
         self.assertAlmostEqual(self.bot_module._search_utility(raw), 0.7, places=3)
 
+    def test_extreme_confidence_does_not_crash_the_inversion(self):
+        """Regression: _search_utility's NONTERMINAL branch maps into the open
+        interval (0.1, 0.9), not (0, 1). Training labels include exact 0.0/1.0
+        from rollouts that reach a real terminal (most of them), so the network
+        legitimately predicts outside (0.1, 0.9) whenever confident - the first
+        real A/B run crashed on `math.atanh` for exactly this reason. Any
+        utility in the network's full output range must round-trip finitely."""
+        from unittest.mock import patch
+
+        session = create_session(seed=1)
+        for extreme in (0.001, 0.01, 0.1, 0.9, 0.99, 0.999):
+            with self.subTest(utility=extreme):
+                self.bot_module.LEAF_EVAL_MODE = "value_net"
+                with patch.object(self.bot_module, "_load_value_net",
+                                  return_value=_ConstantModel(extreme)):
+                    raw = self.bot_module._rollout(session)
+                self.assertTrue(math.isfinite(raw))
+                self.assertLess(abs(raw), self.bot_module.WIN_SCORE,
+                                "a nonterminal prediction must never reach the "
+                                "terminal win-score magnitude")
+
     def test_terminal_states_bypass_the_network_entirely(self):
         from unittest.mock import patch
 

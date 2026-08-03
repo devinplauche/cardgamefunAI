@@ -939,8 +939,15 @@ def _value_net_raw_score(session) -> float:
 
     model = _load_value_net()
     utility = model.predict(extract_features(session))
-    utility = min(max(utility, 1e-4), 1 - 1e-4)  # keep arctanh finite
-    return 250.0 * math.atanh((utility - 0.5) / 0.4)
+    # _search_utility's NONTERMINAL branch is 0.5 + 0.4*tanh(raw/250), whose
+    # image is the OPEN interval (0.1, 0.9) - not (0, 1). Training labels
+    # average in exact 0.0/1.0 from rollouts that reach a real terminal (most
+    # of them, per the horizon measurement), so the network legitimately learns
+    # to predict outside (0.1, 0.9) whenever it is confident. Clamping
+    # `utility` itself still lets the atanh argument approach +-1 and diverge;
+    # the argument is what must be bounded away from +-1.
+    z = min(max((utility - 0.5) / 0.4, -0.999), 0.999)
+    return 250.0 * math.atanh(z)
 
 
 def legal_actions(session) -> list[dict[str, Any]]:
