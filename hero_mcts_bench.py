@@ -147,6 +147,9 @@ def main():
                          "ensemble (N independent trees, combined at the root)")
     ap.add_argument("--ensemble-trees", type=int, default=None,
                     help="determinizations to build separate trees for (ensemble only)")
+    ap.add_argument("--leaf-eval", choices=["rollout", "value_net"], default="rollout",
+                    help="rollout: play the game forward (default); value_net: a trained "
+                         "network forward pass (hero_value_net.py) instead of a playout")
     ap.add_argument("--ismcts-depth", type=int, default=None,
                     help="searched bot decisions below the root (ismcts only)")
     ap.add_argument("--ismcts-exploration", type=float, default=None,
@@ -201,6 +204,12 @@ def main():
     bot_module.ISMCTS_OPPONENT_NODES = args.ismcts_opponent_nodes
     if args.ensemble_trees is not None:
         bot_module.ENSEMBLE_TREES = args.ensemble_trees
+    bot_module.LEAF_EVAL_MODE = args.leaf_eval
+    if args.leaf_eval == "value_net":
+        # Load the ~330ms npz once, here - never inside a budgeted search.
+        # See web/bot.py:warm_value_net for why an unwarmed first call
+        # silently returns iterations=0 rather than just running slowly.
+        bot_module.warm_value_net()
     if args.ismcts_depth is not None:
         bot_module.ISMCTS_MAX_DEPTH = args.ismcts_depth
     if args.ismcts_exploration is not None:
@@ -224,6 +233,7 @@ def main():
           f"ismcts_exploration={bot_module.ISMCTS_EXPLORATION} "
           f"ismcts_opponent_nodes={bot_module.ISMCTS_OPPONENT_NODES} "
           f"ensemble_trees={bot_module.ENSEMBLE_TREES} "
+          f"leaf_eval={bot_module.LEAF_EVAL_MODE} "
           f"game_phase_weight={bot_module.GAME_PHASE_WEIGHT} "
           f"override_gate={args.override_gate} override_margin={args.override_margin} "
           f"confidence_z={args.confidence_z} confidence_min_worlds={args.confidence_min_worlds} "

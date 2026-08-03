@@ -622,6 +622,16 @@ ROLLOUT_TURNS = 16
 # weights below. Kept switchable so the two can be benchmarked head to head.
 EVAL_MODE = "search"
 
+# "rollout" plays the game forward as it always has. "value_net" replaces the
+# playout with a trained network's forward pass - see hero_value_net.py and the
+# note on _rollout. Requires VALUE_NET_PATH to exist; default off, and the
+# search fails loudly rather than silently if the weights are missing, since a
+# quiet fallback to a different evaluator would make every result under this
+# mode incomparable to what it claims to measure.
+LEAF_EVAL_MODE = "rollout"
+VALUE_NET_PATH = "models_value/value_net_v1.npz"
+_VALUE_NET_CACHE: dict[str, Any] = {}
+
 # Phases worth spending search on. Play and champion phases are auto-resolved
 # greedily; see the note in choose_bot_action.
 SEARCHED_PHASES = ("buy", "combat")
@@ -878,6 +888,61 @@ def _search_utility(raw_score: float) -> float:
     return 0.5 + 0.4 * math.tanh(raw_score / 250.0)
 
 
+def _load_value_net():
+    from hero_value_net import TinyMLP
+
+    cached = _VALUE_NET_CACHE.get(VALUE_NET_PATH)
+    if cached is None:
+        cached = TinyMLP.load(VALUE_NET_PATH)
+        _VALUE_NET_CACHE[VALUE_NET_PATH] = cached
+    return cached
+
+
+def warm_value_net() -> None:
+    """Load the value net now, not on the first budgeted search.
+
+    Loading `VALUE_NET_PATH` from disk costs ~330ms - almost entirely numpy's
+    npz-read overhead, not the model itself (a cached call runs in ~0.1ms). At
+    a 60ms search budget, paying that on the first live decision doesn't just
+    slow it down: `_paired_root_rounds` discards an incomplete round entirely,
+    so the whole decision returns `iterations=0` and silently falls back to
+    whatever zero-iteration behaviour the caller has. Any caller that sets
+    `LEAF_EVAL_MODE = "value_net"` - a benchmark, the web server at startup -
+    must call this first.
+    """
+    _load_value_net()
+
+
+def _value_net_raw_score(session) -> float:
+    """A raw HP-diff-scale score, so this is a drop-in replacement for
+    `_rollout`'s return value everywhere it is consumed.
+
+    Terminal states are read directly from the game, exactly as `evaluate_state`
+    does - the network was never trained on terminal positions and has nothing
+    useful to say about one. For a live position the network predicts a bounded
+    utility in (0, 1); `_search_utility` is inverted to recover the raw score
+    that would map back to it, which only has a defined inverse under
+    MCTS_UTILITY_MODE="bounded" (the shipped default) - value_net mode assumes
+    that pairing and asserts it rather than silently mis-scaling under "raw".
+    """
+    if session.winner == "bot":
+        return WIN_SCORE
+    if session.winner == "player":
+        return -WIN_SCORE
+    if session.winner == "draw":
+        return 0.0
+    assert MCTS_UTILITY_MODE == "bounded", (
+        "LEAF_EVAL_MODE='value_net' requires MCTS_UTILITY_MODE='bounded'; "
+        "the network's output has no defined inverse under 'raw'."
+    )
+    from hero_value_net import extract_features
+
+    model = _load_value_net()
+    utility = model.predict(extract_features(session))
+    utility = min(max(utility, 1e-4), 1 - 1e-4)  # keep arctanh finite
+    return 250.0 * math.atanh((utility - 0.5) / 0.4)
+
+
 def legal_actions(session) -> list[dict[str, Any]]:
     return session.legal_actions()
 
@@ -1121,7 +1186,26 @@ def _rollout(session, turn_limit: int | None = None, action_cap: int = 400,
     never simulated being hit and never saw a purchase come back around. Both
     seats are now played out. The bot retains its adaptive rollout policy; an
     observed opponent can instead use a public-information inferred profile.
+
+    LEAF_EVAL_MODE="value_net" replaces the entire playout with a forward pass
+    through a trained network (hero_value_net.py), returning immediately. The
+    playout is ~1.6ms; the network's forward pass is ~50us in isolation - but
+    the rest of a search iteration (clone, apply_action, node bookkeeping)
+    costs the same either way, so the *whole-decision* speedup measures ~13x
+    at 60ms (33 iterations -> 438), not the ~1000x the isolated numbers would
+    suggest. Still the mechanism ISMCTS and ensemble determinization were
+    starved of (as few as ~13 iterations per tree). Every call site is
+    unchanged; only this function branches, so the rest of the search is
+    oblivious to which evaluator is live.
+
+    MUST BE WARMED FIRST: `warm_value_net()` before any budgeted search uses
+    this mode, or the first live decision pays a ~330ms model-load cost inside
+    its own time budget - see that function's docstring for the specific
+    silent failure this causes. See hero_value_net.py's module docstring for
+    what the network is and is not expected to fix.
     """
+    if LEAF_EVAL_MODE == "value_net":
+        return _value_net_raw_score(session)
     # Read at call time, not bound as a default, so the constant stays tunable.
     turn_limit = ROLLOUT_TURNS if turn_limit is None else turn_limit
     if opponent_profile is None and OPPONENT_ROLLOUT_POLICY == "inferred":
