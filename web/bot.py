@@ -679,8 +679,41 @@ OPPONENT_MODEL_MIN_OBSERVATIONS = 2
 # it" instead of only "buy this, then play greedily to the horizon". The other
 # two modes are retained as A/B controls and "paired" remains the default until
 # ISMCTS is confirmed on held-out seeds at the shipped budget.
-ROOT_SAMPLING_MODE = "paired"  # "independent", "paired", or "ismcts"
+ROOT_SAMPLING_MODE = "paired"  # "independent", "paired", "ismcts", or "ensemble"
 PAIRED_ROOT_MAX_ACTIONS = 3
+
+# --- Ensemble determinization -----------------------------------------------
+#
+# The variant with the strongest external evidence, and structurally distinct
+# from ISMCTS in exactly one respect - whether statistics pool across worlds:
+#
+#   paired    one world per round, cloned per root action, depth 1, CRN
+#   ismcts    N worlds, ONE tree, statistics shared across determinizations
+#   ensemble  N worlds, N INDEPENDENT trees, combined only at the root
+#
+# The 2023 Tales of Tribute AI competition (a two-player deckbuilder, the
+# closest published analogue to this game) was won by root-parallelised MCTS
+# maintaining five trees, one per sampled seed. Ensemble determinization is also
+# what Cowling et al. report working for Magic: The Gathering.
+#
+# THE TRADEOFF, stated plainly because this codebase otherwise treats it as a
+# hard constraint: within a single tree the world is FIXED and fully known, so
+# that tree *can* condition on hidden information. This is strategy fusion, and
+# ensemble determinization accepts it deliberately. `paired` avoids fusion by
+# never going below depth 1; ISMCTS avoids it by keying nodes on public action
+# sequences. Ensemble buys depth by giving the guarantee up, and the literature
+# says the trade is empirically worth it. That claim is exactly what the A/B
+# tests here.
+#
+# Each tree is a deterministic planning problem: once the world is determinized,
+# the game is perfect-information, so a given action sequence yields one value
+# and there is nothing to average over within a tree. The averaging happens
+# across trees, at the root.
+ENSEMBLE_TREES = 5
+
+# Standard UCT constant. Within a tree the action set is fixed, so ISMCTS's
+# availability correction does not apply and plain parent-visit UCT is correct.
+ENSEMBLE_EXPLORATION = 1.35
 
 # --- ISMCTS (Cowling, Powley & Whitehouse 2012), single-observer -----------
 #
@@ -1583,6 +1616,122 @@ def _ismcts_rounds(session, root: Node, search_rng: random.Random,
     return iterations, iterations
 
 
+def _ensemble_iteration(tree_root: Node, world_template, opponent_profile: str | None,
+                        horizon_end: int) -> None:
+    """One iteration inside a single fixed-world tree.
+
+    The world is determinized once per tree and cloned per iteration, so within
+    a tree this is perfect-information MCTS on a deterministic game: a given
+    action sequence yields exactly one value. Plain parent-visit UCT is
+    therefore correct here - ISMCTS's availability correction exists to handle
+    an action set that varies between iterations, which cannot happen once the
+    world is fixed.
+    """
+    world = world_template.clone()
+    node = tree_root
+    path = [node]
+    depth = 0
+    actions = _search_actions(world)
+
+    while True:
+        untried = [action for action in actions
+                   if node.child_index.get(_action_key(action)) is None]
+        if untried:
+            child = _ismcts_child(node, untried[0], world.active_player)
+            apply_action(world, child.action)
+            path.append(child)
+            break
+
+        available = [node.child_index[_action_key(action)] for action in actions]
+        if not available:
+            break
+        child = max(available, key=lambda item: item.uct_score(
+            exploration=ENSEMBLE_EXPLORATION,
+            maximize=world.active_player == "bot"))
+        apply_action(world, child.action)
+        path.append(child)
+        node = child
+        depth += 1
+        if depth >= ISMCTS_MAX_DEPTH:
+            break
+        actions = _advance_to_decision(world, opponent_profile, horizon_end)
+        if actions is None:
+            break
+
+    raw_reward = _rollout(world, turn_limit=max(0, horizon_end - world.turn_number),
+                          opponent_profile=opponent_profile)
+    reward = _search_utility(raw_reward)
+    for item in path:
+        item.visits += 1
+        item.reward += reward
+        item.raw_reward += raw_reward
+
+
+def _merge_root(root: Node, tree_root: Node) -> None:
+    """Fold one tree's root statistics into the combined root.
+
+    Root-level vote combining: only the root children's totals cross between
+    trees. Nothing below the root is shared, which is the whole distinction
+    from ISMCTS.
+    """
+    for child in tree_root.children:
+        key = _action_key(child.action)
+        target = root.child_index.get(key)
+        if target is None:
+            target = _ismcts_child(root, child.action, child.actor)
+        target.visits += child.visits
+        target.reward += child.reward
+        target.raw_reward += child.raw_reward
+    root.visits += tree_root.visits
+    root.reward += tree_root.reward
+    root.raw_reward += tree_root.raw_reward
+
+
+def _ensemble_rounds(session, root: Node, search_rng: random.Random,
+                     start: float, budget_ms: int,
+                     max_iterations: int | None) -> tuple[int, int] | None:
+    """Ensemble determinization: N independent trees, combined at the root."""
+    if ROOT_SAMPLING_MODE != "ensemble":
+        return None
+    if len(root.untried_actions) < 2:
+        return None
+    root.untried_actions = []
+    horizon_end = session.turn_number + ROLLOUT_TURNS
+    trees = max(1, ENSEMBLE_TREES)
+    per_tree = max_iterations // trees if max_iterations is not None else None
+    iterations = 0
+    worlds = 0
+
+    for index in range(trees):
+        if max_iterations is None and (perf_counter() - start) * 1000 >= budget_ms:
+            break
+        if per_tree is not None and per_tree <= 0:
+            break
+        try:
+            world = session.determinize_for_bot(search_rng)
+        except ValueError:
+            # Same fail-closed contract as the other modes: no search estimate
+            # is preferable to one drawn from live opponent private zones.
+            return 0, 0
+        opponent_profile = _sample_rollout_opponent_profile(world, search_rng)
+        tree_root = Node(action=None)
+        # Wall-clock mode splits the budget evenly, so a slow tree cannot starve
+        # the rest of the ensemble and leave the vote dominated by one world.
+        slice_deadline = budget_ms * (index + 1) / trees
+        done = 0
+        while (done < per_tree if per_tree is not None
+               else (perf_counter() - start) * 1000 < slice_deadline):
+            _ensemble_iteration(tree_root, world, opponent_profile, horizon_end)
+            done += 1
+        if not done:
+            continue
+        _merge_root(root, tree_root)
+        iterations += done
+        worlds += 1
+
+    return iterations, worlds
+
+
 def _tree_size(root: Node) -> int:
     return 1 + sum(_tree_size(child) for child in root.children)
 
@@ -1645,15 +1794,21 @@ def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts",
     search_rng = random.Random(
         f"mcts:{session.seed}:{session.turn_number}:{session.active_player}:{session.phase}"
     )
-    ismcts_result = _ismcts_rounds(
+    ensemble_result = _ensemble_rounds(
+        session, root, search_rng, start, budget_ms, max_iterations,
+    )
+    ensemble = ensemble_result is not None
+    ismcts_result = None if ensemble else _ismcts_rounds(
         session, root, search_rng, start, budget_ms, max_iterations,
     )
     ismcts = ismcts_result is not None
-    paired_result = None if ismcts else _paired_root_rounds(
+    paired_result = None if (ensemble or ismcts) else _paired_root_rounds(
         session, root, search_rng, start, budget_ms, max_iterations,
     )
     paired = paired_result is not None
-    if ismcts:
+    if ensemble:
+        iterations, sampled_worlds = ensemble_result
+    elif ismcts:
         iterations, sampled_worlds = ismcts_result
     elif paired:
         iterations, sampled_worlds = paired_result
@@ -1740,7 +1895,9 @@ def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts",
         "score": round(best_score, 3),
         "iterations": iterations,
         "worlds": sampled_worlds,
-        "rootSampling": "ismcts" if ismcts else ("paired" if paired else "independent"),
+        "rootSampling": ("ensemble" if ensemble else
+                         "ismcts" if ismcts else
+                         "paired" if paired else "independent"),
         "treeNodes": _tree_size(root),
         "selection": selection,
         "utilityAdvantage": (round(utility_advantage, 6)

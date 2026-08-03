@@ -1351,6 +1351,133 @@ class TestISMCTS(unittest.TestCase):
         self.assertEqual(result["iterations"], 0)
 
 
+class TestEnsembleDeterminization(unittest.TestCase):
+    """N independent trees, one per determinization, combined only at the root.
+
+    Structurally distinct from ISMCTS in exactly one respect: ISMCTS pools
+    statistics across determinizations inside one tree; ensemble keeps them
+    separate and votes at the root. That difference is what these tests pin.
+
+    The approach is the one with external evidence behind it - it won the 2023
+    Tales of Tribute AI competition (a two-player deckbuilder) as
+    root-parallelised MCTS over five per-seed trees, and Cowling et al. report
+    it working for Magic: The Gathering.
+    """
+
+    def setUp(self):
+        import web.bot as bot_module
+
+        self.bot_module = bot_module
+        for name in ("ROOT_SAMPLING_MODE", "ISMCTS_MAX_DEPTH", "ENSEMBLE_TREES",
+                     "MCTS_BUY_ROOT_WIDTH", "BUY_POLICY"):
+            self.addCleanup(setattr, bot_module, name, getattr(bot_module, name))
+        bot_module.ROOT_SAMPLING_MODE = "ensemble"
+        bot_module.ISMCTS_MAX_DEPTH = 2
+        bot_module.ENSEMBLE_TREES = 5
+        bot_module.MCTS_BUY_ROOT_WIDTH = 3
+        bot_module.BUY_POLICY = "static"
+
+    @staticmethod
+    def _buy_state(seed=41, gold=8):
+        session = create_session(seed=seed, algorithm="mcts")
+        session.active_player = "bot"
+        session.phase = "buy"
+        session.bot.gold = gold
+        return session
+
+    @staticmethod
+    def _run(session, iterations):
+        from web.bot import Node, _ensemble_rounds, _search_actions
+
+        actions = _search_actions(session)
+        root = Node(action=None, untried_actions=actions[:])
+        result = _ensemble_rounds(session, root, random.Random(7), 0.0, 10_000, iterations)
+        return root, actions, result
+
+    @staticmethod
+    def _walk(node, depth=0):
+        yield depth, node
+        for child in node.children:
+            yield from TestEnsembleDeterminization._walk(child, depth + 1)
+
+    def test_budget_is_split_across_independent_trees(self):
+        session = self._buy_state()
+        root, _, (iterations, worlds) = self._run(session, 100)
+        self.assertEqual(iterations, 100)
+        self.assertEqual(worlds, self.bot_module.ENSEMBLE_TREES)
+        self.assertEqual(sum(c.visits for c in root.children), 100,
+                         "every simulation must land in exactly one root child")
+
+    def test_only_the_root_is_shared_between_trees(self):
+        """The defining property. Nothing below the root crosses trees, or this
+        would be ISMCTS with extra steps."""
+        session = self._buy_state()
+        root, actions, _ = self._run(session, 100)
+        self.assertEqual(max(d for d, _ in self._walk(root)), 1)
+        self.assertLessEqual(len(root.children), len(actions))
+        for child in root.children:
+            self.assertEqual(child.children, [])
+
+    def test_each_tree_builds_real_depth_internally(self):
+        """The merged root is flat, but the trees it was built from are not -
+        otherwise this degenerates to the paired depth-1 fan."""
+        from web.bot import Node, _ensemble_iteration, _sample_rollout_opponent_profile
+
+        self.bot_module.ISMCTS_MAX_DEPTH = 3
+        session = self._buy_state(gold=3)
+        rng = random.Random(1)
+        world = session.determinize_for_bot(rng)
+        profile = _sample_rollout_opponent_profile(world, rng)
+        tree = Node(action=None)
+        for _ in range(60):
+            _ensemble_iteration(tree, world, profile,
+                                session.turn_number + self.bot_module.ROLLOUT_TURNS)
+        self.assertGreaterEqual(max(d for d, _ in self._walk(tree)), 2)
+
+    def test_tree_count_changes_the_number_of_determinizations(self):
+        session = self._buy_state()
+        seen = {}
+        for trees in (2, 5):
+            self.bot_module.ENSEMBLE_TREES = trees
+            _, _, (_, worlds) = self._run(self._buy_state(), 100)
+            seen[trees] = worlds
+        self.assertEqual(seen, {2: 2, 5: 5})
+
+    def test_reports_its_mode_and_is_reproducible(self):
+        first = choose_bot_action(self._buy_state(), algorithm="mcts", max_iterations=100)
+        second = choose_bot_action(self._buy_state(), algorithm="mcts", max_iterations=100)
+        self.assertEqual(first["rootSampling"], "ensemble")
+        self.assertEqual(first["worlds"], self.bot_module.ENSEMBLE_TREES)
+        for result in (first, second):
+            result.pop("elapsedMs", None)
+        self.assertEqual(first, second)
+
+    def test_unfair_determinization_falls_back_to_the_public_heuristic(self):
+        """Same fail-closed contract as every other sampling mode."""
+        from hero_engine import HRCard
+
+        session = self._buy_state(seed=7)
+        session.bot.hand[0] = HRCard(id="unknown-public", name="Unknown Public",
+                                     cost=0, faction="", card_type="action")
+        expected = _heuristic_rollout_action(session)
+        result = choose_bot_action(session, algorithm="mcts", max_iterations=20)
+        self.assertEqual(result["type"], expected["type"])
+        self.assertEqual(result["iterations"], 0)
+
+    def test_plays_a_full_game_returning_legal_actions(self):
+        random.seed(3)
+        session = create_session(seed=3, algorithm="mcts", budget_ms=15)
+        for _ in range(300):
+            if session.winner:
+                break
+            if session.active_player == "bot":
+                action = choose_bot_action(session, budget_ms=15, algorithm="mcts")
+                self.assertIn(action["type"], {a["type"] for a in session.legal_actions()})
+                apply_action(session, action)
+            else:
+                apply_action(session, _heuristic_rollout_action(session))
+
+
 class TestDefaultPolicyExtraction(unittest.TestCase):
     """The tree descent and the rollout must share one default policy.
 

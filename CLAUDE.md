@@ -113,6 +113,35 @@ nodes and depth 3 builds ~29, which over ~50 iterations is ~4 visits per node
 versus 1.7. Depth 3 measured −1.2pp; the tree becomes noise when spread that
 thin.
 
+## Prior art worth knowing before inventing something
+
+Gathered 2026-08-01. This project had explored almost entirely inward.
+
+- **Tales of Tribute AI Competition** (arXiv 2305.08234) is the closest
+  published analogue — a *two-player* deckbuilder. The 2023 winner used
+  **root-parallelised MCTS with five trees, one per sampled seed**, feature
+  weights tuned by an evolutionary algorithm. Its UCT took the **maximum rather
+  than the average** on backup ("counterintuitive but tested better"). Its top
+  three agents showed rock-paper-scissors behaviour with no clear winner, which
+  mirrors this project's six-methods-one-band result.
+- **Ensemble determinization** (Cowling et al., Magic: The Gathering) — multiple
+  trees, one per determinization, combined only at the root; significant gains
+  over basic determinized MCTS. Structurally *not* ISMCTS: ISMCTS pools
+  statistics across worlds in one tree, ensemble keeps them separate and votes.
+- **Dominion** (Springer 978-3-319-19066-2_5) — MCTS/UCT reached **67%** against
+  a strong finite-state agent that moved first. Deckbuilder MCTS can reach far
+  wider margins than the ~5pp seen here.
+- **Temple Gates' shipped Dominion AI** — AlphaZero-style: a network supplies
+  both value and branch priors, trained by self-play RL. Their reported
+  breakthrough was an **embedding representing cards by attributes** rather than
+  identity. (`hero_rl_env_v4` does that by hand and measured null, which weakly
+  suggests the null was about the policy, not the features.)
+
+Recurring theme: **MCTS coupled with a learned value function**, not MCTS with a
+hand-written rollout. That combination is the main untried thing here — this
+repo has built policies (V16-V21) and built search, and never joined them.
+Slay the Spire work has largely moved to LLM agents and is less applicable.
+
 ## Current defaults and how well each is evidenced
 
 | knob | value | evidence |

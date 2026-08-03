@@ -140,9 +140,13 @@ def main():
                     help="seat-turns simulated per rollout (default: web.bot.ROLLOUT_TURNS)")
     ap.add_argument("--utility", choices=["bounded", "raw"], default="bounded",
                     help="UCB reward scale: bounded is the production default; raw is a legacy A/B control")
-    ap.add_argument("--root-sampling", choices=["independent", "paired", "ismcts"], default="paired",
-                    help="independent UCB, paired common-random-number root rounds, "
-                         "or a persistent information-set tree")
+    ap.add_argument("--root-sampling",
+                    choices=["independent", "paired", "ismcts", "ensemble"], default="paired",
+                    help="independent UCB; paired common-random-number root rounds; "
+                         "ismcts (one tree, stats pooled across determinizations); "
+                         "ensemble (N independent trees, combined at the root)")
+    ap.add_argument("--ensemble-trees", type=int, default=None,
+                    help="determinizations to build separate trees for (ensemble only)")
     ap.add_argument("--ismcts-depth", type=int, default=None,
                     help="searched bot decisions below the root (ismcts only)")
     ap.add_argument("--ismcts-exploration", type=float, default=None,
@@ -195,6 +199,8 @@ def main():
     bot_module.MCTS_UTILITY_MODE = args.utility
     bot_module.ROOT_SAMPLING_MODE = args.root_sampling
     bot_module.ISMCTS_OPPONENT_NODES = args.ismcts_opponent_nodes
+    if args.ensemble_trees is not None:
+        bot_module.ENSEMBLE_TREES = args.ensemble_trees
     if args.ismcts_depth is not None:
         bot_module.ISMCTS_MAX_DEPTH = args.ismcts_depth
     if args.ismcts_exploration is not None:
@@ -217,6 +223,7 @@ def main():
           f"ismcts_depth={bot_module.ISMCTS_MAX_DEPTH} "
           f"ismcts_exploration={bot_module.ISMCTS_EXPLORATION} "
           f"ismcts_opponent_nodes={bot_module.ISMCTS_OPPONENT_NODES} "
+          f"ensemble_trees={bot_module.ENSEMBLE_TREES} "
           f"game_phase_weight={bot_module.GAME_PHASE_WEIGHT} "
           f"override_gate={args.override_gate} override_margin={args.override_margin} "
           f"confidence_z={args.confidence_z} confidence_min_worlds={args.confidence_min_worlds} "
