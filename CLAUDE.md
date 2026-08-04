@@ -61,6 +61,15 @@ are lost. Prefer it for diagnosis; use win rate only for final acceptance.
 - **More search compute** — saturates by ~240ms; 960ms buys nothing.
 - **Rollout horizon** 16 vs 24 vs 32 — null over 2800 games and four blocks.
 - **Banning Fire Gem** — flips 20-30% of games, nets zero.
+- **Widening the buy root** (`MCTS_BUY_ROOT_WIDTH` 3 → 5 → unlimited) — costs
+  **9-11pp**, monotone, two significant arms (p=0.002, p=0.001). The narrowing
+  is load-bearing, not a constraint: at ~33 iterations/decision, splitting the
+  budget over more branches starves all of them. Same breadth-vs-depth wall as
+  ISMCTS and ensemble, on a depth-1 tree.
+- **The `or_choice` double-count fix in `_buy_priority`** — genuinely a bug
+  (Street Thug and Cult Priest were scored as if both mutually exclusive
+  branches fire), genuinely worth nothing: nets +2, exactly the null. Two of 55
+  cards is too little surface.
 
 ## ISMCTS is settled: negative, at equal simulation counts
 

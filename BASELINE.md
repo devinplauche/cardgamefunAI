@@ -1665,6 +1665,45 @@ the mechanism read is that leaf noise compounds through UCB selection faster
 than raw iteration count can average it out - but that is inference, not a
 second measurement.
 
+## Root narrowing is load-bearing: widening it costs ~10pp
+
+`_root_search_actions` narrows buy options to the top `MCTS_BUY_ROOT_WIDTH`
+(default 3) by `_buy_priority` before the tree runs. Measured first: **48.5% of
+buy decisions have more than 3 affordable options, and in every one of those at
+least one legal card is excluded from search entirely** - MCTS never sees it,
+at any iteration count.
+
+That looked like a constraint worth removing. It is the opposite.
+`hero_buy_priority_ab.py`, wall clock, 400 games/arm, block 1000+:
+
+| arm | win rate | vs control | p |
+| --- | --- | --- | --- |
+| width=3 (SHIP) | 58.0% | - | - |
+| null replicate | 58.5% | 18/16 | 0.864 |
+| or_choice fix | 58.5% | 30/28 | 0.896 |
+| **width=5** | **48.8%** | 47/84 | **0.002** |
+| **width=0 (unlimited)** | **47.0%** | 62/106 | **0.001** |
+
+Monotone (58.0 -> 48.8 -> 47.0), two independently significant arms, against a
+null floor of +2 discordant games. At ~33 iterations per decision, three
+branches is already thin; five or unlimited splits the budget past the point
+where any branch accumulates enough visits to mean anything. **The same
+breadth-versus-depth wall that killed ISMCTS and ensemble determinization, now
+measured on the simplest possible tree.** `MCTS_BUY_ROOT_WIDTH` stays 3.
+
+The conclusion inverts rather than closing the thread: since the bot *must*
+narrow to three, **which three survive is critical**, and `_buy_priority` is
+what decides that. See `hero_buy_fit.py`.
+
+### The or_choice double-count fix is correct and worth nothing
+
+`_buy_priority` summed mutually exclusive `or_choice` branches, scoring Street
+Thug and Cult Priest as if both fired every activation. Fixed behind
+`FIX_OR_CHOICE_DOUBLE_COUNT`. It changes real behaviour - 58 discordant games
+against the null's 34 - and nets **+2, identical to the null**. Two of 55 cards
+is not enough surface to move a win rate. Keep it for correctness; expect
+nothing from it. Default stays False pending a reason to flip it.
+
 ## RL vs MCTS, head to head
 
 `hero_rl_vs_mcts.py`, 30 games per policy, sides split evenly, MCTS in its
