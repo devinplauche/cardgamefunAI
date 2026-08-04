@@ -83,6 +83,26 @@ are lost. Prefer it for diagnosis; use win rate only for final acceptance.
   objective and a third of the parameters, which suggests it is a property of
   fitting this valuation rather than of that run's setup.
 
+### The regret oracle cannot evaluate the override gate
+
+`hero_regret.py`'s oracle is `choose_bot_action` at a high simulation count -
+it *is* search. That is fine for "which card is better", where both candidates
+are scored by the same yardstick and no bias falls between them. It is invalid
+for "should I trust search or the heuristic", because the oracle systematically
+agrees with search's own preference.
+
+Measured, and the contradiction is the proof: by oracle regret, search alone
+(0.550 HP) beats the shipped gate (0.939 HP), implying the gate should trust
+search far more. By win rate, the gate sweep found an inverted U peaking at the
+shipped ~9% override rate, with unguarded (41%) at 53.5% against the gate's
+57.0%. Win rate is ground truth here; the oracle is measuring its own algorithm.
+
+So gate calibration has no cheap ceiling measurement and would need win-rate
+evidence, which at ~3pp effects needs thousands of games. The existing sweep
+already indicates the global threshold is at or near its optimum, and the curve
+is flat across 9-21% override rate (57.0 / 55.0 / 55.0), so the headroom for a
+*learned* per-decision gate is real but unquantified and probably small.
+
 **Do not tune buy valuation again without first checking the ceiling.**
 `hero_regret.py` and `hero_buy_fit.py` both answer "how much is even available
 here" in about a minute. Four separate attempts have now died against a
