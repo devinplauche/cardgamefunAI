@@ -67,9 +67,12 @@ are lost. Prefer it for diagnosis; use win rate only for final acceptance.
   budget over more branches starves all of them. Same breadth-vs-depth wall as
   ISMCTS and ensemble, on a depth-1 tree.
 - **The `or_choice` double-count fix in `_buy_priority`** — genuinely a bug
-  (Street Thug and Cult Priest were scored as if both mutually exclusive
-  branches fire), genuinely worth nothing: nets +2, exactly the null. Two of 55
-  cards is too little surface.
+  (Street Thug and Cult Priest scored as if both mutually exclusive branches
+  fire), not demonstrably useful: pooled **+11 over 113 discordant pairs,
+  p=0.347** (+2 tuning, +9 held out). Disbelieved on effect size rather than
+  p-value — it touches 2 of 55 cards, and a *perfect* narrowing selector is
+  worth only 0.131 HP/decision, so there is no route to the +2.3pp the holdout
+  suggests. Kept behind its flag for correctness, default False.
 - **Refitting `_buy_priority`'s weights** (`hero_buy_fit.py`, zero-noise cached
   oracle, the fix for both failures diagnosed in `hero_cma_fit.py`). The
   top-3 already contains the oracle's best option **92.5%** of the time, so the

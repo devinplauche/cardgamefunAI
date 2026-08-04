@@ -1737,14 +1737,30 @@ time. Bribe being overrated and Elven Gift underrated changes the *order*
 inside the surviving set, not usually its *membership*, and the tree re-ranks
 the survivors anyway.
 
-### The or_choice double-count fix is correct and worth nothing
+### The or_choice double-count fix is correct and not demonstrably useful
 
 `_buy_priority` summed mutually exclusive `or_choice` branches, scoring Street
 Thug and Cult Priest as if both fired every activation. Fixed behind
 `FIX_OR_CHOICE_DOUBLE_COUNT`. It changes real behaviour - 58 discordant games
-against the null's 34 - and nets **+2, identical to the null**. Two of 55 cards
-is not enough surface to move a win rate. Keep it for correctness; expect
-nothing from it. Default stays False pending a reason to flip it.
+on tuning against the null's 34.
+
+| block | fix wins | control wins | net | p |
+| --- | --- | --- | --- | --- |
+| TUNE | 30 | 28 | +2 | 0.896 |
+| HOLDOUT | 32 | 23 | +9 | 0.281 |
+| **pooled** | 62 | 51 | **+11 / 113** | **0.347** |
+
+Positive on both blocks, needs net > 21 for p<0.05 and has 11. **Not
+promotable**, and the reason to disbelieve it is mechanistic rather than
+statistical: the fix touches 2 of 55 cards, while a *perfect* narrowing
+selector - the absolute ceiling for this whole class of change - is worth
+0.131 HP per buy decision, roughly 1.5 HP per game out of 50. There is no route
+by which a two-card ordering tweak is worth the +2.3pp the holdout block shows.
+That is the shape of ISMCTS's false positive (+19, +26 pooled, p=0.099, then
+−7 over 611 pairs), and the effect-size implausibility is the stronger tell.
+
+Keep the fix for correctness. Default stays False; flipping it needs a reason
+better than a p=0.35 that contradicts a measured ceiling.
 
 ## RL vs MCTS, head to head
 
