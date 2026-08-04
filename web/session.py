@@ -43,7 +43,7 @@ PHASES = ("play", "champion", "buy", "combat")
 # and the five hardcoded starting/Fire Gem cards (verified: 60 cards, no
 # duplicate ids, no id with conflicting stats).
 _PLAY_PRIORITY_CACHE: dict[str, int] = {}
-_BUY_PRIORITY_CACHE: dict[str, float] = {}
+_BUY_PRIORITY_CACHE: dict[tuple[str, bool], float] = {}
 
 
 def _play_priority(card: HRCard) -> int:
@@ -56,22 +56,52 @@ def _play_priority(card: HRCard) -> int:
     return cached
 
 
+# Default False reproduces the historical formula exactly - see the note on
+# FIX_OR_CHOICE_DOUBLE_COUNT below. Never flip a default here without an A/B;
+# this project has repeatedly measured "obviously correct" buy-valuation
+# changes as negative (BASELINE.md, "the holistic buy valuation makes the bot
+# worse").
+FIX_OR_CHOICE_DOUBLE_COUNT = False
+
+
 def _buy_priority(card: HRCard) -> float:
-    cached = _BUY_PRIORITY_CACHE.get(card.id)
+    # Keyed on the flag too: it is a runtime-togglable knob for A/B testing
+    # (hero_buy_priority_ab.py), and the cache must not serve a value computed
+    # under the other setting.
+    cache_key = (card.id, FIX_OR_CHOICE_DOUBLE_COUNT)
+    cached = _BUY_PRIORITY_CACHE.get(cache_key)
     if cached is None:
         eff = card.effects
         import hero_weights as W
 
-        cached = (card.cost * W.get("buy_cost")
-                  + eff.get("combat", 0) * W.get("buy_combat")
-                  + eff.get("gold", 0) * W.get("buy_gold")
-                  + eff.get("draw", 0) * W.get("buy_draw"))
+        or_choice = eff.get("or_choice", []) if FIX_OR_CHOICE_DOUBLE_COUNT else []
+        if or_choice:
+            # Branches are mutually exclusive at resolution time (see
+            # expend_champion's or_choice handling in hero_engine.py, and the
+            # matching fix in _holistic_card_score). Summing every listed
+            # field credits value that can never all be realised from one
+            # activation - Street Thug and Cult Priest ({gold:1, combat:2/1,
+            # or_choice:[gold,combat]}) were unconditionally scored as if they
+            # granted both every time. Only combat/gold/draw participate,
+            # matching what _buy_priority has ever priced - health was never
+            # in this formula (see hero_weights.py's docstring), so a
+            # combat/health or_choice like Darian, War Mage's is unaffected.
+            branch_weights = {"combat": W.get("buy_combat"), "gold": W.get("buy_gold"),
+                              "draw": W.get("buy_draw")}
+            resource = max((eff.get(kind, 0) * branch_weights[kind]
+                           for kind in or_choice if kind in branch_weights),
+                          default=0.0)
+        else:
+            resource = (eff.get("combat", 0) * W.get("buy_combat")
+                       + eff.get("gold", 0) * W.get("buy_gold")
+                       + eff.get("draw", 0) * W.get("buy_draw"))
+        cached = card.cost * W.get("buy_cost") + resource
         ally = (eff.get("ally_combat", 0) + eff.get("ally_gold", 0)
                 + eff.get("ally_health", 0) + eff.get("ally_draw", 0))
         cached += ally * W.get("buy_ally")
         if eff.get("sacrifice_card"):
             cached += W.get("buy_sacrifice")
-        _BUY_PRIORITY_CACHE[card.id] = cached
+        _BUY_PRIORITY_CACHE[cache_key] = cached
     return cached
 
 
