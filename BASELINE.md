@@ -1695,6 +1695,48 @@ The conclusion inverts rather than closing the thread: since the bot *must*
 narrow to three, **which three survive is critical**, and `_buy_priority` is
 what decides that. See `hero_buy_fit.py`.
 
+### Refitting _buy_priority: the ceiling is 0.13 HP, so there is nothing here
+
+The narrowing being load-bearing implied *which* three options survive matters,
+and `_buy_priority` decides that. `hero_buy_fit.py` fits its six weights against
+a cached oracle - zero-variance objective (score every option once with
+`MCTS_BUY_ROOT_WIDTH=0`, then evaluating a weight vector is a dot product),
+minimising the value the top-K narrowing throws away. This is the fix for both
+failures `BASELINE.md` diagnosed in `hero_cma_fit.py` (4.5pp noise per
+evaluation; 17 parameters where only 6 touch buy ordering).
+
+It works as designed and the answer is that the quantity barely exists. Over 400
+sampled positions, oracle at 480 sims, no narrowing:
+
+| | |
+| --- | --- |
+| top-3 by `_buy_priority` contains the oracle's best option | **92.5%** |
+| top-1 by `_buy_priority` **is** the oracle's best option | 55.0% |
+| value lost by width-3 narrowing | **0.131 HP** per buy decision |
+| total stakes in a buy decision (best minus worst option) | 5.21 HP |
+| → narrowing throws away | **2.5%** of available value |
+
+**0.131 HP per decision is the ceiling**, reachable only by a perfect selector.
+At ~12 buy decisions per game that is ~1.5 HP out of 50 - far below anything
+this project can resolve, since the wall-clock noise floor alone is worth
+several HP. No A/B was run: the ceiling makes the result a foregone conclusion
+and an hour of benchmarking would only confirm it slowly.
+
+The fit itself overfits in the textbook way - 4.7x improvement on the fit set
+(0.00217 → 0.00046) against 1.07x held out (0.00194 → 0.00180) - and produces
+`buy_gold = -7.01`, a *negative* weight on gold. That is the same sign-flip
+pathology recorded for the original CMA-ES run ("prices gold at −4.56, draw at
+−1.22 ... sign flips that contradict the game"), reproduced with a different
+objective and a third of the parameters, which suggests the pathology is a
+property of fitting this valuation at all rather than of that run's setup.
+
+This also explains `hero_card_audit.py`'s finding. Mean |gap| of 0.26 in
+within-position percentile ranking is real, but percentile mis-ranking is
+almost irrelevant when the top-3 still contains the best option 92.5% of the
+time. Bribe being overrated and Elven Gift underrated changes the *order*
+inside the surviving set, not usually its *membership*, and the tree re-ranks
+the survivors anyway.
+
 ### The or_choice double-count fix is correct and worth nothing
 
 `_buy_priority` summed mutually exclusive `or_choice` branches, scoring Street

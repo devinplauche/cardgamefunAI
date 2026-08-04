@@ -70,6 +70,20 @@ are lost. Prefer it for diagnosis; use win rate only for final acceptance.
   (Street Thug and Cult Priest were scored as if both mutually exclusive
   branches fire), genuinely worth nothing: nets +2, exactly the null. Two of 55
   cards is too little surface.
+- **Refitting `_buy_priority`'s weights** (`hero_buy_fit.py`, zero-noise cached
+  oracle, the fix for both failures diagnosed in `hero_cma_fit.py`). The
+  top-3 already contains the oracle's best option **92.5%** of the time, so the
+  narrowing loses **0.131 HP per buy decision out of 5.21 HP of stakes (2.5%)**.
+  That 0.131 HP is the ceiling for a *perfect* selector — ~1.5 HP per game,
+  below this project's noise floor. Not worth an A/B. The fit also reproduces
+  the old CMA-ES sign-flip pathology (`buy_gold = −7.01`) with a different
+  objective and a third of the parameters, which suggests it is a property of
+  fitting this valuation rather than of that run's setup.
+
+**Do not tune buy valuation again without first checking the ceiling.**
+`hero_regret.py` and `hero_buy_fit.py` both answer "how much is even available
+here" in about a minute. Four separate attempts have now died against a
+headroom that was small before any of them started.
 
 ## ISMCTS is settled: negative, at equal simulation counts
 
