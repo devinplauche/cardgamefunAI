@@ -238,10 +238,20 @@ buy and attack **in any order, as many times as able**.
 Measured consequence: Deception's Guild ally (`to_hand`) sets
 `next_buy_to_hand` correctly and the bought card really does land in hand — but
 by then only `buy_card` and `advance_phase` are legal, so it can never be
-played and is discarded unused. The ally is a no-op. Every "acquire to hand /
-to top of deck this turn" effect is degraded the same way (Deception, Bribe,
-anything with `top_of_deck`), and any line that wants to buy-then-use, or
-attack before buying, is unrepresentable.
+played and is discarded unused. **The ally is a no-op.** Bribe and Rasmus
+(`top_of_deck`) are *degraded* rather than dead — the card survives to next
+turn's draw but loses the same-turn replay. Any line that wants to buy-then-use,
+or attack before buying, is unrepresentable.
+
+These are precisely the hard-to-assemble, high-payoff Guild tempo lines (they
+need Guild in play *plus* enough gold for a worthwhile target), so the loss is
+concentrated in the plays that matter most when they land.
+
+**This contaminates `hero_card_audit.py`.** It found Bribe overrated (policy
+0.56 vs oracle 0.06, the table's largest gap) — but the oracle is search
+running *in this engine*, where Bribe's ally is degraded, so it is correctly
+pricing a diminished card. Treat any per-card conclusion about Guild
+acquire-effects as unreliable until the turn model is fixed.
 
 Unfixed. Reordering the turn model is invasive and would invalidate baselines
 the way the Ruby fix did, so the scope is measured and recorded rather than

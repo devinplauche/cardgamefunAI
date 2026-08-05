@@ -1785,11 +1785,32 @@ in hand. At that point the only legal actions are `buy_card` and
 playable and is discarded unused at end of turn. Net effect is identical to it
 going straight to the discard pile: **the ally does nothing.**
 
-This is not confined to Deception. Every "acquire to hand / top of deck for
-this turn" effect is degraded or dead, and more broadly any line that wants to
-buy a card and use it, or attack before buying, is unrepresentable. Affected
-cards include Deception (`to_hand`), Bribe and others carrying `top_of_deck` /
-`top_of_deck_action_only`.
+**Scope, measured rather than assumed.** Seven cards carry an acquire-to-hand,
+acquire-to-top, or prepare effect, and they do not all fail the same way:
+
+| card | effect | outcome under the ratchet |
+| --- | --- | --- |
+| Deception | `to_hand` | **fully dead** - lands in hand, unplayable, discarded unused |
+| Bribe (x3) | `top_of_deck_action_only` | **degraded** - survives to next turn's draw, loses the same-turn replay |
+| Rasmus, the Smuggler | `top_of_deck` | degraded, same |
+| Rally the Troops, Domination | `prepare` | unaffected (re-readies a champion, no acquisition) |
+
+`top_of_deck` survives the turn boundary - verified: buying an action with
+Bribe's ally live puts it on top of the deck and it is drawn next turn. Only
+`to_hand` is a total loss. More broadly, any line that wants to buy a card and
+use it, or attack before buying, remains unrepresentable.
+
+**This contaminates `hero_card_audit.py`.** That audit found Bribe *overrated*
+(policy percentile 0.56 against the oracle's 0.06, the largest gap in the
+table). But the oracle is search running in this engine, where Bribe's Guild
+ally is degraded - so the oracle is correctly pricing a diminished card, and
+"overrated" may be an artifact of the phase bug rather than a defect in
+`_buy_priority`. The same caveat applies to Deception, whose ally is worth
+exactly nothing here. Per the project owner, these tempo lines are hard to
+assemble (they need Guild plus enough gold for a worthwhile target) and
+game-changing when they land, so the real-game gap is likely larger than the
+engine can show. Any per-card conclusion about Guild acquire-effects should be
+treated as unreliable until the turn model is fixed.
 
 Same class as the Ruby bug: a structural deviation from the printed game that
 has silently shaped every simulated game, RL episode and benchmark in the
