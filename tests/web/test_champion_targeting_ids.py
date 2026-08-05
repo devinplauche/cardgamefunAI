@@ -126,26 +126,24 @@ class TestFireGemIsReachable(unittest.TestCase):
 
 
 
-class TestPhaseRatchetBlocksAcquireToHand(unittest.TestCase):
-    """The engine's fixed phase order makes Deception's Guild ally a no-op.
+class TestMainPhaseRestoresAcquireToHand(unittest.TestCase):
+    """The printed turn structure, and the bug it used to cause.
 
-    Printed rules: "Any time during your Main Phase, you may perform any of the
-    following, in any order, as many times as you are able: play a card ... use
-    Gold to acquire new cards ... use Combat to attack". GameSession instead
-    enforces play -> champion -> buy -> combat one-way, so a card acquired to
-    hand during the buy phase can never be played.
-
-    Pinned as an xfail-style assertion of CURRENT behaviour, not desired
-    behaviour - so that whoever reorders the turn model sees this test fail and
-    knows to flip it.
+    Rulebook: "Any time during your Main Phase, you may perform any of the
+    following, in any order, as many times as you are able: play a card from
+    your hand ... use Gold to acquire new cards from the Market ... use Combat
+    to attack". The engine used to enforce play -> champion -> buy -> combat as
+    a one-way ratchet, so a card Deception's Guild ally put into hand during the
+    buy phase could never be played and was discarded unused - the ally was a
+    no-op. This is the regression test for the fix.
     """
 
-    def test_card_acquired_to_hand_is_unplayable_and_discarded_unused(self):
+    def test_a_card_acquired_to_hand_can_be_played_the_same_turn(self):
         from hero_engine import load_hero_cards
 
         cards = {c.name: c for c in load_hero_cards("data/hero_realms_cards.json")}
         session = create_session(seed=7)
-        session.active_player, session.phase = "player", "play"
+        session.active_player = "player"
         session.player.hand = [cards["Deception"], cards["Profit"]]
         session.player.played_this_turn = []
 
@@ -153,23 +151,63 @@ class TestPhaseRatchetBlocksAcquireToHand(unittest.TestCase):
         session.play_card(cards["Deception"].id)
         self.assertTrue(session.player.next_buy_to_hand, "Guild ally should arm to_hand")
 
-        session.advance_phase()                     # play -> champion
-        session.advance_phase()                     # champion -> buy
         session.player.gold = 9
         index = next(i for i, c in enumerate(session.market.row_cards())
                      if c and c.card_type == "champion")
         acquired = session.market.row_cards()[index].name
         session.buy_card_action(index)
+        self.assertIn(acquired, [c.name for c in session.player.hand])
 
-        self.assertIn(acquired, [c.name for c in session.player.hand],
-                      "the ally really does put it in hand")
-        # ...and yet it can never be played: the play phase is gone.
-        self.assertNotIn("play_card", {a["type"] for a in session.legal_actions()})
+        # The whole point: it is playable right now, mid-turn, after buying.
+        playable = {a["label"] for a in session.legal_actions()
+                    if a["type"] == "play_card"}
+        self.assertIn(acquired, playable)
 
-        session.advance_phase()                     # buy -> combat
-        session.advance_phase()                     # combat -> end turn
-        self.assertIn(acquired, [c.name for c in session.player.discard],
-                      "discarded unused - the ally achieved nothing")
+        session.play_card(next(c.id for c in session.player.hand if c.name == acquired))
+        self.assertIn(acquired, [bc.card.name for bc in session.player.board])
+        self.assertFalse(session.player.board[-1].exhausted,
+                         "and it arrives ready, so it can still be expended")
+
+    def test_every_category_is_legal_at_once(self):
+        session = create_session(seed=7)
+        session.active_player = "player"
+        session.player.gold = 9
+        session.player.combat = 5
+        types = {a["type"] for a in session.legal_actions()}
+        self.assertEqual(types,
+                         {"play_card", "buy_card", "attack_target", "advance_phase"})
+
+    def test_greedy_ordering_still_matches_the_legacy_phase_sequence(self):
+        """Category-major priority keeps every `max(actions, key=priority)`
+        consumer in the repo picking what the old fixed phases produced."""
+        session = create_session(seed=7)
+        session.active_player = "player"
+        session.player.gold = 9
+        session.player.combat = 5
+        actions = session.legal_actions()
+        self.assertEqual(actions[0]["type"], "play_card")
+        best = max(actions, key=lambda a: a["priority"])
+        self.assertEqual(best["type"], "play_card")
+        # Raw priorities survive for anything that needs the true value.
+        self.assertIn("rawPriority", actions[0])
+        self.assertIn("categoryRank", actions[0])
+
+    def test_advance_phase_ends_the_turn(self):
+        session = create_session(seed=7)
+        session.active_player = "player"
+        self.assertEqual(session.phase, "main")
+        session.advance_phase()
+        self.assertEqual(session.active_player, "bot")
+
+    def test_legacy_phases_still_work_for_baseline_reproduction(self):
+        """Old harnesses set session.phase explicitly; that path is unchanged."""
+        session = create_session(seed=7)
+        session.active_player = "player"
+        session.phase = "buy"
+        self.assertEqual({a["type"] for a in session.legal_actions()},
+                         {"advance_phase"})  # no gold yet, so only the pass
+        session.advance_phase()
+        self.assertEqual(session.phase, "combat")
 
 
 class TestGrakLogsNothing(unittest.TestCase):

@@ -16,7 +16,7 @@ from typing import Any
 import web.bot as bot_module
 from hero_engine import FIRE_GEM
 from hero_mcts_bench import MAX_ACTIONS_PER_GAME, _profile_action
-from web.bot import apply_action, choose_bot_action
+from web.bot import _decision_category, apply_action, choose_bot_action
 from web.opponent_profiles import PROFILE_NAMES
 from web.session import create_session
 
@@ -115,8 +115,9 @@ def _first_divergence(profile: str, seed: int, iterations: int):
                 mcts, algorithm="mcts", max_iterations=iterations,
             )
             if _normal_action(heuristic, h_action) != _normal_action(mcts, m_action):
+                category = _decision_category(heuristic)
                 buy_delta = ()
-                if heuristic.phase == "buy":
+                if category == "buy":
                     h_features = _card_features(_action_card(heuristic, h_action))
                     m_features = _card_features(_action_card(mcts, m_action))
                     buy_delta = tuple(
@@ -124,7 +125,7 @@ def _first_divergence(profile: str, seed: int, iterations: int):
                         for key in h_features.keys() | m_features.keys()
                     )
                 divergence = Divergence(
-                    phase=heuristic.phase,
+                    phase=category,
                     heuristic=_describe(heuristic, h_action),
                     mcts=_describe(mcts, m_action),
                     selection=str(m_action.get("selection", "unknown")),

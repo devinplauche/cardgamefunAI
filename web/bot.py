@@ -636,6 +636,40 @@ _VALUE_NET_CACHE: dict[str, Any] = {}
 # greedily; see the note in choose_bot_action.
 SEARCHED_PHASES = ("buy", "combat")
 
+#: Maps a main-phase action type back onto the legacy phase it belongs to.
+_CATEGORY_FOR_ACTION = {
+    "play_card": "play",
+    "expend_champion": "champion",
+    "buy_card": "buy",
+    "attack_target": "combat",
+}
+
+
+def _decision_category(session, actions: list[dict[str, Any]] | None = None) -> str:
+    """Which *kind* of decision this is, independent of the phase model.
+
+    The engine now runs a single faithful Main phase (see web/session.py:
+    MAIN_PHASE) in which play/expend/buy/attack are all simultaneously legal.
+    All of this module's policy and search logic was written against the old
+    fixed phases, and the distinctions it draws are still the right ones - buy
+    and combat are worth searching, play and expend are dominated - they just
+    can no longer be read off `session.phase`.
+
+    `legal_actions` sorts main-phase actions category-major in the canonical
+    order (play, expend, buy, attack), so the highest-ranked non-pass action
+    identifies what a greedy policy would do next. That reproduces the legacy
+    phase sequence exactly while leaving every legal action available.
+    """
+    if session.phase != "main":
+        return session.phase
+    if actions is None:
+        actions = legal_actions(session)
+    top = next((action for action in actions
+                if action["type"] != "advance_phase"), None)
+    if top is None:
+        return "combat"  # nothing left to do; pass ends the turn
+    return _CATEGORY_FOR_ACTION.get(top["type"], "combat")
+
 # "static" is the original policy (highest legal_actions priority:
 # cost + combat*2 + gold*2 + draw*2, fixed regardless of game state);
 # "situational" uses _holistic_card_score.
@@ -1052,7 +1086,7 @@ def _heuristic_rollout_action(session, actions: list[dict[str, Any]] | None = No
     if not actions:
         return {"type": "advance_phase"}
 
-    phase = session.phase
+    phase = _decision_category(session, actions)
     selected_buy_policy = BUY_POLICY if buy_policy is None else buy_policy
     if phase == "play":
         first_play = next((action for action in actions if action["type"] == "play_card"), None)
@@ -1168,7 +1202,7 @@ def _default_policy_action(session, actions: list[dict[str, Any]],
     it never plays.
     """
     if (opponent_profile is not None and session.active_player == "player"
-            and session.phase == "buy"):
+            and _decision_category(session, actions) == "buy"):
         return profile_buy_action(session, actions, opponent_profile)
     rollout_buy_policy = ROLLOUT_BUY_POLICY
     if rollout_buy_policy == "routed":
@@ -1178,7 +1212,8 @@ def _default_policy_action(session, actions: list[dict[str, Any]],
         # while evidence is sparse or points to the champion profile, where it
         # is less reliable.
         rollout_buy_policy = "adaptive"
-        if session.active_player == "bot" and session.phase == "buy":
+        if (session.active_player == "bot"
+                and _decision_category(session, actions) == "buy"):
             inferred = inferred_profile(session, OPPONENT_MODEL_MIN_OBSERVATIONS)
             if inferred in {"balanced", "aggressive", "economic"}:
                 rollout_buy_policy = "situational"
@@ -1273,7 +1308,7 @@ def _legal_keys(session) -> set[tuple]:
 
 def _root_search_actions(session, actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Apply root-only progressive widening to noisy buy decisions."""
-    if session.phase != "buy":
+    if _decision_category(session, actions) != "buy":
         return actions
     if MCTS_BUY_ROOT_WIDTH <= 0:
         return actions
@@ -1314,7 +1349,7 @@ def _search_actions(session, actions: list[dict[str, Any]] | None = None,
     # target exists, advancing the phase is therefore strictly dominated; keep
     # MCTS focused on the meaningful target-selection decision instead of
     # occasionally spending its shallow search budget on a pass.
-    if session.phase == "combat":
+    if _decision_category(session, actions) == "combat":
         attacks = [action for action in actions if action["type"] == "attack_target"]
         if attacks:
             actions = _combat_search_actions(session, attacks)
@@ -1533,7 +1568,7 @@ def _is_decision_node(session) -> bool:
     choose_bot_action on why play/champion are auto-resolved). Opponent
     decisions are included only when ISMCTS_OPPONENT_NODES is on.
     """
-    if session.winner or session.phase not in SEARCHED_PHASES:
+    if session.winner or _decision_category(session) not in SEARCHED_PHASES:
         return False
     if session.active_player == "bot":
         return True
@@ -1843,7 +1878,7 @@ def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts",
     # the search misread it often enough to throw away ~2 cards of tempo a turn.
     # Reserving the budget for buy and combat is both fewer decisions and the
     # only ones where the tradeoff is genuinely situational.
-    auto_resolved = session.phase not in SEARCHED_PHASES
+    auto_resolved = _decision_category(session, actions) not in SEARCHED_PHASES
     if algorithm != "mcts" or len(actions) == 1 or auto_resolved:
         chosen = _heuristic_rollout_action(session)
         candidates = []
@@ -1883,7 +1918,8 @@ def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts",
     # simulation below gets an independent determinization while repeated
     # searches over the same public position remain reproducible.
     search_rng = random.Random(
-        f"mcts:{session.seed}:{session.turn_number}:{session.active_player}:{session.phase}"
+        f"mcts:{session.seed}:{session.turn_number}:{session.active_player}:"
+        f"{_decision_category(session, actions)}:{len(actions)}"
     )
     ensemble_result = _ensemble_rounds(
         session, root, search_rng, start, budget_ms, max_iterations,
@@ -2014,7 +2050,8 @@ def run_bot_turn(session, budget_ms: int = 60, algorithm: str = "mcts") -> dict[
         # pruning: lethal/face/guard-forced combat normally has one retained
         # action. Give the buy root the full turn slice so balanced opponents'
         # draw/economy cards are not decided from only half the samples.
-        decision_budget = budget_ms if session.phase == "buy" else max(20, budget_ms // 2)
+        decision_budget = (budget_ms if _decision_category(session, actions) == "buy"
+                           else max(20, budget_ms // 2))
         chosen = choose_bot_action(session, decision_budget, algorithm=algorithm)
         insight = chosen
         actions_taken.append(chosen)
@@ -2024,11 +2061,13 @@ def run_bot_turn(session, budget_ms: int = 60, algorithm: str = "mcts") -> dict[
         if chosen["type"] == "advance_phase" and session.active_player != "bot":
             break
 
-        if session.phase == "combat" and session.bot.combat <= 0:
-            session.advance_phase()
-
-        if session.phase == "play" and session.active_player != "bot":
-            break
+        if session.phase != "main":
+            # Legacy ratchet only: combat with nothing left to assign is a dead
+            # phase, and reaching "play" again means the turn already passed.
+            if session.phase == "combat" and session.bot.combat <= 0:
+                session.advance_phase()
+            if session.phase == "play" and session.active_player != "bot":
+                break
 
         if len(actions_taken) > 20:
             break

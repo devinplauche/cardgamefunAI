@@ -3,7 +3,7 @@
 import unittest
 from unittest.mock import patch
 
-from hero_mcts_bench import play_game
+from hero_mcts_bench import _profile_action, play_game
 
 
 class _TurnScopeSession:
@@ -17,7 +17,27 @@ class _TurnScopeSession:
         self.winner = "bot"
 
 
+class _MainBuySession:
+    phase = "main"
+    active_player = "player"
+
+    def legal_actions(self):
+        return [
+            {"type": "buy_card", "marketIndex": 0},
+            {"type": "advance_phase"},
+        ]
+
+
 class TestHeroMctsBenchmarkScope(unittest.TestCase):
+    def test_main_phase_opponent_still_uses_its_profile_buy_policy(self):
+        session = _MainBuySession()
+        expected = {"type": "buy_card", "marketIndex": 0}
+        with patch("hero_mcts_bench.profile_buy_action", return_value=expected) as choose:
+            actual = _profile_action(session, "balanced")
+
+        self.assertEqual(actual, expected)
+        choose.assert_called_once_with(session, session.legal_actions(), "balanced")
+
     def test_turn_scope_uses_the_production_turn_entrypoint(self):
         session = _TurnScopeSession()
         with patch("hero_mcts_bench.create_session", return_value=session), \

@@ -54,6 +54,12 @@ N_ACTIONS = ADVANCE + 1                      # 30
 FACTIONS = ("guild", "imperial", "necros", "wild")
 
 
+from web.bot import _decision_category
+
+#: Legacy phase ordering, retained purely as the observation encoding.
+_PHASE_INDEX = {"play": 0, "champion": 1, "buy": 2, "combat": 3}
+
+
 class HeroRealmsMaskedEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
 
@@ -156,7 +162,11 @@ class HeroRealmsMaskedEnv(gym.Env):
             p.hp / 50.0, o.hp / 50.0,
             min(p.gold / 20.0, 1.0), min(p.combat / 20.0, 1.0),
             min(s.turn_number / 60.0, 1.0), min(len(p.hand) / 10.0, 1.0),
-            ["play", "champion", "buy", "combat"].index(s.phase) / 3.0,
+            # Under the faithful main phase every category is legal at once, so
+            # the observation carries the *decision category* (what a greedy
+            # policy would do next) rather than a phase index. Keeps the
+            # feature meaningful and the observation width unchanged.
+            _PHASE_INDEX[_decision_category(s)] / 3.0,
             min(self.market.fire_gems_remaining / 16.0, 1.0),
         ]
         f.extend(self._deck_features(p))
@@ -262,7 +272,8 @@ class HeroRealmsMaskedEnv(gym.Env):
 
         self.session = create_session(seed=seed if seed is not None else self._seed)
         self.session.active_player = "player"
-        self.session.phase = "play"
+        # create_session already opens in the correct phase (main when
+        # FREEFORM_TURN, else "play"); do not override it.
         self.market = self.session.market
         self.steps_taken = 0
         # Seated second: the opposing seat takes its opening turn before the

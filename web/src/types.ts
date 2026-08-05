@@ -1,4 +1,10 @@
-export type Phase = 'play' | 'champion' | 'buy' | 'combat';
+/**
+ * 'main' is the faithful printed turn structure: play, expend, buy and
+ * attack are all legal at once, in any order (web/session.py: MAIN_PHASE).
+ * The other four are the legacy fixed-order phases, still reachable for
+ * reproducing pre-fix baselines.
+ */
+export type Phase = 'main' | 'play' | 'champion' | 'buy' | 'combat';
 
 export interface CardView {
   id: string;

@@ -32,7 +32,47 @@ from hero_engine import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CARDS_PATH = REPO_ROOT / "data" / "hero_realms_cards.json"
 DEFAULT_CARDS = load_hero_cards(str(CARDS_PATH))
+#: Legacy fixed-order phases. Retained because tests and older harnesses set
+#: `session.phase` explicitly, and because they remain a faithful *subset* of
+#: what the real Main Phase permits - useful for reproducing pre-fix baselines.
 PHASES = ("play", "champion", "buy", "combat")
+
+#: The printed turn structure is Main -> Discard -> Draw, and within Main the
+#: rulebook is explicit: "Any time during your Main Phase, you may perform any
+#: of the following, in any order, as many times as you are able: play a card
+#: from your hand; use the expend, ally, and/or sacrifice abilities of any of
+#: your cards in play; use Gold to acquire new cards from the Market; use
+#: Combat to attack an opponent and/or their champions."
+#:
+#: The old `play -> champion -> buy -> combat` ratchet made whole card effects
+#: unreachable: Deception's Guild ally puts an acquired card into hand during
+#: the buy phase, by which point the play phase was over, so it could never be
+#: played and was discarded unused. Bribe and Rasmus (`top_of_deck`) were
+#: degraded the same way.
+MAIN_PHASE = "main"
+
+#: New games start in the faithful main phase. Set False to reproduce
+#: pre-2026-08 baselines, which were all measured under the ratchet.
+FREEFORM_TURN = True
+
+#: Canonical ordering used to sort a main-phase action list. The four
+#: categories' `priority` values are on unrelated scales, so they cannot be
+#: compared directly; ordering by category first reproduces the legacy phase
+#: sequence for a greedy consumer while still offering every legal action.
+_ACTION_CATEGORY_ORDER = {
+    "play_card": 0,
+    "expend_champion": 1,
+    "buy_card": 2,
+    "attack_target": 3,
+    "advance_phase": 4,
+}
+
+#: Separation between category bands in a main-phase action's `priority`.
+#: Raw priorities span roughly -10..40, so 1000 keeps categories from ever
+#: overlapping while leaving within-category ordering intact. Main-phase
+#: actions also carry `rawPriority` and `categoryRank` for anything that needs
+#: the undistorted value.
+_CATEGORY_OFFSET = 1000
 
 
 # Action priorities are pure functions of a card, and HRCard is never mutated,
@@ -300,6 +340,7 @@ class GameSession:
         self.player.draw(3)
         self.bot.draw(5)
         self.market = HRMarket(self.cards, self.rng)
+        self.phase = MAIN_PHASE if FREEFORM_TURN else "play"
         self._start_turn(self.player)
         self.record_event("system", "Game created")
 
@@ -567,97 +608,130 @@ class GameSession:
         )
         self.history = self.history[-80:]
 
+    def _play_card_actions(self, player, opponent) -> list[dict[str, Any]]:
+        actions: list[dict[str, Any]] = []
+        for card in player.hand:
+            needs_stun_target = card.get("stun", False)
+            stun_targets = self._attack_targets(opponent) if needs_stun_target else []
+            if stun_targets:
+                for target_index, target in enumerate(stun_targets):
+                    actions.append({
+                        "type": "play_card", "cardId": card.id,
+                        "stunTargetIndex": target_index,
+                        "label": f"{card.name} → {target.name}",
+                        "priority": _play_priority(card),
+                    })
+            else:
+                actions.append({
+                    "type": "play_card", "cardId": card.id,
+                    "label": card.name, "priority": _play_priority(card),
+                })
+        return actions
+
+    def _expend_champion_actions(self, player, opponent) -> list[dict[str, Any]]:
+        actions: list[dict[str, Any]] = []
+        for champion in player.board:
+            if not (champion.alive and not champion.exhausted):
+                continue
+            stun_targets = (self._attack_targets(opponent)
+                            if champion.card.get("stun", False) else [])
+            if stun_targets:
+                for target_index, target in enumerate(stun_targets):
+                    actions.append({
+                        "type": "expend_champion", "championId": str(champion.instance_id),
+                        "stunTargetIndex": target_index,
+                        "label": f"{champion.card.name} → {target.name}",
+                        "priority": champion.card.cost + champion.card.health,
+                    })
+            else:
+                actions.append({
+                    "type": "expend_champion", "championId": str(champion.instance_id),
+                    "label": champion.card.name,
+                    "priority": champion.card.cost + champion.card.health,
+                })
+        return actions
+
+    def _buy_card_actions(self, player) -> list[dict[str, Any]]:
+        actions: list[dict[str, Any]] = []
+        for idx, card in enumerate(self.market.row_cards()):
+            if card and card.cost <= player.gold:
+                actions.append({
+                    "type": "buy_card", "marketIndex": idx,
+                    "label": card.name, "priority": _buy_priority(card),
+                })
+        if player.gold >= 2 and self.market.can_buy_fire_gem():
+            actions.append({
+                "type": "buy_card", "marketIndex": 5,
+                "label": "Fire Gem", "priority": 6,
+            })
+        return actions
+
+    def _attack_actions(self, player, opponent) -> list[dict[str, Any]]:
+        # Combat can only be assigned if there is combat to assign. Offering
+        # guard targets at 0 combat made attack_target_action raise.
+        if player.combat <= 0:
+            return []
+        actions: list[dict[str, Any]] = []
+        targets = self._attack_targets(opponent)
+        guards_present = bool(targets) and targets[0].guard
+        for champion in targets:
+            actions.append({
+                "type": "attack_target", "target": "champion",
+                "championId": str(champion.instance_id),
+                "label": champion.card.name,
+                "priority": 10 - champion.current_health,
+            })
+        # Once no guard is protecting them, the rulebook allows attacking the
+        # player and/or any champion freely - a guard blocks both, so this is
+        # only offered when none remain.
+        if not guards_present:
+            actions.append({
+                "type": "attack_target", "target": "player",
+                "label": opponent.name, "priority": player.combat,
+            })
+        return actions
+
     def legal_actions(self) -> list[dict[str, Any]]:
         if self.winner:
             return []
 
         player = self._current()
         opponent = self._opponent()
-        actions: list[dict[str, Any]] = []
 
+        if self.phase == MAIN_PHASE:
+            actions = (self._play_card_actions(player, opponent)
+                       + self._expend_champion_actions(player, opponent)
+                       + self._buy_card_actions(player)
+                       + self._attack_actions(player, opponent))
+            actions.append({"type": "advance_phase", "label": "End Turn", "priority": -10})
+            # The four groups' raw `priority` values are on unrelated scales
+            # (play uses _play_priority, buy uses _buy_priority, combat uses
+            # target health), so comparing them directly is meaningless - and
+            # every consumer in this repo picks its action with
+            # `max(actions, key=priority)`. Rather than change all of them,
+            # make the scales comparable: offset each category so category
+            # order dominates and the raw priority only breaks ties within a
+            # category. `max` by priority then yields exactly the action the
+            # legacy phase sequence would have produced, while every legal
+            # action is still *offered* - which is what the printed rules
+            # require, and what makes a card acquired to hand mid-turn
+            # playable again.
+            for action in actions:
+                rank = _ACTION_CATEGORY_ORDER.get(action["type"], 99)
+                action["categoryRank"] = rank
+                action["rawPriority"] = action.get("priority", 0)
+                action["priority"] = action["rawPriority"] + (4 - rank) * _CATEGORY_OFFSET
+            return sorted(actions, key=lambda item: item["priority"], reverse=True)
+
+        actions = []
         if self.phase == "play":
-            for card in player.hand:
-                needs_stun_target = card.get("stun", False)
-                stun_targets = self._attack_targets(opponent) if needs_stun_target else []
-                if stun_targets:
-                    for target_index, target in enumerate(stun_targets):
-                        actions.append({
-                            "type": "play_card", "cardId": card.id,
-                            "stunTargetIndex": target_index,
-                            "label": f"{card.name} → {target.name}",
-                            "priority": _play_priority(card),
-                        })
-                else:
-                    actions.append({
-                        "type": "play_card", "cardId": card.id,
-                        "label": card.name, "priority": _play_priority(card),
-                    })
+            actions = self._play_card_actions(player, opponent)
         elif self.phase == "champion":
-            for champion in player.board:
-                if champion.alive and not champion.exhausted:
-                    stun_targets = self._attack_targets(opponent) if champion.card.get("stun", False) else []
-                    if stun_targets:
-                        for target_index, target in enumerate(stun_targets):
-                            actions.append({
-                                "type": "expend_champion", "championId": str(champion.instance_id),
-                                "stunTargetIndex": target_index,
-                                "label": f"{champion.card.name} → {target.name}",
-                                "priority": champion.card.cost + champion.card.health,
-                            })
-                    else:
-                        actions.append({
-                            "type": "expend_champion", "championId": str(champion.instance_id),
-                            "label": champion.card.name,
-                            "priority": champion.card.cost + champion.card.health,
-                        })
+            actions = self._expend_champion_actions(player, opponent)
         elif self.phase == "buy":
-            for idx, card in enumerate(self.market.row_cards()):
-                if card and card.cost <= player.gold:
-                    actions.append(
-                        {
-                            "type": "buy_card",
-                            "marketIndex": idx,
-                            "label": card.name,
-                            "priority": _buy_priority(card),
-                        }
-                    )
-            if player.gold >= 2 and self.market.can_buy_fire_gem():
-                actions.append(
-                    {
-                        "type": "buy_card",
-                        "marketIndex": 5,
-                        "label": "Fire Gem",
-                        "priority": 6,
-                    }
-                )
+            actions = self._buy_card_actions(player)
         elif self.phase == "combat":
-            # Combat can only be assigned if there is combat to assign. Offering
-            # guard targets at 0 combat made attack_target_action raise.
-            if player.combat > 0:
-                targets = self._attack_targets(opponent)
-                guards_present = bool(targets) and targets[0].guard
-                for champion in targets:
-                    actions.append(
-                        {
-                            "type": "attack_target",
-                            "target": "champion",
-                            "championId": str(champion.instance_id),
-                            "label": champion.card.name,
-                            "priority": 10 - champion.current_health,
-                        }
-                    )
-                # Once no guard is protecting them, the rulebook allows
-                # attacking the player and/or any champion freely - a guard
-                # blocks both, so this is only offered when none remain.
-                if not guards_present:
-                    actions.append(
-                        {
-                            "type": "attack_target",
-                            "target": "player",
-                            "label": opponent.name,
-                            "priority": player.combat,
-                        }
-                    )
+            actions = self._attack_actions(player, opponent)
 
         actions.append({"type": "advance_phase", "label": "Next Phase", "priority": -10})
         return sorted(actions, key=lambda item: item.get("priority", 0), reverse=True)
@@ -665,8 +739,8 @@ class GameSession:
     def play_card(self, card_id: str, stun_target_index: int | None = None) -> dict[str, Any]:
         player = self._current()
         opponent = self._opponent()
-        if self.phase != "play":
-            raise ValueError("Cards can only be played during the play phase")
+        if self.phase not in ("play", MAIN_PHASE):
+            raise ValueError("Cards can only be played during the main phase")
         card = next((item for item in player.hand if item.id == card_id), None)
         if card is None:
             raise ValueError("Card not found in hand")
@@ -684,8 +758,8 @@ class GameSession:
                                 stun_target_index: int | None = None) -> dict[str, Any]:
         player = self._current()
         opponent = self._opponent()
-        if self.phase != "champion":
-            raise ValueError("Champions can only be expended during the champion phase")
+        if self.phase not in ("champion", MAIN_PHASE):
+            raise ValueError("Champions can only be expended during the main phase")
         champion = next((item for item in player.board if str(item.instance_id) == champion_id), None)
         if champion is None:
             raise ValueError("Champion not found")
@@ -699,8 +773,8 @@ class GameSession:
 
     def buy_card_action(self, market_index: int) -> dict[str, Any]:
         player = self._current()
-        if self.phase != "buy":
-            raise ValueError("Cards can only be bought during the buy phase")
+        if self.phase not in ("buy", MAIN_PHASE):
+            raise ValueError("Cards can only be bought during the main phase")
         if not isinstance(market_index, int) or not 0 <= market_index <= 5:
             raise ValueError("Invalid market index")
         label = "Fire Gem"
@@ -747,8 +821,8 @@ class GameSession:
     def attack_target_action(self, target_kind: str, champion_id: str | None = None) -> dict[str, Any]:
         player = self._current()
         opponent = self._opponent()
-        if self.phase != "combat":
-            raise ValueError("Combat attacks can only happen during the combat phase")
+        if self.phase not in ("combat", MAIN_PHASE):
+            raise ValueError("Combat attacks can only happen during the main phase")
         if player.combat <= 0:
             raise ValueError("No combat remaining")
 
@@ -790,6 +864,11 @@ class GameSession:
             return self.get_state()
 
         current = self.phase
+        if current == MAIN_PHASE:
+            # Main is the only phase a player acts in, so "advance" ends the
+            # turn (the printed Discard and Draw phases are what end_turn does).
+            self.end_turn()
+            return self.get_state()
         if current == "play":
             self.phase = "champion"
         elif current == "champion":
@@ -818,7 +897,7 @@ class GameSession:
 
         self.active_player = "bot" if self.active_player == "player" else "player"
         self.turn_number += 1
-        self.phase = "play"
+        self.phase = MAIN_PHASE if FREEFORM_TURN else "play"
         self._start_turn(self._current())
         self.record_event("turn", f"{current.name} ended turn")
         self.record_event("turn", f"{self._current().name} started turn")

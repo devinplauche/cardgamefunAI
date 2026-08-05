@@ -13,7 +13,8 @@ import random
 import unittest
 from unittest.mock import patch
 
-from web.bot import apply_action, choose_bot_action, _heuristic_rollout_action
+from web.bot import (apply_action, choose_bot_action, _decision_category,
+                     _heuristic_rollout_action)
 from web.session import create_session
 
 
@@ -355,7 +356,8 @@ class TestRootSelection(unittest.TestCase):
         for _ in range(900):
             if session.winner:
                 return None
-            if (session.active_player == "bot" and session.phase == "combat"
+            if (session.active_player == "bot"
+                    and _decision_category(session) == "combat"
                     and session.bot.combat >= minimum):
                 return session
             apply_action(session, _heuristic_rollout_action(session))
@@ -426,7 +428,9 @@ class TestEvaluateState(unittest.TestCase):
         for _ in range(400):
             if session.winner:
                 return None
-            if session.active_player == "bot" and session.phase == "buy" and session.bot.gold >= minimum:
+            if (session.active_player == "bot"
+                    and _decision_category(session) == "buy"
+                    and session.bot.gold >= minimum):
                 return session
             apply_action(session, _heuristic_rollout_action(session))
         return None
@@ -453,8 +457,13 @@ class TestEvaluateState(unittest.TestCase):
             if session is None:
                 continue
             base = evaluate_state(session)
+            # "Passing" is now declining to buy, not advancing a phase. Under
+            # the old ratchet, advance_phase() from buy moved to combat and was
+            # state-neutral, so it stood in for "do nothing". In the faithful
+            # Main phase advance_phase() *ends the turn* - drawing a new hand
+            # and handing over to the opponent - so it is no longer a no-op and
+            # cannot be used as the comparison point.
             passed = session.clone()
-            passed.advance_phase()
             for idx, card in enumerate(session.market.row_cards()):
                 if card is None or card.cost > session.bot.gold:
                     continue
@@ -462,7 +471,7 @@ class TestEvaluateState(unittest.TestCase):
                 bought.buy_card_action(idx)
                 self.assertGreater(
                     evaluate_state(bought), evaluate_state(passed),
-                    f"buying {card.name} scored no better than passing",
+                    f"buying {card.name} scored no better than declining",
                 )
                 checked += 1
             self.assertAlmostEqual(evaluate_state(passed), base, places=6)

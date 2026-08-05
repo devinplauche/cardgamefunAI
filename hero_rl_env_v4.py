@@ -87,6 +87,12 @@ def _static_card_features(card) -> tuple[float, ...]:
     return features
 
 
+from web.bot import _decision_category
+
+#: Legacy phase ordering, retained purely as the observation encoding.
+_PHASE_INDEX = {"play": 0, "champion": 1, "buy": 2, "combat": 3}
+
+
 class HeroRealmsRichObsEnv(HeroRealmsChoiceEnv):
     """v3 actions, repaired observation, optional potential-based shaping."""
 
@@ -185,7 +191,11 @@ class HeroRealmsRichObsEnv(HeroRealmsChoiceEnv):
             p.hp / 50.0, o.hp / 50.0,
             min(p.gold / 20.0, 1.0), min(p.combat / 20.0, 1.0),
             min(s.turn_number / 60.0, 1.0), min(len(p.hand) / 10.0, 1.0),
-            ["play", "champion", "buy", "combat"].index(s.phase) / 3.0,
+            # Under the faithful main phase every category is legal at once, so
+            # the observation carries the *decision category* (what a greedy
+            # policy would do next) rather than a phase index. Keeps the
+            # feature meaningful and the observation width unchanged.
+            _PHASE_INDEX[_decision_category(s)] / 3.0,
             min(self.market.fire_gems_remaining / 16.0, 1.0),
         ]
         f.extend(self._deck_features(p))

@@ -6,7 +6,10 @@ def test_session_can_create_and_serialize_state():
     state = session.get_state()
 
     assert state["turnNumber"] == 1
-    assert state["phase"] == "play"
+    # The engine now opens in the faithful Main phase (see
+    # web/session.py: MAIN_PHASE); the old fixed phases remain
+    # settable for legacy harnesses and baseline reproduction.
+    assert state["phase"] == "main"
     assert state["activePlayer"] == "player"
     assert state["player"]["name"] == "Player"
     assert state["bot"]["name"] == "Bot"

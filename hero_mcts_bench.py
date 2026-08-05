@@ -23,7 +23,8 @@ import argparse
 import random
 import time
 
-from web.bot import _heuristic_rollout_action, apply_action, choose_bot_action
+from web.bot import (_decision_category, _heuristic_rollout_action, apply_action,
+                     choose_bot_action)
 from web.opponent_profiles import PROFILE_WEIGHTS, profile_buy_action
 from web.session import create_session
 
@@ -36,7 +37,11 @@ def _profile_action(session, profile):
     if not actions:
         return {"type": "advance_phase"}
 
-    phase = session.phase
+    # The web session uses one freeform ``main`` phase.  Keep the benchmark
+    # opponent profile-driven by deriving the legacy decision category from
+    # its legal actions, just as the bot does.  Reading ``session.phase``
+    # directly here silently made every profile use the generic fallback.
+    phase = _decision_category(session, actions)
     if phase == "buy":
         return profile_buy_action(session, actions, profile)
 

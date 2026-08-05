@@ -24,6 +24,7 @@ import type {
 type StatusTone = 'idle' | 'busy' | 'error' | 'good';
 
 const PHASE_COPY: Record<Phase, string> = {
+  main: 'Play cards, expend champions, buy, and attack - in any order.',
   play: 'Play cards from your hand.',
   champion: 'Expend ready champions.',
   buy: 'Buy cards from the market.',
@@ -84,6 +85,17 @@ function Panel({ title, subtitle, children, className = '' }: { title: string; s
       {children}
     </section>
   );
+}
+
+/**
+ * The engine now runs a single faithful Main phase in which playing, expending,
+ * buying and attacking are all simultaneously legal (see web/session.py:
+ * MAIN_PHASE). The legacy fixed phases are still reachable for baseline
+ * reproduction, so the UI accepts either: under 'main' everything is enabled,
+ * otherwise the old per-phase gating applies.
+ */
+function phaseAllows(phase: Phase, category: 'play' | 'champion' | 'buy' | 'combat'): boolean {
+  return phase === 'main' || phase === category;
 }
 
 function CardTile({
@@ -293,15 +305,17 @@ function MarketColumn({
   market,
   phase,
   canInteract,
+  playerGold,
   onBuy,
 }: {
   market: MarketView;
   phase: Phase;
   canInteract: boolean;
+  playerGold: number;
   onBuy: (marketIndex: number) => Promise<void>;
 }) {
   return (
-    <Panel title="Market" subtitle="Click a card to buy it during the buy phase.">
+    <Panel title="Market" subtitle="Buy any card you can afford, any time during your turn.">
       <div className="market-grid">
         {market.row.map((card, index) => {
           if (!card) {
@@ -317,7 +331,7 @@ function MarketColumn({
               key={`${card.id}-${index}`}
               card={card}
               actionLabel="Buy"
-              actionDisabled={phase !== 'buy' || !canInteract}
+              actionDisabled={!phaseAllows(phase, 'buy') || !canInteract || card.cost > playerGold}
               onAction={() => void onBuy(index)}
             />
           );
@@ -345,7 +359,7 @@ function MarketColumn({
               text: 'Gain 2 gold. Sacrifice this card: gain 3 combat.',
             }}
             actionLabel="Buy Fire Gem"
-            actionDisabled={phase !== 'buy' || !canInteract}
+            actionDisabled={!phaseAllows(phase, 'buy') || !canInteract || 2 > playerGold}
             onAction={() => void onBuy(5)}
           />
         ) : null}
@@ -412,17 +426,17 @@ function BoardColumn({
               champion={champion}
               actionLabel={
                 role === 'player'
-                  ? phase === 'champion' && canInteract && onExpend
+                  ? phaseAllows(phase, 'champion') && canInteract && onExpend
                     ? 'Expend'
                     : 'Locked'
-                  : phase === 'combat' && canInteract && onAttack
+                  : phaseAllows(phase, 'combat') && canInteract && onAttack
                     ? 'Attack'
                     : 'Locked'
               }
               disabled={
                 role === 'player'
-                  ? phase !== 'champion' || !canInteract || champion.exhausted || !onExpend
-                  : phase !== 'combat' || !canInteract || !onAttack
+                  ? !phaseAllows(phase, 'champion') || !canInteract || champion.exhausted || !onExpend
+                  : !phaseAllows(phase, 'combat') || !canInteract || !onAttack
               }
               onAction={() => {
                 // instanceId, not id: the engine matches board champions on
@@ -457,8 +471,8 @@ function BoardColumn({
               <CardTile
                 key={`${card.id}-${index}`}
                 card={card}
-                actionLabel={phase === 'play' && canInteract && onPlay ? 'Play' : 'Locked'}
-                actionDisabled={phase !== 'play' || !canInteract || !onPlay}
+                actionLabel={phaseAllows(phase, 'play') && canInteract && onPlay ? 'Play' : 'Locked'}
+                actionDisabled={!phaseAllows(phase, 'play') || !canInteract || !onPlay}
                 onAction={() => {
                   const targetIndex = chooseStunTarget(card);
                   if (targetIndex !== null && onPlay) void onPlay(card.id, targetIndex);
@@ -468,12 +482,16 @@ function BoardColumn({
           )}
         </div>
       </div>
-      {phase === 'combat' && canInteract && onAttack && role === 'player' ? (
+      {phaseAllows(phase, 'combat') && canInteract && onAttack && role === 'player' ? (
         <div className="subsection">
           <div className="subsection-head">
             <h3>Combat</h3>
           </div>
-          <button className="primary-button" onClick={() => void onAttack('player')}>
+          <button
+            className="primary-button"
+            onClick={() => void onAttack('player')}
+            disabled={player.combat <= 0}
+          >
             Attack Face
           </button>
         </div>
@@ -583,7 +601,8 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.sessionId, session?.activePlayer, session?.phase, busy, isReplayMode]);
 
-  const actionLabel = phase === 'combat' ? 'End Turn' : 'Next Phase';
+  // Under the main phase, advancing IS ending the turn.
+  const actionLabel = (phase === 'combat' || phase === 'main') ? 'End Turn' : 'Next Phase';
 
   return (
     <div className="app-shell">
@@ -656,7 +675,13 @@ function App() {
           <div className="center-stack">
             {displayState ? (
               <>
-                <MarketColumn market={displayState.market} phase={phase} canInteract={canMutate && activePlayer === 'player'} onBuy={handleBuy} />
+                <MarketColumn
+                  market={displayState.market}
+                  phase={phase}
+                  canInteract={canMutate && activePlayer === 'player'}
+                  playerGold={displayState.player.gold}
+                  onBuy={handleBuy}
+                />
                 <Panel title="Battle notes" subtitle="Recent actions and search results.">
                   <div className="battle-summary">
                     <Stat label="Turn" value={displayState.turnNumber} />
