@@ -316,12 +316,39 @@ function MarketColumn({
             <CardTile
               key={`${card.id}-${index}`}
               card={card}
-              actionLabel={index === 5 ? 'Buy Fire Gem' : 'Buy'}
+              actionLabel="Buy"
               actionDisabled={phase !== 'buy' || !canInteract}
               onAction={() => void onBuy(index)}
             />
           );
         })}
+        {/*
+          Fire Gem is marketIndex 5 in the engine but is NOT part of
+          market.row, which only ever holds the 5 visible slots (0-4). The old
+          `index === 5 ? 'Buy Fire Gem'` branch above could therefore never
+          fire, and the human had no way to buy a Fire Gem at all - while the
+          bot buys ~2.9 per game through the engine API. Rendered explicitly as
+          a sixth tile.
+        */}
+        {market.fireGemsRemaining > 0 ? (
+          <CardTile
+            key="fire-gem"
+            card={{
+              id: 'fire_gem',
+              name: 'Fire Gem',
+              cost: 2,
+              faction: '',
+              cardType: 'item',
+              guard: 0,
+              health: 0,
+              effects: {},
+              text: 'Gain 2 gold. Sacrifice this card: gain 3 combat.',
+            }}
+            actionLabel="Buy Fire Gem"
+            actionDisabled={phase !== 'buy' || !canInteract}
+            onAction={() => void onBuy(5)}
+          />
+        ) : null}
       </div>
       <div className="market-foot">
         Fire Gems remaining: <strong>{market.fireGemsRemaining}</strong>
@@ -398,11 +425,13 @@ function BoardColumn({
                   : phase !== 'combat' || !canInteract || !onAttack
               }
               onAction={() => {
+                // instanceId, not id: the engine matches board champions on
+                // instance_id, and two copies of one card can share an id.
                 if (role === 'player') {
                   const targetIndex = chooseStunTarget(champion);
-                  if (targetIndex !== null && onExpend) void onExpend(champion.id, targetIndex);
+                  if (targetIndex !== null && onExpend) void onExpend(champion.instanceId, targetIndex);
                 } else if (onAttack) {
-                  void onAttack('champion', champion.id);
+                  void onAttack('champion', champion.instanceId);
                 }
               }}
               quiet={hiddenHand}

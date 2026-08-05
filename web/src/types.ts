@@ -13,6 +13,14 @@ export interface CardView {
 }
 
 export interface ChampionView extends CardView {
+  /**
+   * Distinguishes two board champions sharing the same card `id` - a card
+   * printed in 2-3 copies can appear twice on one board. The engine matches
+   * expend and attack targets on this, NOT on `id` (see
+   * GameSession.expend_champion_action / attack_target_action), so sending
+   * `id` silently fails every lookup with "Champion not found".
+   */
+  instanceId: string;
   currentHealth: number;
   exhausted: boolean;
   alive: boolean;
