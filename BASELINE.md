@@ -1762,6 +1762,51 @@ That is the shape of ISMCTS's false positive (+19, +26 pooled, p=0.099, then
 Keep the fix for correctness. Default stays False; flipping it needs a reason
 better than a p=0.35 that contradicts a measured ceiling.
 
+## The engine's fixed phases are not the printed turn structure
+
+Found by a human playing the web UI and noticing Deception's ally could never
+pay off. Confirmed against the official base-game rules:
+
+> "Any time during your Main Phase, you may perform any of the following, **in
+> any order**, as many times as you are able: play a card from your hand; use
+> the expend, ally, and/or sacrifice abilities of any of your cards in play;
+> use Gold to acquire new cards from the Market; use Combat to attack an
+> opponent and/or their champions."
+
+The printed turn is **Main -> Discard -> Draw**, with play/expend/buy/attack
+freely interleaved inside Main. `GameSession` instead enforces
+`play -> champion -> buy -> combat` as a one-way ratchet, with `advance_phase`
+never going back.
+
+**Measured consequence.** With a Guild ally live, playing Deception correctly
+sets `next_buy_to_hand`, and a champion bought in the buy phase genuinely lands
+in hand. At that point the only legal actions are `buy_card` and
+`advance_phase` - play and champion phases are gone - so the card is never
+playable and is discarded unused at end of turn. Net effect is identical to it
+going straight to the discard pile: **the ally does nothing.**
+
+This is not confined to Deception. Every "acquire to hand / top of deck for
+this turn" effect is degraded or dead, and more broadly any line that wants to
+buy a card and use it, or attack before buying, is unrepresentable. Affected
+cards include Deception (`to_hand`), Bribe and others carrying `top_of_deck` /
+`top_of_deck_action_only`.
+
+Same class as the Ruby bug: a structural deviation from the printed game that
+has silently shaped every simulated game, RL episode and benchmark in the
+project. Not yet fixed - reordering the turn model is invasive and would
+invalidate baselines again, so it is recorded here first with its scope
+measured rather than patched in passing.
+
+### Grak's ability works but is invisible in the log
+
+Same play session, reported as a suspected rules bug, and it is not one.
+Expending Grak, Storm Giant correctly gives +6 combat, draws 1 (deck 7 -> 6)
+and discards 1 (discard 0 -> 1), net hand change 0. The engine is right; the
+log records only "Expended Grak, Storm Giant" with no mention of the draw or
+the discard, so a player cannot tell the ability fired. An observability gap,
+not a correctness one - but it is the reason a real defect (the phase ratchet)
+and a non-defect (this) looked identical from the UI.
+
 ## RL vs MCTS, head to head
 
 `hero_rl_vs_mcts.py`, 30 games per policy, sides split evenly, MCTS in its

@@ -229,6 +229,33 @@ search wants to overrule the heuristic on **41%** of decisions; the gate admits
 **9%**, and that is the optimum. The other ~32% are deviations search believes in
 that cost win rate.
 
+## Known rules-fidelity gap: the phase ratchet
+
+`GameSession` enforces `play → champion → buy → combat` one-way. The printed
+rules have **Main → Discard → Draw**, and inside Main you may play, expend,
+buy and attack **in any order, as many times as able**.
+
+Measured consequence: Deception's Guild ally (`to_hand`) sets
+`next_buy_to_hand` correctly and the bought card really does land in hand — but
+by then only `buy_card` and `advance_phase` are legal, so it can never be
+played and is discarded unused. The ally is a no-op. Every "acquire to hand /
+to top of deck this turn" effect is degraded the same way (Deception, Bribe,
+anything with `top_of_deck`), and any line that wants to buy-then-use, or
+attack before buying, is unrepresentable.
+
+Unfixed. Reordering the turn model is invasive and would invalidate baselines
+the way the Ruby fix did, so the scope is measured and recorded rather than
+patched in passing. Weigh this before trusting any result that depends on
+buy/play sequencing.
+
+**Corollary for testing:** this was found by a human playing the UI for ten
+minutes, after 2800+ benchmark games missed it — along with a broken
+champion-id in the frontend that made expend and champion-targeted combat fail
+outright, and a Fire Gem the human literally could not buy. Benchmarks drive
+the engine directly and feed its own action dicts back in, so they cannot see
+anything in the UI layer or anything about whether the *rules* are right.
+Play the game occasionally.
+
 ## Stale information warning
 
 **Everything in `BASELINE.md` predating the Ruby fix describes a different game.**

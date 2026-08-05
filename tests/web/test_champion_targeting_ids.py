@@ -125,5 +125,78 @@ class TestFireGemIsReachable(unittest.TestCase):
         self.assertIn(5, indices)
 
 
+
+class TestPhaseRatchetBlocksAcquireToHand(unittest.TestCase):
+    """The engine's fixed phase order makes Deception's Guild ally a no-op.
+
+    Printed rules: "Any time during your Main Phase, you may perform any of the
+    following, in any order, as many times as you are able: play a card ... use
+    Gold to acquire new cards ... use Combat to attack". GameSession instead
+    enforces play -> champion -> buy -> combat one-way, so a card acquired to
+    hand during the buy phase can never be played.
+
+    Pinned as an xfail-style assertion of CURRENT behaviour, not desired
+    behaviour - so that whoever reorders the turn model sees this test fail and
+    knows to flip it.
+    """
+
+    def test_card_acquired_to_hand_is_unplayable_and_discarded_unused(self):
+        from hero_engine import load_hero_cards
+
+        cards = {c.name: c for c in load_hero_cards("data/hero_realms_cards.json")}
+        session = create_session(seed=7)
+        session.active_player, session.phase = "player", "play"
+        session.player.hand = [cards["Deception"], cards["Profit"]]
+        session.player.played_this_turn = []
+
+        session.play_card(cards["Profit"].id)      # Guild card in play -> ally live
+        session.play_card(cards["Deception"].id)
+        self.assertTrue(session.player.next_buy_to_hand, "Guild ally should arm to_hand")
+
+        session.advance_phase()                     # play -> champion
+        session.advance_phase()                     # champion -> buy
+        session.player.gold = 9
+        index = next(i for i, c in enumerate(session.market.row_cards())
+                     if c and c.card_type == "champion")
+        acquired = session.market.row_cards()[index].name
+        session.buy_card_action(index)
+
+        self.assertIn(acquired, [c.name for c in session.player.hand],
+                      "the ally really does put it in hand")
+        # ...and yet it can never be played: the play phase is gone.
+        self.assertNotIn("play_card", {a["type"] for a in session.legal_actions()})
+
+        session.advance_phase()                     # buy -> combat
+        session.advance_phase()                     # combat -> end turn
+        self.assertIn(acquired, [c.name for c in session.player.discard],
+                      "discarded unused - the ally achieved nothing")
+
+
+class TestGrakLogsNothing(unittest.TestCase):
+    """Grak's expend is mechanically correct but silent in the log, which is
+    why a player reported it as a suspected rules bug."""
+
+    def test_expend_draws_and_discards_but_says_neither(self):
+        from hero_engine import load_hero_cards
+
+        cards = {c.name: c for c in load_hero_cards("data/hero_realms_cards.json")}
+        session = create_session(seed=7)
+        session.active_player, session.phase = "player", "champion"
+        grak = BoardChampion(cards["Grak, Storm Giant"])
+        session.player.board.append(grak)
+        deck_before, discard_before = len(session.player.deck), len(session.player.discard)
+
+        session.expend_champion_action(str(grak.instance_id))
+
+        self.assertEqual(session.player.combat, 6)
+        self.assertEqual(len(session.player.deck), deck_before - 1, "drew a card")
+        self.assertEqual(len(session.player.discard), discard_before + 1, "discarded one")
+
+        messages = " ".join(entry["message"] for entry in session.log)
+        self.assertIn("Grak", messages)
+        # Current behaviour: the draw/discard is invisible. If this ever starts
+        # being logged, delete the assertion rather than the logging.
+        self.assertNotIn("drew", messages.lower())
+
 if __name__ == "__main__":
     unittest.main()
