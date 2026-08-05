@@ -9,6 +9,7 @@ import {
   loadSession,
   playCard,
   runBotTurn,
+  sacrificePlayed,
 } from './api';
 import type {
   CardView,
@@ -96,6 +97,23 @@ function Panel({ title, subtitle, children, className = '' }: { title: string; s
  */
 function phaseAllows(phase: Phase, category: 'play' | 'champion' | 'buy' | 'combat'): boolean {
   return phase === 'main' || phase === category;
+}
+
+/**
+ * Branches of an "Expend: gain 1 gold *or* gain 1 combat" card. The rules make
+ * this the player's call, so each branch gets its own button; the engine's
+ * heuristic only decides when no choice is supplied (i.e. for the bot).
+ */
+const OR_CHOICE_LABEL: Record<string, string> = {
+  combat: 'combat',
+  gold: 'gold',
+  health: 'heal',
+  per_champion_health: 'heal/champ',
+};
+
+function orChoiceBranches(card: CardView): string[] {
+  const branches = (card.effects.or_choice as string[] | undefined) ?? [];
+  return branches.filter((kind) => ((card.effects[kind] as number | undefined) ?? 0) > 0);
 }
 
 function CardTile({
@@ -378,6 +396,7 @@ function BoardColumn({
   activePlayer,
   onPlay,
   onExpend,
+  onSacrifice,
   onAttack,
   stunTargets,
   hiddenHand = false,
@@ -388,7 +407,8 @@ function BoardColumn({
   phase: Phase;
   activePlayer: 'player' | 'bot';
   onPlay?: (cardId: string, stunTargetIndex?: number) => Promise<void>;
-  onExpend?: (championId: string, stunTargetIndex?: number) => Promise<void>;
+  onExpend?: (championId: string, stunTargetIndex?: number, choice?: string) => Promise<void>;
+  onSacrifice?: (cardId: string) => Promise<void>;
   onAttack?: (target: 'player' | 'champion', championId?: string) => Promise<void>;
   stunTargets: ChampionView[];
   hiddenHand?: boolean;
@@ -420,7 +440,21 @@ function BoardColumn({
         </div>
         <div className="stack">
           {player.board.length === 0 ? <div className="empty-note">No champions in play.</div> : null}
-          {player.board.map((champion, index) => (
+          {player.board.flatMap((champion, index) => {
+            const branches = role === 'player' ? orChoiceBranches(champion) : [];
+            if (branches.length > 1 && phaseAllows(phase, 'champion') && canInteract && onExpend) {
+              return branches.map((kind) => (
+                <ChampionRow
+                  key={`${champion.instanceId}-${kind}`}
+                  champion={champion}
+                  actionLabel={`Expend: ${OR_CHOICE_LABEL[kind] ?? kind}`}
+                  disabled={champion.exhausted}
+                  onAction={() => void onExpend(champion.instanceId, undefined, kind)}
+                  quiet={hiddenHand}
+                />
+              ));
+            }
+            return [(
             <ChampionRow
               key={`${champion.id}-${index}`}
               champion={champion}
@@ -450,9 +484,39 @@ function BoardColumn({
               }}
               quiet={hiddenHand}
             />
-          ))}
+            )];
+          })}
         </div>
       </div>
+      {player.playedThisTurn.some((card) => ((card.effects.sacrifice_combat as number | undefined) ?? 0) > 0) ? (
+        <div className="subsection">
+          <div className="subsection-head">
+            <h3>In play</h3>
+          </div>
+          <div className="stack">
+            {player.playedThisTurn
+              .map((card, index) => ({ card, index }))
+              .filter(({ card }) => ((card.effects.sacrifice_combat as number | undefined) ?? 0) > 0)
+              .map(({ card, index }) => (
+                <div key={`${card.id}-played-${index}`} className="champ-row">
+                  <div className="champ-copy">
+                    <div className="champ-name">{card.name}</div>
+                    <div className="champ-sub">
+                      Sacrifice: +{card.effects.sacrifice_combat as number} combat
+                    </div>
+                  </div>
+                  <button
+                    className="ghost-button subtle"
+                    disabled={!canInteract || !onSacrifice}
+                    onClick={() => onSacrifice && void onSacrifice(card.id)}
+                  >
+                    Sacrifice
+                  </button>
+                </div>
+              ))}
+          </div>
+        </div>
+      ) : null}
       <div className="subsection">
         <div className="subsection-head">
           <h3>{hiddenHand ? 'Hidden hand' : 'Hand'}</h3>
@@ -554,14 +618,19 @@ function App() {
     await refreshFrom(playCard(session.sessionId, cardId, stunTargetIndex));
   }
 
-  async function handleExpend(championId: string, stunTargetIndex?: number) {
+  async function handleExpend(championId: string, stunTargetIndex?: number, choice?: string) {
     if (!session || isReplayMode) return;
-    await refreshFrom(expendChampion(session.sessionId, championId, stunTargetIndex));
+    await refreshFrom(expendChampion(session.sessionId, championId, stunTargetIndex, choice));
   }
 
   async function handleBuy(index: number) {
     if (!session || isReplayMode) return;
     await refreshFrom(buyCard(session.sessionId, index));
+  }
+
+  async function handleSacrifice(cardId: string) {
+    if (!session) return;
+    await refreshFrom(sacrificePlayed(session.sessionId, cardId));
   }
 
   async function handleAttack(target: 'player' | 'champion', championId?: string) {
@@ -665,6 +734,7 @@ function App() {
                 activePlayer={activePlayer}
                 onPlay={handlePlay}
                 onExpend={handleExpend}
+                onSacrifice={handleSacrifice}
                 onAttack={handleAttack}
                 stunTargets={displayState.bot.board}
                 role="player"

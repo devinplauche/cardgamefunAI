@@ -62,9 +62,10 @@ FREEFORM_TURN = True
 _ACTION_CATEGORY_ORDER = {
     "play_card": 0,
     "expend_champion": 1,
-    "buy_card": 2,
-    "attack_target": 3,
-    "advance_phase": 4,
+    "sacrifice_played": 2,
+    "buy_card": 3,
+    "attack_target": 4,
+    "advance_phase": 5,
 }
 
 #: Separation between category bands in a main-phase action's `priority`.
@@ -73,6 +74,12 @@ _ACTION_CATEGORY_ORDER = {
 #: actions also carry `rawPriority` and `categoryRank` for anything that needs
 #: the undistorted value.
 _CATEGORY_OFFSET = 1000
+
+#: Human labels for the branches of an or_choice card.
+_OR_CHOICE_LABEL = {
+    "combat": "combat", "gold": "gold", "health": "heal",
+    "per_champion_health": "heal per champion",
+}
 
 
 # Action priorities are pure functions of a card, and HRCard is never mutated,
@@ -267,6 +274,11 @@ def _player_view(player: HRPlayer, reveal_hand: bool) -> dict[str, Any]:
         "nextBuyToTop": player.next_buy_to_top,
         "nextBuyToTopActionOnly": player.next_buy_to_top_action_only,
         "hand": [_card_view(card) for card in player.hand] if reveal_hand else [],
+        # Non-champion cards still in play this turn. Needed by the UI to offer
+        # a card's own "Sacrifice this card:" bonus, which is optional and the
+        # player's to take - Fire Gem gives 2 gold on play and *may then* be
+        # sacrificed for 3 combat. Always visible: these are face-up in play.
+        "playedThisTurn": [_card_view(card) for card in player.played_this_turn],
         "board": [_champion_view(champion) for champion in player.board if champion.alive],
     }
 
@@ -643,11 +655,47 @@ class GameSession:
                         "label": f"{champion.card.name} → {target.name}",
                         "priority": champion.card.cost + champion.card.health,
                     })
+                continue
+            # "Expend: gain 1 gold *or* gain 1 combat" is the player's choice,
+            # so offer one action per branch. Without this the engine's
+            # heuristic silently picked - Cult Priest always took gold, even at
+            # 5 HP where combat is plainly better - and no caller could ask for
+            # the other branch.
+            branches = [kind for kind in champion.card.get("or_choice", [])
+                        if champion.card.get(kind, 0)]
+            if len(branches) > 1:
+                for kind in branches:
+                    actions.append({
+                        "type": "expend_champion",
+                        "championId": str(champion.instance_id),
+                        "choice": kind,
+                        "label": f"{champion.card.name}: {_OR_CHOICE_LABEL.get(kind, kind)}",
+                        "priority": champion.card.cost + champion.card.health,
+                    })
             else:
                 actions.append({
                     "type": "expend_champion", "championId": str(champion.instance_id),
                     "label": champion.card.name,
                     "priority": champion.card.cost + champion.card.health,
+                })
+        return actions
+
+    def _sacrifice_played_actions(self, player) -> list[dict[str, Any]]:
+        """Cards in play whose own "Sacrifice this card:" bonus is unclaimed.
+
+        Fire Gem reads "Gain 2 gold. Sacrifice this card: gain 3 combat" - two
+        separate things, the second optional and the player's to take. The
+        engine decided via `_should_self_sacrifice` and, when it declined, left
+        no way to ask, so a human could take the gold and never the combat.
+        """
+        actions: list[dict[str, Any]] = []
+        for card in player.played_this_turn:
+            amount = card.get("sacrifice_combat", 0)
+            if amount:
+                actions.append({
+                    "type": "sacrifice_played", "cardId": card.id,
+                    "label": f"Sacrifice {card.name}: +{amount} combat",
+                    "priority": amount,
                 })
         return actions
 
@@ -701,6 +749,7 @@ class GameSession:
         if self.phase == MAIN_PHASE:
             actions = (self._play_card_actions(player, opponent)
                        + self._expend_champion_actions(player, opponent)
+                       + self._sacrifice_played_actions(player)
                        + self._buy_card_actions(player)
                        + self._attack_actions(player, opponent))
             actions.append({"type": "advance_phase", "label": "End Turn", "priority": -10})
@@ -720,14 +769,15 @@ class GameSession:
                 rank = _ACTION_CATEGORY_ORDER.get(action["type"], 99)
                 action["categoryRank"] = rank
                 action["rawPriority"] = action.get("priority", 0)
-                action["priority"] = action["rawPriority"] + (4 - rank) * _CATEGORY_OFFSET
+                action["priority"] = action["rawPriority"] + (5 - rank) * _CATEGORY_OFFSET
             return sorted(actions, key=lambda item: item["priority"], reverse=True)
 
         actions = []
         if self.phase == "play":
             actions = self._play_card_actions(player, opponent)
         elif self.phase == "champion":
-            actions = self._expend_champion_actions(player, opponent)
+            actions = (self._expend_champion_actions(player, opponent)
+                       + self._sacrifice_played_actions(player))
         elif self.phase == "buy":
             actions = self._buy_card_actions(player)
         elif self.phase == "combat":
@@ -755,7 +805,8 @@ class GameSession:
         return self.get_state()
 
     def expend_champion_action(self, champion_id: str,
-                                stun_target_index: int | None = None) -> dict[str, Any]:
+                                stun_target_index: int | None = None,
+                                choice: str | None = None) -> dict[str, Any]:
         player = self._current()
         opponent = self._opponent()
         if self.phase not in ("champion", MAIN_PHASE):
@@ -764,10 +815,40 @@ class GameSession:
         if champion is None:
             raise ValueError("Champion not found")
         stun_target = self._stun_target(opponent, stun_target_index) if champion.card.get("stun", False) else None
-        if not expend_champion(player, champion, opponent, stun_target=stun_target):
+        # `choice` names an or_choice branch ("gain 1 gold *or* 1 combat").
+        # None leaves the engine's heuristic in charge, which is what every
+        # simulated game and the bot's rollouts rely on.
+        if not expend_champion(player, champion, opponent, stun_target=stun_target,
+                               choice=choice):
             raise ValueError("Champion could not be expended")
 
-        self.record_event("expend", f"Expended {champion.card.name}")
+        detail = f" ({_OR_CHOICE_LABEL.get(choice, choice)})" if choice else ""
+        self.record_event("expend", f"Expended {champion.card.name}{detail}")
+        self._check_winner()
+        return self.get_state()
+
+    def sacrifice_played_action(self, card_id: str) -> dict[str, Any]:
+        """Take a played card's own "Sacrifice this card:" bonus.
+
+        Separate from the card's on-play effect, and optional - Fire Gem gives
+        2 gold when played and *may then* be sacrificed for 3 combat. The card
+        is banished (removed from the game), matching how the engine already
+        resolves a self-sacrifice it decides to take.
+        """
+        player = self._current()
+        if self.phase not in ("champion", MAIN_PHASE):
+            raise ValueError("Cards can only be sacrificed during the main phase")
+        card = next((item for item in player.played_this_turn if item.id == card_id), None)
+        if card is None:
+            raise ValueError("Card is not in play")
+        amount = card.get("sacrifice_combat", 0)
+        if not amount:
+            raise ValueError("That card has no sacrifice ability")
+
+        player.combat += amount
+        player.played_this_turn.remove(card)
+        player.banish.append(card)
+        self.record_event("sacrifice", f"Sacrificed {card.name} for {amount} combat")
         self._check_winner()
         return self.get_state()
 

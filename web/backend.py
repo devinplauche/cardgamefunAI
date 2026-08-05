@@ -100,7 +100,10 @@ class Handler(BaseHTTPRequestHandler):
                 if route == "play-card":
                     payload = session.play_card(body["cardId"], body.get("stunTargetIndex"))
                 elif route == "expend-champion":
-                    payload = session.expend_champion_action(body["championId"], body.get("stunTargetIndex"))
+                    payload = session.expend_champion_action(
+                        body["championId"], body.get("stunTargetIndex"), body.get("choice"))
+                elif route == "sacrifice-played":
+                    payload = session.sacrifice_played_action(body["cardId"])
                 elif route == "buy-card":
                     payload = session.buy_card_action(int(body["marketIndex"]))
                 elif route == "attack":

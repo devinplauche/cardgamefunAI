@@ -866,8 +866,17 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
 
 
 def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = None,
-                    stun_target: Optional[BoardChampion] = None) -> bool:
-    """Use a champion's expend ability. Applies the card's effects again."""
+                    stun_target: Optional[BoardChampion] = None,
+                    choice: Optional[str] = None) -> bool:
+    """Use a champion's expend ability. Applies the card's effects again.
+
+    `choice` names which branch of an `or_choice` card to take ("combat",
+    "gold", "health", "per_champion_health"). The rules make this the player's
+    decision - Cult Priest reads "gain 1 gold *or* gain 1 combat" - so when a
+    caller supplies one it is honoured verbatim. Left None, the heuristic below
+    picks, which is what every simulated game and the bot's own rollouts rely
+    on; only a real player needs to override it.
+    """
     if bc.exhausted or not bc.alive:
         return False
     bc.exhausted = True
@@ -928,8 +937,10 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
                 score = actual_heal + (3 if player.hp <= 25 else 0)
                 options.append(("health", total, score))
         if options:
+            chosen = next((option for option in options if option[0] == choice), None)
             best = (
-                next(option for option in options if option[0] == "combat")
+                chosen if chosen is not None
+                else next(option for option in options if option[0] == "combat")
                 if force_lethal_combat
                 else max(options, key=lambda x: x[2])
             )
