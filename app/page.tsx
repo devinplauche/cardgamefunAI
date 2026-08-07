@@ -39,6 +39,7 @@ export default function Home() {
   const [selectedId, setSelectedId] = useState("r14");
   const [trump, setTrump] = useState<Suit>("blue");
   const [bid, setBid] = useState(2);
+  const [bidLocked, setBidLocked] = useState(false);
   const [tricks, setTricks] = useState(1);
   const [message, setMessage] = useState("Select a card to get a read on the play.");
 
@@ -67,6 +68,8 @@ export default function Home() {
     setHand(starterHand);
     setSelectedId("r14");
     setTricks(1);
+    setBid(2);
+    setBidLocked(false);
     setMessage("Fresh hand dealt. Find the shape before you commit your bid.");
   }
 
@@ -85,7 +88,7 @@ export default function Home() {
       <nav className="mode-switch" aria-label="Game mode"><button className={mode === "play" ? "active" : ""} onClick={() => setMode("play")}>Play</button><button className={mode === "analyze" ? "active" : ""} onClick={() => setMode("analyze")}>Analyze</button></nav>
 
       <section className="table-card">
-        <div className="table-header"><div><span className="label">YOUR BID</span><div className="bid-control"><button onClick={() => setBid(Math.max(0, bid - 1))}>−</button><strong>{bid}</strong><button onClick={() => setBid(Math.min(8, bid + 1))}>+</button></div></div><button className="trump-chip" onClick={() => setTrump((current) => ({ red: "orange", orange: "yellow", yellow: "green", green: "blue", blue: "purple", purple: "red" }[current] as Suit))} aria-label="Change trump suit"><span className={`suit-dot ${trump}`}></span><span>Trump</span><strong>{suitNames[trump]}</strong></button></div>
+        <div className="table-header"><div><span className="label">YOUR BID {bidLocked ? <span className="locked-label">LOCKED</span> : <span className="open-label">CHOOSE ONCE</span>}</span>{bidLocked ? <div className="bid-locked"><strong>{bid}</strong><span>tricks</span></div> : <div className="bid-control"><button onClick={() => setBid(Math.max(0, bid - 1))} aria-label="Lower bid">−</button><strong>{bid}</strong><button onClick={() => setBid(Math.min(8, bid + 1))} aria-label="Raise bid">+</button><button className="lock-bid" onClick={() => { setBidLocked(true); setMessage(`Bid locked at ${bid}. Now play toward your target.`); }}>Lock bid</button></div>}</div><button className="trump-chip" onClick={() => setTrump((current) => ({ red: "orange", orange: "yellow", yellow: "green", green: "blue", blue: "purple", purple: "red" }[current] as Suit))} aria-label="Change trump suit"><span className={`suit-dot ${trump}`}></span><span>Trump</span><strong>{suitNames[trump]}</strong></button></div>
         <div className="trick-table"><div className="trick-card-slot"><span className="slot-label">MIA</span><div className="table-card-played coral-card"><strong>12</strong><span>ORANGE</span></div></div><div className="trick-card-slot"><span className="slot-label">KEN</span><div className="table-card-played green-card"><strong>9</strong><span>GREEN</span></div></div><div className="trick-card-slot"><span className="slot-label">YOU</span><div className="table-card-played blue-card"><strong>15</strong><span>BLUE · TRUMP</span></div></div></div>
         <div className="trick-summary"><div className="ring"><strong>{tricks}</strong><span>tricks</span></div><div><p className="label">CURRENT READ</p><p className="read-line">{message}</p></div></div>
         <div className="opponents"><div className="opponent"><span className="opponent-avatar coral">M</span><span><b>Mia</b><small>bid 3 · 2 tricks</small></span></div><div className="opponent"><span className="opponent-avatar lavender">K</span><span><b>Ken</b><small>bid 1 · 1 trick</small></span></div><span className="round-pill">4 cards left</span></div>
