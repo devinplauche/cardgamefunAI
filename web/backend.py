@@ -174,6 +174,8 @@ class Handler(BaseHTTPRequestHandler):
                     payload = _debug_setup(session, body)
                 elif route == "sacrifice-played":
                     payload = session.sacrifice_played_action(body["cardId"])
+                elif route == "resolve-choice":
+                    payload = session.resolve_choice_action(int(body["candidateIndex"]))
                 elif route == "buy-card":
                     payload = session.buy_card_action(int(body["marketIndex"]))
                 elif route == "attack":

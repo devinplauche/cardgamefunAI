@@ -399,11 +399,21 @@ existing baseline measured it.
 | `or_choice` | Cult Priest, Street Thug, Darian, Tithe Priest | **agent** (both branches offered) |
 | `sacrifice_combat` | Fire Gem, Influence, Word of Power, Nature's Bounty | **agent** under the flag (`sacrifice_played`) |
 | `sacrifice_for_combat` | Lys, Krythos | **agent** under the flag (one action per victim) |
-| `sacrifice_card` | Dark Reward, Death Touch, Life Drain, The Rot | engine — needs `defer_choices` |
-| `discard` / `draw_up_to` | Elven Gift, Grak, Rampage | engine — needs `defer_choices` |
+| `sacrifice_card` | Dark Reward, Death Touch, Life Drain, The Rot | **agent** under `AGENT_CHOOSES_TARGETS` |
+| `discard` / `draw_up_to` | Elven Gift, Grak, Rampage | **agent** under `AGENT_CHOOSES_TARGETS` |
 | `opponent_discard` | Elven Curse, Spark, Wolf Form, Torgen | engine, and it picks the *opponent's* card |
 | `recycle` / `reanimate` | Smash and Grab / Varrick | engine |
 | `sacrifice_up_to` | Tyrannor | engine, **deliberately** |
+
+`AGENT_CHOOSES_TARGETS` (`hero_engine.py`, default **False**) turns on
+`defer_choices` for a session's players and exposes the pending-choices queue
+as `resolve_choice` actions — one per candidate card, plus a decline branch
+when the printed text says "you may". While a choice is pending it is the
+**only** legal action, so a half-resolved effect blocks everything else; that
+is what makes it a decision point rather than a preference. Verified the bot
+does not deadlock on it: 20/20 seeds faced the choice and resolved it
+(`test_bot_can_play_a_whole_turn_with_targeting_on` spies on the action list so
+it cannot pass vacuously).
 
 Tyrannor is the cautionary one: gating `sacrifice_up_to` on the flag without an
 action to replace it made the ability do *nothing*. "Sacrifice up to two cards"

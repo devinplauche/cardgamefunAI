@@ -95,6 +95,25 @@ FIRE_GEM = HRCard(id="fire_gem", name="Fire Gem", cost=2, faction="",
 #: what makes that action reachable.
 AGENT_CHOOSES_SACRIFICE = False
 
+#: When True, sacrifice and discard *targeting* is handed to the agent too.
+#:
+#: `defer_choices` and the whole pending-choices queue have existed for a
+#: while, but only `hero_rl_env_v3.py` ever set the flag - the MCTS bot never
+#: did. So `_find_worst_idx`, which by the note below fires ~14 times per game,
+#: has been choosing which card to sacrifice and which to discard on the bot's
+#: behalf, and `hero_engine.py`'s own comment calls those "the decisions a
+#: strong player spends the most thought on".
+#:
+#: This flag turns deferral on for a GameSession's players and makes the queue
+#: reachable as `resolve_choice` actions. Separate from
+#: AGENT_CHOOSES_SACRIFICE because it is a much larger change to the action
+#: space: it adds a decision point mid-action, where the two are mutually
+#: exclusive with everything else until resolved.
+#:
+#: Default False. Same rule as every other knob here - do not flip it without
+#: an A/B carrying a null arm, confirmed on a disjoint block.
+AGENT_CHOOSES_TARGETS = False
+
 _board_champion_ids = itertools.count()
 
 

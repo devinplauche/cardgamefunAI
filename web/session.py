@@ -24,8 +24,10 @@ from hero_engine import (
     HRPlayer,
     RUBY,
     SHORTSWORD,
+    apply_choice,
     auto_expend_all,
     buy_card,
+    choice_candidates,
     expend_champion,
     has_ally,
     load_hero_cards,
@@ -363,6 +365,12 @@ class GameSession:
         self.player.draw(3)
         self.bot.draw(5)
         self.market = HRMarket(self.cards, self.rng)
+        # Sacrifice/discard targeting becomes a real decision rather than
+        # something _find_worst_idx settles inline. Read at construction so an
+        # A/B arm that sets the flag applies to sessions it creates afterwards.
+        if hero_engine.AGENT_CHOOSES_TARGETS:
+            self.player.defer_choices = True
+            self.bot.defer_choices = True
         self.phase = MAIN_PHASE if FREEFORM_TURN else "play"
         self._start_turn(self.player)
         self.record_event("system", "Game created")
@@ -805,12 +813,75 @@ class GameSession:
             })
         return actions
 
+    def _pending_choice_actions(self, player) -> list[dict[str, Any]]:
+        """One action per card a pending sacrifice/discard may target.
+
+        Returned *exclusively* (see legal_actions): a card effect is mid-
+        resolution, so nothing else may happen until the target is named. That
+        is what makes this a real decision point rather than a preference the
+        engine consults.
+        """
+        if not player.pending_choices:
+            return []
+        choice = player.pending_choices[0]
+        kind = choice["kind"]
+        candidates = choice_candidates(player, choice)
+        actions: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for index, card in enumerate(candidates):
+            # Duplicates are interchangeable; offering one action per copy
+            # would inflate the branching factor for no strategic gain.
+            if card.id in seen:
+                continue
+            seen.add(card.id)
+            actions.append({
+                "type": "resolve_choice", "candidateIndex": index,
+                "label": f"{kind.capitalize()} {card.name}",
+                # Negated: the engine's own inline resolution picked the
+                # *lowest* contextual value, so this orders the choices the
+                # way the heuristic would have, keeping a greedy consumer
+                # (and MCTS's rollout policy) byte-identical to the old path.
+                "priority": -hero_engine._contextual_card_value(
+                    card, player, self._opponent()),
+            })
+        # "You may sacrifice" is declinable; a forced discard is not.
+        if kind == "sacrifice":
+            actions.append({
+                "type": "resolve_choice", "candidateIndex": -1,
+                "label": "Decline sacrifice", "priority": 0,
+            })
+        return actions
+
+    def resolve_choice_action(self, candidate_index: int) -> dict[str, Any]:
+        player = self._current()
+        if not player.pending_choices:
+            raise ValueError("No pending choice")
+        choice = player.pending_choices[0]
+        if candidate_index < 0:
+            if choice["kind"] != "sacrifice":
+                raise ValueError("This choice cannot be declined")
+            player.pending_choices.remove(choice)
+            self.record_event("effect", f"{player.name}: declined the sacrifice")
+            return self.get_state()
+        card = apply_choice(player, choice, candidate_index)
+        if card is None:
+            raise ValueError("Invalid choice target")
+        self.record_event("effect", f"{player.name}: {choice['kind']}d {card.name}")
+        self._check_winner()
+        return self.get_state()
+
     def legal_actions(self) -> list[dict[str, Any]]:
         if self.winner:
             return []
 
         player = self._current()
         opponent = self._opponent()
+
+        # A half-resolved card effect outranks everything: until its target is
+        # named, no other action is legal.
+        pending = self._pending_choice_actions(player)
+        if pending:
+            return pending
 
         if self.phase == MAIN_PHASE:
             actions = (self._play_card_actions(player, opponent)
