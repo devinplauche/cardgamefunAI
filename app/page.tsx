@@ -6,6 +6,7 @@ type Suit = "red" | "orange" | "yellow" | "green" | "blue" | "purple";
 type Card = { id: string; value?: number; suit?: Suit; label?: string; type?: "wild" | "bonus" | "mad" | "change" | "out" };
 
 const suitNames: Record<Suit, string> = { red: "Red", orange: "Orange", yellow: "Yellow", green: "Green", blue: "Blue", purple: "Purple" };
+const suitSymbols: Record<Suit, string> = { red: "R", orange: "O", yellow: "Y", green: "G", blue: "B", purple: "P" };
 
 const starterHand: Card[] = [
   { id: "r14", value: 14, suit: "red" },
@@ -27,7 +28,7 @@ function cardStrength(card: Card, trump: Suit) {
 function CardView({ card, selected, onClick }: { card: Card; selected: boolean; onClick: () => void }) {
   return (
     <button className={`playing-card ${card.suit ?? "special"} ${selected ? "selected" : ""}`} onClick={onClick} aria-label={card.label ?? `${card.value} ${card.suit} card`}>
-      {card.type ? <><span className="special-mark">✦</span><span>{card.label}</span></> : <><span className="card-value">{card.value}</span><span className="card-suit">●</span></>}
+      {card.type ? <><span className="special-mark">✦</span><span>{card.label}</span></> : <><span className="card-value">{card.value}</span><span className="card-suit">{suitSymbols[card.suit!]}</span><span className="card-suit-name">{suitNames[card.suit!]}</span></>}
     </button>
   );
 }
@@ -85,6 +86,7 @@ export default function Home() {
 
       <section className="table-card">
         <div className="table-header"><div><span className="label">YOUR BID</span><div className="bid-control"><button onClick={() => setBid(Math.max(0, bid - 1))}>−</button><strong>{bid}</strong><button onClick={() => setBid(Math.min(8, bid + 1))}>+</button></div></div><button className="trump-chip" onClick={() => setTrump((current) => ({ red: "orange", orange: "yellow", yellow: "green", green: "blue", blue: "purple", purple: "red" }[current] as Suit))} aria-label="Change trump suit"><span className={`suit-dot ${trump}`}></span><span>Trump</span><strong>{suitNames[trump]}</strong></button></div>
+        <div className="trick-table"><div className="trick-card-slot"><span className="slot-label">MIA</span><div className="table-card-played coral-card"><strong>12</strong><span>ORANGE</span></div></div><div className="trick-card-slot"><span className="slot-label">KEN</span><div className="table-card-played green-card"><strong>9</strong><span>GREEN</span></div></div><div className="trick-card-slot"><span className="slot-label">YOU</span><div className="table-card-played blue-card"><strong>15</strong><span>BLUE · TRUMP</span></div></div></div>
         <div className="trick-summary"><div className="ring"><strong>{tricks}</strong><span>tricks</span></div><div><p className="label">CURRENT READ</p><p className="read-line">{message}</p></div></div>
         <div className="opponents"><div className="opponent"><span className="opponent-avatar coral">M</span><span><b>Mia</b><small>bid 3 · 2 tricks</small></span></div><div className="opponent"><span className="opponent-avatar lavender">K</span><span><b>Ken</b><small>bid 1 · 1 trick</small></span></div><span className="round-pill">4 cards left</span></div>
       </section>
