@@ -100,6 +100,26 @@ export interface BotInsight {
   }>;
 }
 
+/** One action the server says is legal right now.
+ *
+ * Kept loose (`[key: string]: unknown`) because the engine adds fields as
+ * decisions are handed back to the agent, and a panel that renders from this
+ * list picks them up without a UI change. The named fields are the ones the UI
+ * reads today. */
+export interface LegalAction {
+  type: string;
+  label: string;
+  priority?: number;
+  cardId?: string;
+  championId?: string;
+  marketIndex?: number;
+  choice?: string;
+  stunTargetIndex?: number | null;
+  sacrificeIndex?: number | null;
+  sacrificeZone?: string | null;
+  [key: string]: unknown;
+}
+
 export interface GameStateCore {
   sessionId: string;
   turnNumber: number;
@@ -109,7 +129,7 @@ export interface GameStateCore {
   player: PlayerView;
   bot: PlayerView;
   market: MarketView;
-  legalActions: Array<Record<string, unknown>>;
+  legalActions: LegalAction[];
   log: LogEntry[];
   botInsight: BotInsight | null;
 }

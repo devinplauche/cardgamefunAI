@@ -20,6 +20,7 @@ import type {
   MarketView,
   Phase,
   PlayerView,
+  LegalAction,
 } from './types';
 
 type StatusTone = 'idle' | 'busy' | 'error' | 'good';
@@ -401,21 +402,40 @@ function BoardColumn({
   stunTargets,
   hiddenHand = false,
   role,
+  attackingCombat,
+  legalActions = [],
 }: {
   title: string;
   player: PlayerView;
   phase: Phase;
   activePlayer: 'player' | 'bot';
+  legalActions?: LegalAction[];
   onPlay?: (cardId: string, stunTargetIndex?: number) => Promise<void>;
-  onExpend?: (championId: string, stunTargetIndex?: number, choice?: string) => Promise<void>;
+  onExpend?: (
+    championId: string,
+    stunTargetIndex?: number,
+    choice?: string,
+    sacrificeIndex?: number,
+    sacrificeZone?: string,
+  ) => Promise<void>;
   onSacrifice?: (cardId: string) => Promise<void>;
   onAttack?: (target: 'player' | 'champion', championId?: string) => Promise<void>;
   stunTargets: ChampionView[];
   hiddenHand?: boolean;
   role: 'player' | 'bot';
+  attackingCombat?: number;
 }) {
   const isHumanTurn = activePlayer === 'player';
   const canInteract = isHumanTurn;
+  const combatAvailable = role === 'bot' ? attackingCombat ?? 0 : player.combat;
+  const legalAttackTargets = role === 'bot'
+    ? (() => {
+        const living = player.board.filter((champion) => champion.alive && champion.currentHealth > 0);
+        const guards = living.filter((champion) => champion.guard > 0);
+        return guards.length > 0 ? guards : living;
+      })()
+    : [];
+  const legalAttackIds = new Set(legalAttackTargets.map((champion) => champion.instanceId));
   const chooseStunTarget = (card: CardView): number | null | undefined => {
     if (!card.effects.stun || stunTargets.length === 0) return undefined;
     const guards = stunTargets.filter((champion) => champion.guard > 0);
@@ -441,6 +461,41 @@ function BoardColumn({
         <div className="stack">
           {player.board.length === 0 ? <div className="empty-note">No champions in play.</div> : null}
           {player.board.flatMap((champion, index) => {
+            // Sacrifice-on-expend ("you may sacrifice a card... gain 2 more
+            // combat") is rendered straight from the server's legal actions
+            // rather than re-derived from the card here. Every affordance this
+            // panel builds from its own card model is one the engine can add
+            // without the UI ever showing it - which is how Lys came to eat a
+            // card from hand with no prompt and no log line.
+            const sacrificeOptions =
+              role === 'player' && canInteract && onExpend
+                ? legalActions.filter(
+                    (action) =>
+                      action.type === 'expend_champion' &&
+                      action.championId === champion.instanceId &&
+                      action.sacrificeIndex !== undefined &&
+                      action.sacrificeIndex !== null,
+                  )
+                : [];
+            const sacrificeRows = sacrificeOptions.map((action) => (
+              <ChampionRow
+                key={`${champion.instanceId}-sac-${action.sacrificeZone}-${action.sacrificeIndex}`}
+                champion={champion}
+                actionLabel={action.label}
+                disabled={champion.exhausted}
+                onAction={() =>
+                  void onExpend?.(
+                    champion.instanceId,
+                    undefined,
+                    undefined,
+                    action.sacrificeIndex ?? undefined,
+                    action.sacrificeZone ?? 'hand',
+                  )
+                }
+                quiet={hiddenHand}
+              />
+            ));
+
             const branches = role === 'player' ? orChoiceBranches(champion) : [];
             if (branches.length > 1 && phaseAllows(phase, 'champion') && canInteract && onExpend) {
               return branches.map((kind) => (
@@ -452,7 +507,7 @@ function BoardColumn({
                   onAction={() => void onExpend(champion.instanceId, undefined, kind)}
                   quiet={hiddenHand}
                 />
-              ));
+              )).concat(sacrificeRows);
             }
             return [(
             <ChampionRow
@@ -463,14 +518,14 @@ function BoardColumn({
                   ? phaseAllows(phase, 'champion') && canInteract && onExpend
                     ? 'Expend'
                     : 'Locked'
-                  : phaseAllows(phase, 'combat') && canInteract && onAttack
+                  : phaseAllows(phase, 'combat') && canInteract && onAttack && combatAvailable > 0 && legalAttackIds.has(champion.instanceId)
                     ? 'Attack'
                     : 'Locked'
               }
               disabled={
                 role === 'player'
                   ? !phaseAllows(phase, 'champion') || !canInteract || champion.exhausted || !onExpend
-                  : !phaseAllows(phase, 'combat') || !canInteract || !onAttack
+                  : !phaseAllows(phase, 'combat') || !canInteract || !onAttack || combatAvailable <= 0 || !legalAttackIds.has(champion.instanceId)
               }
               onAction={() => {
                 // instanceId, not id: the engine matches board champions on
@@ -484,7 +539,7 @@ function BoardColumn({
               }}
               quiet={hiddenHand}
             />
-            )];
+            ), ...sacrificeRows];
           })}
         </div>
       </div>
@@ -618,9 +673,17 @@ function App() {
     await refreshFrom(playCard(session.sessionId, cardId, stunTargetIndex));
   }
 
-  async function handleExpend(championId: string, stunTargetIndex?: number, choice?: string) {
+  async function handleExpend(
+    championId: string,
+    stunTargetIndex?: number,
+    choice?: string,
+    sacrificeIndex?: number,
+    sacrificeZone?: string,
+  ) {
     if (!session || isReplayMode) return;
-    await refreshFrom(expendChampion(session.sessionId, championId, stunTargetIndex, choice));
+    await refreshFrom(
+      expendChampion(session.sessionId, championId, stunTargetIndex, choice, sacrificeIndex, sacrificeZone),
+    );
   }
 
   async function handleBuy(index: number) {
@@ -737,6 +800,7 @@ function App() {
                 onSacrifice={handleSacrifice}
                 onAttack={handleAttack}
                 stunTargets={displayState.bot.board}
+                legalActions={displayState.legalActions}
                 role="player"
               />
             ) : null}
@@ -782,6 +846,7 @@ function App() {
                 onAttack={handleAttack}
                 stunTargets={[]}
                 role="bot"
+                attackingCombat={displayState.player.combat}
               />
             ) : null}
 

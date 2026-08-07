@@ -9,6 +9,11 @@ import time
 import uuid
 from typing import Any
 
+#: Imported as a module, not `from ... import AGENT_CHOOSES_SACRIFICE`, so the
+#: flag is read at call time. hero_ab.paired_experiment flips knobs by setting
+#: module globals; a value bound at import would silently ignore the arm.
+import hero_engine
+
 from hero_engine import (
     BoardChampion,
     DAGGER,
@@ -191,6 +196,11 @@ def _copy_player(player: HRPlayer, rng: random.Random) -> HRPlayer:
     # simulated branch consume the real game's pending choice.
     clone.pending_choices = [dict(c) for c in player.pending_choices]
     clone.defer_choices = player.defer_choices
+    # Simulation clones are never shown to anyone, and play_card runs ~25k
+    # times per MCTS decision, so the narration is switched off rather than
+    # built and discarded.
+    clone.effect_log = []
+    clone.log_effects = False
     clone.actions_played = player.actions_played
     clone.cards_bought = player.cards_bought
     clone.next_buy_to_hand = player.next_buy_to_hand
@@ -315,6 +325,7 @@ class GameSession:
     winner: str | None = field(default=None)
     log: list[dict[str, Any]] = field(default_factory=list)
     history: list[dict[str, Any]] = field(default_factory=list)
+    history_sequence: int = field(default=0)
     last_bot_insight: dict[str, Any] | None = field(default=None)
     opponent_purchase_observations: tuple[PublicOpponentPurchase, ...] = ()
     record_history: bool = field(default=True)
@@ -390,6 +401,7 @@ class GameSession:
         clone.winner = self.winner
         clone.log = []
         clone.history = []
+        clone.history_sequence = self.history_sequence
         clone.last_bot_insight = None
         clone.opponent_purchase_observations = self.opponent_purchase_observations
         clone.record_history = False
@@ -606,9 +618,10 @@ class GameSession:
             return
         insight = bot_insight if bot_insight is not None else self.last_bot_insight
         self.log_event(label, kind, bot_insight=insight)
+        self.history_sequence += 1
         self.history.append(
             {
-                "id": f"{self.turn_number}-{len(self.history) + 1}",
+                "id": f"{self.turn_number}-{self.history_sequence}",
                 "kind": kind,
                 "label": label,
                 "turn": self.turn_number,
@@ -678,7 +691,60 @@ class GameSession:
                     "label": champion.card.name,
                     "priority": champion.card.cost + champion.card.health,
                 })
+            actions.extend(self._expend_sacrifice_actions(player, champion))
         return actions
+
+    def _expend_sacrifice_actions(self, player, champion) -> list[dict[str, Any]]:
+        """"You may sacrifice a card... if you do, gain 2 more combat" (Lys,
+        Krythos) as one action per candidate.
+
+        Playing the UI by hand found this taking a Gold out of hand with no
+        prompt and no log line, so neither a human nor MCTS could decline it or
+        pick a different card. Only offered while AGENT_CHOOSES_SACRIFICE is
+        set; the plain expend action above is the "decline" branch.
+        """
+        amount = champion.card.get("sacrifice_for_combat", 0)
+        if not amount or not hero_engine.AGENT_CHOOSES_SACRIFICE:
+            return []
+        zone = "hand" if player.hand else ("discard" if player.discard else None)
+        if zone is None:
+            return []
+        source = player.hand if zone == "hand" else player.discard
+        # Identical cards are interchangeable here, so offering one action per
+        # duplicate would multiply the branching factor for nothing - and this
+        # project has measured a 9-11pp loss from widening a search root.
+        seen: set[str] = set()
+        actions: list[dict[str, Any]] = []
+        for index, card in enumerate(source):
+            if card.id in seen:
+                continue
+            seen.add(card.id)
+            actions.append({
+                "type": "expend_champion",
+                "championId": str(champion.instance_id),
+                "sacrificeIndex": index,
+                "sacrificeZone": zone,
+                "label": f"{champion.card.name} + sacrifice {card.name} "
+                         f"(+{amount} combat)",
+                "priority": champion.card.cost + champion.card.health + amount,
+            })
+        return actions
+
+    def _drain_effect_log(self, *players) -> None:
+        """Surface effects the engine resolved by itself.
+
+        A sacrifice or forced discard mutates a zone without any action being
+        taken for it, so nothing else in this class knows to log it. Playing
+        the UI by hand found Lys removing a card from hand and Fire Gem
+        banishing itself with no trace in the log either time. Drained for both
+        players because forced discards hit the opponent.
+        """
+        for player in players:
+            if not player:
+                continue
+            for message in player.effect_log:
+                self.record_event("effect", f"{player.name}: {message}")
+            player.effect_log.clear()
 
     def _sacrifice_played_actions(self, player) -> list[dict[str, Any]]:
         """Cards in play whose own "Sacrifice this card:" bonus is unclaimed.
@@ -801,12 +867,15 @@ class GameSession:
         play_card(player, card, self.market, ally_bonus=ally_bonus, opponent=opponent,
                   stun_target=stun_target)
         self.record_event("play", f"Played {card.name}")
+        self._drain_effect_log(player, opponent)
         self._check_winner()
         return self.get_state()
 
     def expend_champion_action(self, champion_id: str,
                                 stun_target_index: int | None = None,
-                                choice: str | None = None) -> dict[str, Any]:
+                                choice: str | None = None,
+                                sacrifice_index: int | None = None,
+                                sacrifice_zone: str = "hand") -> dict[str, Any]:
         player = self._current()
         opponent = self._opponent()
         if self.phase not in ("champion", MAIN_PHASE):
@@ -819,11 +888,13 @@ class GameSession:
         # None leaves the engine's heuristic in charge, which is what every
         # simulated game and the bot's rollouts rely on.
         if not expend_champion(player, champion, opponent, stun_target=stun_target,
-                               choice=choice):
+                               choice=choice, sacrifice_index=sacrifice_index,
+                               sacrifice_zone=sacrifice_zone):
             raise ValueError("Champion could not be expended")
 
         detail = f" ({_OR_CHOICE_LABEL.get(choice, choice)})" if choice else ""
         self.record_event("expend", f"Expended {champion.card.name}{detail}")
+        self._drain_effect_log(player, opponent)
         self._check_winner()
         return self.get_state()
 

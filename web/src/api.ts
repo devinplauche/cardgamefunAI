@@ -48,10 +48,17 @@ export async function sacrificePlayed(sessionId: string, cardId: string): Promis
   });
 }
 
-export async function expendChampion(sessionId: string, championId: string, stunTargetIndex?: number, choice?: string): Promise<GameState> {
+export async function expendChampion(
+  sessionId: string,
+  championId: string,
+  stunTargetIndex?: number,
+  choice?: string,
+  sacrificeIndex?: number,
+  sacrificeZone?: string,
+): Promise<GameState> {
   return requestJson<GameState>(`/api/sessions/${sessionId}/expend-champion`, {
     method: 'POST',
-    body: JSON.stringify({ championId, stunTargetIndex, choice }),
+    body: JSON.stringify({ championId, stunTargetIndex, choice, sacrificeIndex, sacrificeZone }),
   });
 }
 

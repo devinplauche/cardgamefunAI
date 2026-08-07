@@ -994,7 +994,9 @@ def apply_action(session, action: dict[str, Any]) -> None:
         session.play_card(action["cardId"], action.get("stunTargetIndex"))
     elif action_type == "expend_champion":
         session.expend_champion_action(action["championId"], action.get("stunTargetIndex"),
-                                       action.get("choice"))
+                                       action.get("choice"),
+                                       action.get("sacrificeIndex"),
+                                       action.get("sacrificeZone", "hand"))
     elif action_type == "sacrifice_played":
         session.sacrifice_played_action(action["cardId"])
     elif action_type == "buy_card":

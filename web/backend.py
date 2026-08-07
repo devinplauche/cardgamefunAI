@@ -11,6 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from hero_engine import BoardChampion, DAGGER, FIRE_GEM, GOLD, RUBY, SHORTSWORD
 from web.session import create_session
 
 
@@ -34,6 +35,72 @@ def _session_or_404(session_id: str):
     if session is None:
         return None, {"error": "Session not found"}
     return session, None
+
+
+#: Opt-in, because it lets a caller rewrite any zone of a live game.
+#: Start the backend with HR_DEBUG_SETUP=1 to enable it.
+DEBUG_SETUP = os.environ.get("HR_DEBUG_SETUP") == "1"
+
+
+def _debug_setup(session, body: dict) -> dict:
+    """Deal a chosen position so a card's ability can be exercised on demand.
+
+    Card abilities were previously only testable by playing until the card
+    happened to appear - roughly a dozen turns to reach one Fire Gem, and the
+    long tail (Tyrannor, Varrick, Rake) essentially never. This puts named
+    cards straight into hand, board, or the market row so every ability can be
+    driven through the *real* UI and the *real* backend, which is the only
+    layer where the last three rules bugs were visible: benchmarks drive the
+    engine directly and feed its own action dicts back in, so they cannot see
+    the UI at all.
+
+    Names are matched case-insensitively against the loaded card set. Unknown
+    names are reported rather than silently dropped - a typo that quietly
+    produced an empty hand would invalidate a test without saying so.
+    """
+    if not DEBUG_SETUP:
+        raise ValueError("debug-setup disabled; start the backend with "
+                         "HR_DEBUG_SETUP=1")
+
+    by_name = {card.name.lower(): card for card in session.cards}
+    for extra in (GOLD, SHORTSWORD, DAGGER, RUBY, FIRE_GEM):
+        by_name[extra.name.lower()] = extra
+
+    unknown: list[str] = []
+
+    def resolve(names):
+        out = []
+        for name in names or []:
+            card = by_name.get(str(name).lower())
+            if card is None:
+                unknown.append(name)
+            else:
+                out.append(card)
+        return out
+
+    who = session.bot if body.get("side") == "bot" else session.player
+    target = session.player if who is session.bot else session.bot
+
+    if "hand" in body:
+        who.hand = resolve(body["hand"])
+    if "discard" in body:
+        who.discard = resolve(body["discard"])
+    if "deck" in body:
+        who.deck = resolve(body["deck"])
+    if "board" in body:
+        who.board = [BoardChampion(card) for card in resolve(body["board"])]
+    if "opponentBoard" in body:
+        target.board = [BoardChampion(card) for card in resolve(body["opponentBoard"])]
+    if "market" in body:
+        row = resolve(body["market"])
+        session.market.row = (row + [None] * 5)[:5]
+    for field in ("gold", "combat", "hp"):
+        if field in body:
+            setattr(who, field, int(body[field]))
+
+    if unknown:
+        raise ValueError(f"unknown card names: {unknown}")
+    return session.get_state()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -101,7 +168,10 @@ class Handler(BaseHTTPRequestHandler):
                     payload = session.play_card(body["cardId"], body.get("stunTargetIndex"))
                 elif route == "expend-champion":
                     payload = session.expend_champion_action(
-                        body["championId"], body.get("stunTargetIndex"), body.get("choice"))
+                        body["championId"], body.get("stunTargetIndex"), body.get("choice"),
+                        body.get("sacrificeIndex"), body.get("sacrificeZone", "hand"))
+                elif route == "debug-setup":
+                    payload = _debug_setup(session, body)
                 elif route == "sacrifice-played":
                     payload = session.sacrifice_played_action(body["cardId"])
                 elif route == "buy-card":

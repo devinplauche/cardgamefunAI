@@ -78,6 +78,23 @@ FIRE_GEM = HRCard(id="fire_gem", name="Fire Gem", cost=2, faction="",
                   card_type="item", effects={"gold": 2, "sacrifice_combat": 3})
 
 
+#: When True, every optional sacrifice becomes a decision the *agent* makes
+#: instead of one the engine makes for it.
+#:
+#: Found by playing the UI and insisting on making every move by hand: playing
+#: a Fire Gem silently banished it for +3 combat, and expending Lys silently
+#: removed a card from hand - neither was offered, neither was logged, and
+#: `legal_actions()` never contained the choice, so MCTS could not search it
+#: either. That is the same failure mode as the phase ratchet: not a worse
+#: policy, an unreachable one.
+#:
+#: Default False because flipping it enlarges the action space and therefore
+#: invalidates every baseline, exactly as the Ruby fix and the Main-phase fix
+#: did. Flip it only behind an A/B with a null arm, confirmed on a disjoint
+#: block. `web/session.py` already exposes `sacrifice_played`; this flag is
+#: what makes that action reachable.
+AGENT_CHOOSES_SACRIFICE = False
+
 _board_champion_ids = itertools.count()
 
 
@@ -147,11 +164,33 @@ class HRPlayer:
         # existing caller (heuristics, MCTS, the v1 RL env) is unchanged.
         self.pending_choices: list[dict] = []
         self.defer_choices: bool = False
+        # Human-readable record of effects the engine resolved *itself* during
+        # the current action - sacrifices, forced discards, ally payouts.
+        # Playing the UI found Lys silently removing a card from hand and Fire
+        # Gem silently banishing itself, with nothing in the log either time:
+        # the board changed and neither a player nor a reviewer could see why.
+        # Drained by web/session.py into the visible event log after each
+        # action. Purely descriptive - nothing reads it back.
+        self.effect_log: list[str] = []
+        # Off for simulation clones. play_card runs ~25k times per MCTS
+        # decision and formatting a message there would be pure waste; see
+        # HRPlayer.note and _copy_player.
+        self.log_effects: bool = True
         self.actions_played: int = 0
         self.cards_bought: int = 0
         self.next_buy_to_hand: bool = False  # Deception ally: next bought card goes to hand
         self.next_buy_to_top: bool = False   # Rasmus ally: next bought card goes on top of deck
         self.next_buy_to_top_action_only: bool = False  # Bribe ally: next ACTION on top
+
+    def note(self, message: str) -> None:
+        """Record an engine-resolved effect, if this player is being watched.
+
+        Callers must pass an already-built string only when cheap; every call
+        site here formats inline, which is why `log_effects` is checked first
+        by the caller in the hot paths and by this method everywhere else.
+        """
+        if self.log_effects:
+            self.effect_log.append(message)
 
     def setup_starting_deck(self):
         self.deck = [GOLD] * 7 + [SHORTSWORD] + [DAGGER] + [RUBY]
@@ -498,7 +537,9 @@ def _discard_from_hand(player: HRPlayer, n: int, opponent: Optional[HRPlayer] = 
         return
     for _ in range(n):
         idx = _find_worst_idx(player.hand, player, opponent)
-        player.discard.append(player.hand.pop(idx))
+        dumped = player.hand.pop(idx)
+        player.discard.append(dumped)
+        player.note(f"Discarded {dumped.name} from hand")
 
 
 def _enqueue_choice(player: HRPlayer, kind: str, count: int, zone: str = "hand"):
@@ -565,7 +606,11 @@ def _force_opponent_discard(opponent: HRPlayer, n: int = 1, forcing_player: Opti
     n = min(n, len(opponent.hand))
     for _ in range(n):
         idx = _find_worst_idx(opponent.hand, opponent, forcing_player)
-        opponent.discard.append(opponent.hand.pop(idx))
+        dumped = opponent.hand.pop(idx)
+        opponent.discard.append(dumped)
+        # Logged against the victim: it is *their* card and, under the printed
+        # rules, their choice. Neither player was told this happened.
+        opponent.note(f"Discarded {dumped.name} (forced)")
 
 
 class HRMarket:
@@ -811,12 +856,17 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
         and sac_combat > 0
         and player.combat + sac_combat >= guard_hp + opponent.hp
     )
-    if sac_combat > 0 and (
+    # With AGENT_CHOOSES_SACRIFICE the engine declines to decide: the card
+    # stays in played_this_turn and web/session.py's `sacrifice_played` action
+    # offers the bonus to whoever is playing. See the flag's own comment.
+    if sac_combat > 0 and not AGENT_CHOOSES_SACRIFICE and (
         guaranteed_lethal
         or _should_self_sacrifice(player, opponent, requires_open_combat=True)
     ):
         player.combat += sac_combat
         sacrificed = True
+        player.note(
+            f"Sacrificed {card.name} for {sac_combat} combat")
     sac_od = card.get("sacrifice_opponent_discard", 0)
     if sac_od > 0 and opponent and _should_self_sacrifice(player, opponent):
         _force_opponent_discard(opponent, sac_od, player)
@@ -840,7 +890,10 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
                 source = player.hand if zone == "hand" else player.discard
                 idx = _find_worst_idx(source, player, opponent)
                 if _worth_sacrificing(source[idx], player, opponent):
-                    player.banish.append(source.pop(idx))
+                    victim = source.pop(idx)
+                    player.banish.append(victim)
+                    player.note(
+                        f"Sacrificed {victim.name} from {zone}")
 
     # ---- Stun (primary for non-ally cards like Fire Bomb; ally-only if ally_faction set) ----
     if card.get("stun", False) and opponent and not card.get("ally_faction", ""):
@@ -854,7 +907,9 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
     # Recycle (discard to top of deck) (Smash and Grab - no ally needed)
     if card.get("recycle", False) and player.discard:
         idx = _find_best_idx(player.discard, player, opponent)
-        player.deck.insert(0, player.discard.pop(idx))
+        recycled = player.discard.pop(idx)
+        player.deck.insert(0, recycled)
+        player.note(f"Recycled {recycled.name} from discard to top of deck")
 
     # ---- A self-sacrificed card leaves play immediately; every other
     # non-champion remains in played_this_turn until the Discard Phase. ----
@@ -867,7 +922,9 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
 
 def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = None,
                     stun_target: Optional[BoardChampion] = None,
-                    choice: Optional[str] = None) -> bool:
+                    choice: Optional[str] = None,
+                    sacrifice_index: Optional[int] = None,
+                    sacrifice_zone: str = "hand") -> bool:
     """Use a champion's expend ability. Applies the card's effects again.
 
     `choice` names which branch of an `or_choice` card to take ("combat",
@@ -876,6 +933,13 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
     caller supplies one it is honoured verbatim. Left None, the heuristic below
     picks, which is what every simulated game and the bot's own rollouts rely
     on; only a real player needs to override it.
+
+    `sacrifice_index` / `sacrifice_zone` name *which* card to burn for
+    `sacrifice_for_combat` (Lys, Krythos). Only consulted while
+    AGENT_CHOOSES_SACRIFICE is set; with the flag off the engine's own pick
+    stands and these are ignored, so every existing caller is unchanged.
+    Left None under the flag, nothing is sacrificed - "you may sacrifice" is
+    declinable, and declining has to stay reachable.
     """
     if bc.exhausted or not bc.alive:
         return False
@@ -994,7 +1058,17 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
     # bonus is conditional on actually sacrificing, so both are skipped
     # together once the worst available card isn't junk (_worth_sacrificing).
     sac_for_combat = card.get("sacrifice_for_combat", 0)
-    if sac_for_combat > 0:
+    if sac_for_combat > 0 and AGENT_CHOOSES_SACRIFICE:
+        # The agent named a victim (or declined by passing None).
+        if sacrifice_index is not None:
+            source = player.hand if sacrifice_zone == "hand" else player.discard
+            if 0 <= sacrifice_index < len(source):
+                victim = source.pop(sacrifice_index)
+                player.banish.append(victim)
+                player.combat += sac_for_combat
+                player.note(f"Sacrificed {victim.name} from {sacrifice_zone} "
+                            f"for {sac_for_combat} combat")
+    elif sac_for_combat > 0:
         source = None
         if player.hand:
             source = player.hand
@@ -1003,12 +1077,24 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
         if source:
             idx = _find_worst_idx(source, player, opponent)
             if _worth_sacrificing(source[idx], player, opponent):
-                player.banish.append(source.pop(idx))
+                zone = "hand" if source is player.hand else "discard"
+                victim = source.pop(idx)
+                player.banish.append(victim)
                 player.combat += sac_for_combat
+                player.note(
+                    f"Sacrificed {victim.name} from {zone} "
+                    f"for {sac_for_combat} combat")
 
     # ---- Sacrifice up to X cards from hand/discard (Tyrannor) ----
     # "You may sacrifice up to two cards" - stops as soon as nothing left
     # qualifies as junk, rather than always forcing all X.
+    # NOT gated on AGENT_CHOOSES_SACRIFICE, deliberately. "You may sacrifice
+    # up to two cards" is a multi-card selection, and one expend action cannot
+    # express it the way `sacrifice_for_combat`'s single victim can. Gating it
+    # without an action to replace it made Tyrannor's ability do nothing at all
+    # - a dead ability is strictly worse than one the engine resolves. Handing
+    # this one to the agent needs the pending_choices queue plumbed through
+    # session and bot; until then the engine keeps deciding, and says so.
     sacrifice_up_to = card.get("sacrifice_up_to", 0)
     if sacrifice_up_to > 0:
         for _ in range(sacrifice_up_to):
@@ -1022,7 +1108,10 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
             idx = _find_worst_idx(source, player, opponent)
             if not _worth_sacrificing(source[idx], player, opponent):
                 break
-            player.banish.append(source.pop(idx))
+            zone = "hand" if source is player.hand else "discard"
+            victim = source.pop(idx)
+            player.banish.append(victim)
+            player.note(f"Sacrificed {victim.name} from {zone}")
 
     # ---- Stun on expend (Rake, Master Assassin) ----
     if card.get("stun", False) and opponent:
@@ -1049,10 +1138,23 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
             best = max(champions, key=lambda c: _contextual_card_value(c, player, opponent))
             player.discard.remove(best)
             player.deck.insert(0, best)
+            player.note(f"Reanimated {best.name} to top of deck")
 
     # ---- Ally effects on expend ----
+    # SUSPECTED DOUBLE-COUNT, unresolved - do not "fix" without the printed
+    # card in hand. play_card already pays a card's ally payload, immediately
+    # or retroactively via pending_ally, so a champion played with a faction
+    # partner already in play can be paid there AND again here, every turn it
+    # is expended. Observed live: Cult Priest paid +4 combat at expend with no
+    # ally payout at play. Same shape as the or_choice double-count already in
+    # CLAUDE.md's ruled-out list. Logged here so the payout is at least visible
+    # while the rules question is open.
     if has_ally(card, player):
-        player.combat += card.get("ally_combat", 0)
+        ally_combat = card.get("ally_combat", 0)
+        if ally_combat:
+            player.note(
+                f"{card.name} ally: +{ally_combat} combat (on expend)")
+        player.combat += ally_combat
         player.gold += card.get("ally_gold", 0)
         ally_heal = card.get("ally_health", 0)
         if ally_heal:
