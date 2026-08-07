@@ -314,18 +314,35 @@ The rest of this section is kept because it is the clearest worked example in
 the project of a rules bug outranking every algorithm change, and because the
 contamination it caused is still in the record.
 
-**It cost search most of its remaining edge.** `rebaseline_main_phase.log`,
-post-fix: heuristic **55.5%**, MCTS **56.8%** — a **+1.3pp** delta where the
-post-Ruby reference was ~5pp. Same shape as the Ruby fix: correct the rules and
-search's apparent advantage largely evaporates. Caveat before quoting it — one
-seed block, marginal win rates, not paired McNemar. It needs a paired
-confirmation before it replaces ~5pp as the reference delta. But do not quote
-~5pp as if it were current either; both figures are now in doubt.
+**It did NOT cost search its edge — that reading was a measurement artifact.**
+`rebaseline_main_phase.log` showed heuristic 55.5% vs MCTS 56.8%, a **+1.3pp**
+delta, and that number was briefly believed. It came from one seed block of
+*marginal* win rates with no pairing, which is precisely what this file's own
+protocol says cannot pin an absolute.
 
-If the ~1.3pp holds it reframes the plateau: the gap between search and a
-hand-written heuristic on this game may be about one point, in which case most
-of the search-mechanism work in this file was chasing effects smaller than the
-noise floor it was measured against.
+Re-asked with the right instrument (`hero_baseline_confirm.py`, paired
+McNemar, null arm, 400 games/arm, shipped 60 ms budget):
+
+| block | mcts wins | heuristic wins | net | p | marginal |
+| --- | --- | --- | --- | --- | --- |
+| TUNE (1000+) | 68 | 51 | **+17** | 0.142 | 57.2% → 61.5% (+4.3pp) |
+| HOLDOUT (60000+) | 70 | 46 | **+24** | 0.032 | 58.0% → 64.0% (+6.0pp) |
+| **pooled** | **138** | **97** | **+41** | **0.0089** | |
+
+**Replicated on a disjoint block. The reference delta is ~4-6pp, in line with
+the post-Ruby ~5pp — not ~1.3pp.** Do not quote +1.3pp; it is dead.
+
+The lesson is the one this file already teaches, and it caught us anyway: an
+unpaired single-block delta is not a measurement. It cost a session's worth of
+reasoning built on "search may only be worth a point".
+
+**One caveat on the above.** The null arm duplicates the *heuristic*, which is
+deterministic, so it reads exactly 0/0 and calibrates only harness noise. It
+does **not** calibrate MCTS's own wall-clock jitter (~4-5pp, ~18% of games
+flipping). That jitter is symmetric and should not bias the net, and the net
+replicated on a disjoint block — but the strictly correct control is an
+MCTS-vs-MCTS null arm, which has not been run. The 29.4% discordance rate
+(235 of 800 paired games) is consistent with substantial MCTS nondeterminism.
 
 ### What the ratchet did while it was live
 
@@ -456,9 +473,14 @@ sweep.
 
 **There have now been two of these.** `BASELINE.md` predating the Ruby fix
 describes a different game; everything in *either* file predating `d046b9e`
-(the Main-phase fix) describes another one again. The MCTS-minus-heuristic
-delta has read +11pp, then ~5pp, and post-Main-phase reads +1.3pp on one
-unpaired block. Do not quote any of them as current without re-measuring.
+(the Main-phase fix) describes another one again.
+
+The MCTS-minus-heuristic delta has read +11pp (pre-Ruby), ~5pp (post-Ruby),
+then briefly +1.3pp from one unpaired block after the Main-phase fix — which
+**did not survive paired re-measurement**. The current, paired, replicated
+figure is **~4-6pp** (+41 net over 235 discordant pairs, p=0.0089); see the
+Main-phase section. Anything sequencing-sensitive measured before `d046b9e` is
+still suspect, but search's overall edge did not move.
 
 **Everything in `BASELINE.md` predating the Ruby fix describes a different game.**
 `RUBY` was encoded as a 1-health action instead of a 2-gold treasure, so starting
