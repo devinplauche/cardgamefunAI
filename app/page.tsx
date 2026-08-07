@@ -25,9 +25,9 @@ function cardStrength(card: Card, trump: Suit) {
   return (card.value ?? 0) + (card.suit === trump ? 16 : 0);
 }
 
-function CardView({ card, selected, onClick }: { card: Card; selected: boolean; onClick: () => void }) {
+function CardView({ card, selected, onClick, playable }: { card: Card; selected: boolean; onClick: () => void; playable: boolean }) {
   return (
-    <button className={`playing-card ${card.suit ?? "special"} ${selected ? "selected" : ""}`} onClick={onClick} aria-label={card.label ?? `${card.value} ${card.suit} card`}>
+    <button className={`playing-card ${card.suit ?? "special"} ${selected ? "selected" : ""} ${playable ? "" : "unplayable"}`} onClick={onClick} aria-label={card.label ?? `${card.value} ${card.suit} card`} disabled={!playable}>
       {card.type ? <><span className="special-mark">✦</span><span>{card.label}</span></> : <><span className="card-value">{card.value}</span><span className="card-suit">{suitSymbols[card.suit!]}</span><span className="card-suit-name">{suitNames[card.suit!]}</span></>}
     </button>
   );
@@ -41,6 +41,8 @@ export default function Home() {
   const [bid, setBid] = useState(2);
   const [bidLocked, setBidLocked] = useState(false);
   const [tricks, setTricks] = useState(1);
+  const [userPlayedCard, setUserPlayedCard] = useState<Card | null>(null);
+  const leadSuit: Suit = "orange";
   const [message, setMessage] = useState("Select a card to get a read on the play.");
 
   const selected = hand.find((card) => card.id === selectedId) ?? hand[0];
@@ -55,10 +57,19 @@ export default function Home() {
       text: `${onTarget}. ${selected.suit === trump ? `${suitNames[trump]} is trump, so this card can take a trick.` : "Keep this card if you need to avoid winning or protect a later lead."}`,
     };
   }, [selected, trump, tricks, bid]);
+  const legalCards = useMemo(() => hand.filter((card) => !card.suit || card.suit === leadSuit || !hand.some((other) => other.suit === leadSuit)), [hand]);
 
   function playSelected() {
-    if (!selected) return;
+    if (!bidLocked) {
+      setMessage("Lock your bid before playing the first trick.");
+      return;
+    }
+    if (!selected || !legalCards.some((card) => card.id === selected.id)) {
+      setMessage(`You must follow ${suitNames[leadSuit]} while you have one.`);
+      return;
+    }
     setHand((current) => current.filter((card) => card.id !== selected.id));
+    setUserPlayedCard(selected);
     setTricks((current) => current + (cardStrength(selected, trump) >= 20 ? 1 : 0));
     setSelectedId("");
     setMessage(`${selected.type ? selected.label : `${selected.value} ${selected.suit}`} played. The table is recalculating your line.`);
@@ -70,6 +81,7 @@ export default function Home() {
     setTricks(1);
     setBid(2);
     setBidLocked(false);
+    setUserPlayedCard(null);
     setMessage("Fresh hand dealt. Find the shape before you commit your bid.");
   }
 
@@ -89,13 +101,13 @@ export default function Home() {
 
       <section className="table-card">
         <div className="table-header"><div><span className="label">YOUR BID {bidLocked ? <span className="locked-label">LOCKED</span> : <span className="open-label">CHOOSE ONCE</span>}</span>{bidLocked ? <div className="bid-locked"><strong>{bid}</strong><span>tricks</span></div> : <div className="bid-control"><button onClick={() => setBid(Math.max(0, bid - 1))} aria-label="Lower bid">−</button><strong>{bid}</strong><button onClick={() => setBid(Math.min(8, bid + 1))} aria-label="Raise bid">+</button><button className="lock-bid" onClick={() => { setBidLocked(true); setMessage(`Bid locked at ${bid}. Now play toward your target.`); }}>Lock bid</button></div>}</div><button className="trump-chip" onClick={() => setTrump((current) => ({ red: "orange", orange: "yellow", yellow: "green", green: "blue", blue: "purple", purple: "red" }[current] as Suit))} aria-label="Change trump suit"><span className={`suit-dot ${trump}`}></span><span>Trump</span><strong>{suitNames[trump]}</strong></button></div>
-        <div className="trick-table"><div className="trick-card-slot"><span className="slot-label">MIA</span><div className="table-card-played coral-card"><strong>12</strong><span>ORANGE</span></div></div><div className="trick-card-slot"><span className="slot-label">KEN</span><div className="table-card-played green-card"><strong>9</strong><span>GREEN</span></div></div><div className="trick-card-slot"><span className="slot-label">YOU</span><div className="table-card-played blue-card"><strong>15</strong><span>BLUE · TRUMP</span></div></div></div>
+        <div className="phase-strip"><span className="phase done">1. Bid</span><span className={`phase ${bidLocked ? "active" : ""}`}>2. Play</span><span className="phase">3. Score</span></div><div className="trick-table"><div className="trick-card-slot"><span className="slot-label">MIA · LEAD</span><div className="table-card-played coral-card"><strong>12</strong><span>ORANGE</span></div></div><div className="trick-card-slot"><span className="slot-label">KEN</span><div className="table-card-played green-card"><strong>9</strong><span>OFF-SUIT</span></div></div><div className="trick-card-slot"><span className="slot-label">YOU</span>{userPlayedCard ? <div className={`table-card-played ${userPlayedCard.suit}-card`}><strong>{userPlayedCard.value ?? "✦"}</strong><span>{userPlayedCard.suit ? suitNames[userPlayedCard.suit].toUpperCase() : userPlayedCard.label}</span></div> : <div className="table-card-empty"><strong>—</strong><span>{bidLocked ? "YOUR TURN" : "LOCK BID"}</span></div>}</div></div>
         <div className="trick-summary"><div className="ring"><strong>{tricks}</strong><span>tricks</span></div><div><p className="label">CURRENT READ</p><p className="read-line">{message}</p></div></div>
         <div className="opponents"><div className="opponent"><span className="opponent-avatar coral">M</span><span><b>Mia</b><small>bid 3 · 2 tricks</small></span></div><div className="opponent"><span className="opponent-avatar lavender">K</span><span><b>Ken</b><small>bid 1 · 1 trick</small></span></div><span className="round-pill">4 cards left</span></div>
       </section>
 
       <section className="content-grid">
-        <div className="hand-panel"><div className="section-heading"><div><p className="label">YOUR HAND <span className="count">{hand.length}</span></p><h2>Choose your line</h2></div><button className="sort-button">Sort <span>↕</span></button></div><div className="hand-grid">{hand.map((card) => <CardView key={card.id} card={card} selected={card.id === selectedId} onClick={() => setSelectedId(card.id)} />)}</div><button className="primary-action" disabled={!selected} onClick={playSelected}>Play selected card <span>→</span></button></div>
+        <div className="hand-panel"><div className="section-heading"><div><p className="label">YOUR HAND <span className="count">{hand.length}</span></p><h2>{bidLocked ? `Follow ${suitNames[leadSuit]}` : "Choose your line"}</h2></div><button className="sort-button">Sort <span>↕</span></button></div>{bidLocked && <p className="rule-hint">Lead suit: <b>{suitNames[leadSuit]}</b>. Cards outside the lead are disabled while you can follow.</p>}<div className="hand-grid">{hand.map((card) => <CardView key={card.id} card={card} selected={card.id === selectedId} playable={!bidLocked || legalCards.some((legal) => legal.id === card.id)} onClick={() => setSelectedId(card.id)} />)}</div><button className="primary-action" disabled={!selected || !bidLocked} onClick={playSelected}>{bidLocked ? "Play selected card" : "Lock your bid to play"} <span>→</span></button></div>
 
         <aside className={`analysis-panel ${mode === "analyze" ? "analysis-focus" : ""}`}><div className="analysis-top"><div><p className="label">OPEN SPIEL READ <span className="info">i</span></p><h2>{analysis.label}</h2></div><span className="spark">✦</span></div><div className="confidence"><div><strong>{analysis.score}%</strong><span>estimated win chance</span></div><div className="confidence-bar"><i style={{ width: `${analysis.score}%` }} /></div></div><p className="analysis-copy">{analysis.text}</p><div className="signal"><span>◎</span><div><b>Information set</b><small>Based on trump, visible cards, bid pressure, and remaining count.</small></div></div><button className="ghost-action" onClick={() => setMessage("Analysis refreshed across 250 lightweight Monte Carlo rollouts.")}>Refresh analysis <span>↗</span></button></aside>
       </section>
