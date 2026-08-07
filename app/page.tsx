@@ -1,118 +1,54 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { SUITS, advanceBots, continueGame, createGame, legalPlays, playCard, submitBid, type BotLevel, type GameState, type Suit } from "@/lib/rage";
 
-type Suit = "red" | "orange" | "yellow" | "green" | "blue" | "purple";
-type Card = { id: string; value?: number; suit?: Suit; label?: string; type?: "wild" | "bonus" | "mad" | "change" | "out" };
+const colors: Record<Suit, string> = { red: "#d85b51", orange: "#d99042", yellow: "#c6a631", green: "#57946d", blue: "#4e91a1", purple: "#8067ad" };
+const botNames: Record<BotLevel, string> = { easy: "Easy", medium: "Medium", hard: "Hard" };
 
-const suitNames: Record<Suit, string> = { red: "Red", orange: "Orange", yellow: "Yellow", green: "Green", blue: "Blue", purple: "Purple" };
-const suitSymbols: Record<Suit, string> = { red: "R", orange: "O", yellow: "Y", green: "G", blue: "B", purple: "P" };
-
-const starterHand: Card[] = [
-  { id: "r14", value: 14, suit: "red" },
-  { id: "r7", value: 7, suit: "red" },
-  { id: "o12", value: 12, suit: "orange" },
-  { id: "y3", value: 3, suit: "yellow" },
-  { id: "g9", value: 9, suit: "green" },
-  { id: "b15", value: 15, suit: "blue" },
-  { id: "p4", value: 4, suit: "purple" },
-  { id: "bonus", label: "BONUS", type: "bonus" },
-];
-
-function cardStrength(card: Card, trump: Suit) {
-  if (card.type === "wild") return 18;
-  if (card.type) return card.type === "bonus" ? 4 : 3;
-  return (card.value ?? 0) + (card.suit === trump ? 16 : 0);
-}
-
-function CardView({ card, selected, onClick, playable }: { card: Card; selected: boolean; onClick: () => void; playable: boolean }) {
-  return (
-    <button className={`playing-card ${card.suit ?? "special"} ${selected ? "selected" : ""} ${playable ? "" : "unplayable"}`} onClick={onClick} aria-label={card.label ?? `${card.value} ${card.suit} card`} disabled={!playable}>
-      {card.type ? <><span className="special-mark">✦</span><span>{card.label}</span></> : <><span className="card-value">{card.value}</span><span className="card-suit">{suitSymbols[card.suit!]}</span><span className="card-suit-name">{suitNames[card.suit!]}</span></>}
-    </button>
-  );
-}
+function playerBots(count: number, level: BotLevel) { return Array.from({ length: count }, (_, index) => index === 0 ? "medium" : level); }
+function newTable(seed: number, players: number, level: BotLevel) { return advanceBots(createGame({ seed, playerCount: players, bots: playerBots(players, level) }), 0); }
+function cardLabel(card: { rank?: number; suit?: Suit; type?: string }) { return card.type ? `${card.type.toUpperCase()} RAGE` : `${card.rank} · ${card.suit?.toUpperCase()}`; }
 
 export default function Home() {
-  const [mode, setMode] = useState<"play" | "analyze">("play");
-  const [hand, setHand] = useState(starterHand);
-  const [selectedId, setSelectedId] = useState("r14");
-  const [trump, setTrump] = useState<Suit>("blue");
+  const [seed, setSeed] = useState(20260807);
+  const [players, setPlayers] = useState(4);
+  const [botLevel, setBotLevel] = useState<BotLevel>("medium");
+  const [game, setGame] = useState<GameState>(() => newTable(20260807, 4, "medium"));
   const [bid, setBid] = useState(2);
-  const [bidLocked, setBidLocked] = useState(false);
-  const [tricks, setTricks] = useState(1);
-  const [userPlayedCard, setUserPlayedCard] = useState<Card | null>(null);
-  const leadSuit: Suit = "orange";
-  const [message, setMessage] = useState("Select a card to get a read on the play.");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [suitChoice, setSuitChoice] = useState<Suit>("red");
 
-  const selected = hand.find((card) => card.id === selectedId) ?? hand[0];
-  const analysis = useMemo(() => {
-    if (!selected) return { score: 0, label: "No card selected", text: "Your hand is empty. Start a new hand to keep playing." };
-    const strength = cardStrength(selected, trump);
-    const winChance = Math.min(96, Math.max(8, Math.round(27 + strength * 3.5 - tricks * 1.5)));
-    const onTarget = bid > tricks ? "You still need tricks" : bid === tricks ? "You are on your bid" : "You may want to duck";
-    return {
-      score: winChance,
-      label: selected.type === "bonus" ? "Timing play" : selected.suit === trump ? "Trump pressure" : selected.value && selected.value >= 12 ? "Strong lead" : "Control the count",
-      text: `${onTarget}. ${selected.suit === trump ? `${suitNames[trump]} is trump, so this card can take a trick.` : "Keep this card if you need to avoid winning or protect a later lead."}`,
-    };
-  }, [selected, trump, tricks, bid]);
-  const legalCards = useMemo(() => hand.filter((card) => !card.suit || card.suit === leadSuit || !hand.some((other) => other.suit === leadSuit)), [hand]);
+  const human = game.players[0];
+  const humanTurn = game.currentPlayer === 0;
+  const legal = useMemo(() => new Set(legalPlays(game, 0).map((card) => card.id)), [game]);
+  const selected = human.hand.find((card) => card.id === selectedId);
+  const phaseLabel = game.phase === "bidding" ? "Bidding" : game.phase === "playing" ? "Playing" : game.phase === "roundSummary" ? "Round scored" : "Game over";
 
+  function startGame() { setGame(newTable(seed || 1, players, botLevel)); setBid(2); setSelectedId(null); }
+  function placeBid() { if (!humanTurn || game.phase !== "bidding") return; setGame(advanceBots(submitBid(game, 0, bid), 0)); }
   function playSelected() {
-    if (!bidLocked) {
-      setMessage("Lock your bid before playing the first trick.");
-      return;
-    }
-    if (!selected || !legalCards.some((card) => card.id === selected.id)) {
-      setMessage(`You must follow ${suitNames[leadSuit]} while you have one.`);
-      return;
-    }
-    setHand((current) => current.filter((card) => card.id !== selected.id));
-    setUserPlayedCard(selected);
-    setTricks((current) => current + (cardStrength(selected, trump) >= 20 ? 1 : 0));
-    setSelectedId("");
-    setMessage(`${selected.type ? selected.label : `${selected.value} ${selected.suit}`} played. The table is recalculating your line.`);
+    if (!selected || !humanTurn || game.phase !== "playing") return;
+    const next = playCard(game, 0, { cardId: selected.id, declaredSuit: selected.type === "wild" ? suitChoice : undefined, chosenTrump: selected.type === "change" ? suitChoice : undefined });
+    setSelectedId(null); setGame(advanceBots(next, 0));
   }
+  function nextRound() { setGame(advanceBots(continueGame(game), 0)); setSelectedId(null); setBid(2); }
 
-  function newHand() {
-    setHand(starterHand);
-    setSelectedId("r14");
-    setTricks(1);
-    setBid(2);
-    setBidLocked(false);
-    setUserPlayedCard(null);
-    setMessage("Fresh hand dealt. Find the shape before you commit your bid.");
-  }
+  return <main className="rage-app">
+    <header><div className="wordmark"><span>R</span> Rage table</div><div className="seed">Seed <b>{game.seed}</b></div></header>
+    <section className="intro"><div><p className="kicker">COMPLETE MATCH · 2–6 PLAYERS</p><h1>Play the whole game.</h1><p>Ten descending rounds. Binding bids. Actual tricks. Actual scores.</p></div><button className="outline" onClick={startGame}>↻ New game</button></section>
 
-  return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div className="brand"><span className="brand-mark">R</span><span>Rage<span className="brand-dot">.</span></span></div>
-        <div className="top-actions"><button className="icon-button" aria-label="Help">?</button><button className="avatar" aria-label="Profile">JD</button></div>
-      </header>
+    <section className="setup-bar" aria-label="Game setup"><label>Seed<input type="number" value={seed} onChange={(event) => setSeed(Number(event.target.value))} /></label><label>Players<select value={players} onChange={(event) => setPlayers(Number(event.target.value))}>{[2,3,4,5,6].map((count) => <option key={count}>{count}</option>)}</select></label><label>Opponent strength<select value={botLevel} onChange={(event) => setBotLevel(event.target.value as BotLevel)}>{(["easy", "medium", "hard"] as BotLevel[]).map((level) => <option key={level} value={level}>{botNames[level]}</option>)}</select></label><button onClick={startGame}>Deal this table</button></section>
 
-      <section className="hero-row">
-        <div><p className="eyebrow">HAND 03 <span>•</span> ROUND 4 OF 10</p><h1>Read the table.</h1><p className="subhead">A calm second opinion for an unpredictable game.</p></div>
-        <button className="new-hand" onClick={newHand}>↻ <span>New hand</span></button>
-      </section>
+    <section className="status"><div><span className="kicker">ROUND {game.round} OF 10</span><strong>{phaseLabel}</strong></div><div className="trump">Trump {game.trump ? <><i style={{ background: colors[game.trump] }} /> <b>{game.trump}</b></> : <b>out</b>}</div><div><span className="kicker">TO ACT</span><strong>{game.players[game.currentPlayer].name}</strong></div></section>
 
-      <nav className="mode-switch" aria-label="Game mode"><button className={mode === "play" ? "active" : ""} onClick={() => setMode("play")}>Play</button><button className={mode === "analyze" ? "active" : ""} onClick={() => setMode("analyze")}>Analyze</button></nav>
+    <section className="table-grid">
+      <aside className="scoreboard"><h2>Scoreboard</h2>{game.players.map((player) => <div className={`score-row ${player.id === game.currentPlayer ? "acting" : ""}`} key={player.id}><span><b>{player.name}</b><small>{player.id === 0 ? "You" : botNames[player.bot] + " bot"}</small></span><span className="bid-read">{player.bid ?? "–"}<small>bid</small></span><span className="trick-read">{player.tricks}<small>tricks</small></span><strong>{player.score}</strong></div>)}<p className="rules-note">Exact bid: +10 (+5 for exact zero). Each trick: +1. Bonus/Mad Rage modifies the trick winner.</p></aside>
 
-      <section className="table-card">
-        <div className="table-header"><div><span className="label">YOUR BID {bidLocked ? <span className="locked-label">LOCKED</span> : <span className="open-label">CHOOSE ONCE</span>}</span>{bidLocked ? <div className="bid-locked"><strong>{bid}</strong><span>tricks</span></div> : <div className="bid-control"><button onClick={() => setBid(Math.max(0, bid - 1))} aria-label="Lower bid">−</button><strong>{bid}</strong><button onClick={() => setBid(Math.min(8, bid + 1))} aria-label="Raise bid">+</button><button className="lock-bid" onClick={() => { setBidLocked(true); setMessage(`Bid locked at ${bid}. Now play toward your target.`); }}>Lock bid</button></div>}</div><button className="trump-chip" onClick={() => setTrump((current) => ({ red: "orange", orange: "yellow", yellow: "green", green: "blue", blue: "purple", purple: "red" }[current] as Suit))} aria-label="Change trump suit"><span className={`suit-dot ${trump}`}></span><span>Trump</span><strong>{suitNames[trump]}</strong></button></div>
-        <div className="phase-strip"><span className="phase done">1. Bid</span><span className={`phase ${bidLocked ? "active" : ""}`}>2. Play</span><span className="phase">3. Score</span></div><div className="trick-table"><div className="trick-card-slot"><span className="slot-label">MIA · LEAD</span><div className="table-card-played coral-card"><strong>12</strong><span>ORANGE</span></div></div><div className="trick-card-slot"><span className="slot-label">KEN</span><div className="table-card-played green-card"><strong>9</strong><span>OFF-SUIT</span></div></div><div className="trick-card-slot"><span className="slot-label">YOU</span>{userPlayedCard ? <div className={`table-card-played ${userPlayedCard.suit}-card`}><strong>{userPlayedCard.value ?? "✦"}</strong><span>{userPlayedCard.suit ? suitNames[userPlayedCard.suit].toUpperCase() : userPlayedCard.label}</span></div> : <div className="table-card-empty"><strong>—</strong><span>{bidLocked ? "YOUR TURN" : "LOCK BID"}</span></div>}</div></div>
-        <div className="trick-summary"><div className="ring"><strong>{tricks}</strong><span>tricks</span></div><div><p className="label">CURRENT READ</p><p className="read-line">{message}</p></div></div>
-        <div className="opponents"><div className="opponent"><span className="opponent-avatar coral">M</span><span><b>Mia</b><small>bid 3 · 2 tricks</small></span></div><div className="opponent"><span className="opponent-avatar lavender">K</span><span><b>Ken</b><small>bid 1 · 1 trick</small></span></div><span className="round-pill">4 cards left</span></div>
-      </section>
+      <section className="table"><div className="phase-tabs"><span className={game.phase === "bidding" ? "on" : ""}>1 Bid</span><span className={game.phase === "playing" ? "on" : ""}>2 Play</span><span className={game.phase === "roundSummary" || game.phase === "gameOver" ? "on" : ""}>3 Score</span></div>{game.phase === "bidding" ? <div className="bid-stage"><h2>Make your one bid</h2><p>Your opponents bid in turn after you commit.</p><div className="bid-picker"><button onClick={() => setBid(Math.max(0, bid - 1))}>−</button><strong>{bid}</strong><button onClick={() => setBid(Math.min(human.hand.length, bid + 1))}>+</button></div><button className="primary" disabled={!humanTurn} onClick={placeBid}>Lock bid</button></div> : <><div className="trick-heading"><div><span className="kicker">CURRENT TRICK</span><h2>{game.leadSuit ? `Follow ${game.leadSuit}` : "Leader chooses"}</h2></div><span>{game.trick.length}/{game.playerCount} cards</span></div><div className="trick-cards">{game.trick.map((played) => <article className="trick-card" key={`${played.player}-${played.card.id}`}><small>{game.players[played.player].name}</small><strong style={{ color: played.card.suit ? colors[played.card.suit] : "#443f48" }}>{played.card.rank ?? "✦"}</strong><span>{cardLabel(played.card)}</span></article>)}{Array.from({ length: Math.max(0, game.playerCount - game.trick.length) }, (_, index) => <article className="trick-card placeholder" key={index}><small>{game.players[(game.currentPlayer + index) % game.playerCount].name}</small><strong>?</strong><span>waiting</span></article>)}</div>{game.phase === "roundSummary" && <div className="summary"><h2>Round {game.round} scored</h2><p>{game.players.map((player, index) => `${player.name} ${game.lastRoundScores?.[index] ?? 0}`).join(" · ")}</p><button className="primary" onClick={nextRound}>Deal round {game.round + 1}</button></div>}{game.phase === "gameOver" && <div className="summary"><h2>{[...game.players].sort((a,b) => b.score - a.score)[0].name} wins</h2><p>Final score: {[...game.players].sort((a,b) => b.score - a.score).map((player) => `${player.name} ${player.score}`).join(" · ")}</p><button className="primary" onClick={startGame}>Play again</button></div>}</>}</section>
+    </section>
 
-      <section className="content-grid">
-        <div className="hand-panel"><div className="section-heading"><div><p className="label">YOUR HAND <span className="count">{hand.length}</span></p><h2>{bidLocked ? `Follow ${suitNames[leadSuit]}` : "Choose your line"}</h2></div><button className="sort-button">Sort <span>↕</span></button></div>{bidLocked && <p className="rule-hint">Lead suit: <b>{suitNames[leadSuit]}</b>. Cards outside the lead are disabled while you can follow.</p>}<div className="hand-grid">{hand.map((card) => <CardView key={card.id} card={card} selected={card.id === selectedId} playable={!bidLocked || legalCards.some((legal) => legal.id === card.id)} onClick={() => setSelectedId(card.id)} />)}</div><button className="primary-action" disabled={!selected || !bidLocked} onClick={playSelected}>{bidLocked ? "Play selected card" : "Lock your bid to play"} <span>→</span></button></div>
-
-        <aside className={`analysis-panel ${mode === "analyze" ? "analysis-focus" : ""}`}><div className="analysis-top"><div><p className="label">OPEN SPIEL READ <span className="info">i</span></p><h2>{analysis.label}</h2></div><span className="spark">✦</span></div><div className="confidence"><div><strong>{analysis.score}%</strong><span>estimated win chance</span></div><div className="confidence-bar"><i style={{ width: `${analysis.score}%` }} /></div></div><p className="analysis-copy">{analysis.text}</p><div className="signal"><span>◎</span><div><b>Information set</b><small>Based on trump, visible cards, bid pressure, and remaining count.</small></div></div><button className="ghost-action" onClick={() => setMessage("Analysis refreshed across 250 lightweight Monte Carlo rollouts.")}>Refresh analysis <span>↗</span></button></aside>
-      </section>
-
-      <footer><span>Rage is a 6-suit trick-taking game.</span><span><a href="https://en.wikipedia.org/wiki/Rage_(trick-taking_card_game)" target="_blank" rel="noreferrer">Rules</a><span className="footer-dot">•</span><a href="https://github.com/google-deepmind/open_spiel" target="_blank" rel="noreferrer">OpenSpiel</a></span></footer>
-    </main>
-  );
+    {game.phase === "playing" && <section className="hand"><div><span className="kicker">YOUR HAND · {human.hand.length} CARDS</span><h2>{humanTurn ? "Choose a legal card" : "Waiting for the table"}</h2></div>{selected?.type && (selected.type === "wild" || selected.type === "change") && <label className="suit-choice">Choose suit<select value={suitChoice} onChange={(event) => setSuitChoice(event.target.value as Suit)}>{SUITS.map((suit) => <option key={suit}>{suit}</option>)}</select></label>}<div className="hand-cards">{human.hand.map((card) => <button disabled={!humanTurn || !legal.has(card.id)} onClick={() => setSelectedId(card.id)} className={`hand-card ${card.suit ?? "special"} ${selectedId === card.id ? "selected" : ""}`} key={card.id}><strong>{card.rank ?? "✦"}</strong><span>{cardLabel(card)}</span></button>)}</div><button className="primary play" disabled={!selected || !humanTurn} onClick={playSelected}>Play selected card →</button></section>}
+    <footer>Deterministic local game engine · Every game can be replayed by seed</footer>
+  </main>;
 }

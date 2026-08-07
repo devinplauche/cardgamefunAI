@@ -9,7 +9,8 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "vinext start",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs",
+    "test": "npm run test:engine && npm run build",
+    "test:engine": "tsx --test tests/rage-engine.test.ts",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },
@@ -38,6 +39,7 @@
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
     "typescript-eslint": "8.59.3",
+    "tsx": "4.21.0",
     "vinext": "1.0.0-beta.2",
     "vite": "8.0.13",
     "wrangler": "4.92.0"
