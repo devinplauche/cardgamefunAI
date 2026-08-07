@@ -6,7 +6,7 @@ export type Card = { id: string; suit?: Suit; rank?: number; type?: CardType };
 export type PlayedCard = { player: number; card: Card; declaredSuit?: Suit; chosenTrump?: Suit };
 export type Phase = "bidding" | "playing" | "roundSummary" | "gameOver";
 export type Player = { id: number; name: string; bot: BotLevel; hand: Card[]; bid: number | null; tricks: number; score: number; roundBonus: number };
-export type GameState = { seed: number; rng: number; playerCount: number; round: number; dealer: number; phase: Phase; players: Player[]; trump: Suit | null; stock: Card[]; trick: PlayedCard[]; leadSuit: Suit | null; currentPlayer: number; lastWinner: number | null; lastRoundScores: number[] | null; log: string[] };
+export type GameState = { seed: number; rng: number; playerCount: number; round: number; dealer: number; phase: Phase; players: Player[]; trump: Suit | null; stock: Card[]; trick: PlayedCard[]; lastTrick: PlayedCard[]; leadSuit: Suit | null; currentPlayer: number; lastWinner: number | null; lastRoundScores: number[] | null; log: string[] };
 export type Play = { cardId: string; declaredSuit?: Suit; chosenTrump?: Suit };
 
 const next = (rng: number) => ((rng * 1664525 + 1013904223) >>> 0);
@@ -37,13 +37,13 @@ function dealRound(state: GameState): GameState {
   for (let card = 0; card < cardsEach; card += 1) for (let offset = 1; offset <= state.playerCount; offset += 1) players[advance(state, state.dealer + offset - 1)].hand.push(deck[cursor++]);
   let trump: Suit | null = null;
   while (cursor < deck.length && !trump) { const card = deck[cursor++]; if (card.suit) trump = card.suit; }
-  return { ...state, rng, players, stock: deck.slice(cursor), trump, trick: [], leadSuit: null, phase: "bidding", currentPlayer: advance(state, state.dealer), lastWinner: null, lastRoundScores: null, log: [...state.log, `Round ${state.round}: ${cardsEach} cards, ${trump} trump`] };
+  return { ...state, rng, players, stock: deck.slice(cursor), trump, trick: [], lastTrick: [], leadSuit: null, phase: "bidding", currentPlayer: advance(state, state.dealer), lastWinner: null, lastRoundScores: null, log: [...state.log, `Round ${state.round}: ${cardsEach} cards, ${trump} trump`] };
 }
 
 export function createGame({ seed = 1, playerCount = 4, bots = [] }: { seed?: number; playerCount?: number; bots?: BotLevel[] } = {}): GameState {
   if (playerCount < 2 || playerCount > 6) throw new Error("Rage supports 2–6 players");
   const players = Array.from({ length: playerCount }, (_, id) => ({ id, name: id === 0 ? "You" : ["Mia", "Ken", "Ari", "Zoe", "Sam"][id - 1], bot: bots[id] ?? (id === 0 ? "medium" : id % 3 === 0 ? "hard" : "medium"), hand: [], bid: null, tricks: 0, score: 0, roundBonus: 0 }));
-  return dealRound({ seed, rng: seed >>> 0 || 1, playerCount, round: 1, dealer: playerCount - 1, phase: "bidding", players, trump: null, stock: [], trick: [], leadSuit: null, currentPlayer: 0, lastWinner: null, lastRoundScores: null, log: [`Game seed ${seed}`] });
+  return dealRound({ seed, rng: seed >>> 0 || 1, playerCount, round: 1, dealer: playerCount - 1, phase: "bidding", players, trump: null, stock: [], trick: [], lastTrick: [], leadSuit: null, currentPlayer: 0, lastWinner: null, lastRoundScores: null, log: [`Game seed ${seed}`] });
 }
 
 export function legalPlays(state: GameState, playerId = state.currentPlayer): Card[] {
@@ -79,7 +79,7 @@ function resolveTrick(state: GameState): GameState {
   for (const challenger of state.trick.slice(1)) if (winsAgainst(challenger, winner, leadSuit, state.trump)) winner = challenger;
   const modifiers = state.trick.reduce((sum, played) => sum + (played.card.type === "bonus" ? 5 : played.card.type === "mad" ? -5 : 0), 0);
   const players = state.players.map((player) => player.id === winner.player ? { ...player, tricks: player.tricks + 1, roundBonus: player.roundBonus + modifiers } : player);
-  const base = { ...state, players, trick: [], leadSuit: null, currentPlayer: winner.player, lastWinner: winner.player, log: [...state.log, `${state.players[winner.player].name} takes the trick`] };
+  const base = { ...state, players, trick: [], lastTrick: state.trick, leadSuit: null, currentPlayer: winner.player, lastWinner: winner.player, log: [...state.log, `${state.players[winner.player].name} takes the trick`] };
   if (players.every((player) => player.hand.length === 0)) return scoreRound(base);
   return base;
 }
