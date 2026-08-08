@@ -352,9 +352,9 @@ export function playCard(
     card.type === "wild" &&
     (!Number.isInteger(play.declaredRank) ||
       play.declaredRank! < 0 ||
-      play.declaredRank! > 15)
+      play.declaredRank! > 16)
   )
-    throw new Error("Wild Rage needs a declared number from 0 to 15");
+    throw new Error("Wild Rage needs a declared number from 0 to 16");
   const [randomTrump, nextRng] =
     card.type === "change"
       ? pick(
@@ -473,7 +473,7 @@ export function chooseBotPlay(state: GameState, playerId: number): Play {
     declaredRank:
       card.type === "wild"
         ? (player.bid ?? 0) > player.tricks
-          ? 15
+          ? 16
           : 0
         : undefined,
   };

@@ -53,7 +53,7 @@ export default function Home() {
   const [bid, setBid] = useState(2);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [suitChoice, setSuitChoice] = useState<Suit>("red");
-  const [wildRank, setWildRank] = useState(15);
+  const [wildRank, setWildRank] = useState(16);
   const [busy, setBusy] = useState(false);
   const [winnerNotice, setWinnerNotice] = useState<string | null>(null);
   const timers = useRef<number[]>([]);
@@ -496,7 +496,7 @@ export default function Home() {
                   value={wildRank}
                   onChange={(event) => setWildRank(Number(event.target.value))}
                 >
-                  {Array.from({ length: 16 }, (_, rank) => (
+                  {Array.from({ length: 17 }, (_, rank) => (
                     <option key={rank} value={rank}>
                       {rank}
                     </option>

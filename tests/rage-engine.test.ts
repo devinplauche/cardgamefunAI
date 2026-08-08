@@ -136,6 +136,16 @@ test("Wild Rage requires a declaration and Bonus Rage is scored for the trick wi
   });
   const wildScored = playCard(wildPlayed, 1, { cardId: "red" });
   assert.equal(wildScored.lastWinner, 1);
+  const sixteenWild = trickFixture([
+    [{ id: "wild-16", type: "wild" }],
+    [{ id: "red-15", suit: "red", rank: 15 }],
+  ]);
+  const sixteenPlayed = playCard(sixteenWild, 0, {
+    cardId: "wild-16",
+    declaredSuit: "red",
+    declaredRank: 16,
+  });
+  assert.equal(playCard(sixteenPlayed, 1, { cardId: "red-15" }).lastWinner, 0);
   const bonus = trickFixture([
     [{ id: "bonus", type: "bonus" }],
     [{ id: "green", suit: "green", rank: 2 }],
