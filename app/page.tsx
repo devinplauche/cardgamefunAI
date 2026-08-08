@@ -36,6 +36,8 @@ const cardLabel = (card: { rank?: number; suit?: Suit; type?: string }) =>
   card.type
     ? `${card.type.toUpperCase()} RAGE`
     : `${card.rank} · ${card.suit?.toUpperCase()}`;
+const cardFaceClass = (card: { suit?: Suit; type?: string }) =>
+  `${card.suit ?? "special"} ${card.type ? `rage-${card.type}` : ""}`;
 const playedLabel = (played: PlayedCard) =>
   played.card.type === "change"
     ? `CHANGE → ${played.chosenTrump?.toUpperCase()}`
@@ -316,7 +318,7 @@ export default function Home() {
           <div className="bid-hand">
             {sortedHand.map((card) => (
               <article
-                className={`bid-card ${card.suit ?? "special"}`}
+                className={`bid-card ${cardFaceClass(card)}`}
                 key={card.id}
               >
                 <strong>{card.rank ?? "✦"}</strong>
@@ -423,7 +425,7 @@ export default function Home() {
               <div className="trick-cards">
                 {game.trick.map((played) => (
                   <article
-                    className="trick-card entering"
+                    className={`trick-card entering ${cardFaceClass(played.card)}`}
                     key={`${played.player}-${played.card.id}`}
                   >
                     <small>{game.players[played.player].name}</small>
@@ -555,7 +557,7 @@ export default function Home() {
               <button
                 disabled={!humanTurn || busy || !legal.has(card.id)}
                 onClick={() => setSelectedId(card.id)}
-                className={`hand-card ${card.suit ?? "special"} ${selectedId === card.id ? "selected" : ""}`}
+                className={`hand-card ${cardFaceClass(card)} ${selectedId === card.id ? "selected" : ""}`}
                 key={card.id}
               >
                 <strong>{card.rank ?? "✦"}</strong>

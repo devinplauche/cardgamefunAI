@@ -12,7 +12,9 @@
 }
 body {
   margin: 0;
-  background: var(--paper);
+  background:
+    radial-gradient(circle at 15% -10%, #fff 0 13%, transparent 34%),
+    linear-gradient(135deg, #f7f3ed, #eee8df);
   color: var(--ink);
   font-family: Arial, Helvetica, sans-serif;
 }
@@ -213,6 +215,7 @@ header {
 .table {
   min-height: 355px;
   padding: 22px;
+  box-shadow: 0 18px 45px rgba(60, 46, 38, 0.08);
 }
 .phase-tabs {
   display: flex;
@@ -282,26 +285,89 @@ header {
   font-size: 11px;
 }
 .trick-cards {
+  position: relative;
+  overflow: hidden;
   display: flex;
   flex-wrap: wrap;
   gap: 11px;
   min-height: 129px;
   align-items: center;
   justify-content: center;
-  background: #faf8f5;
-  border-radius: 12px;
+  background:
+    radial-gradient(
+      circle at 50% 45%,
+      rgba(255, 255, 255, 0.1),
+      transparent 42%
+    ),
+    repeating-linear-gradient(
+      45deg,
+      rgba(255, 255, 255, 0.035) 0 2px,
+      transparent 2px 7px
+    ),
+    #254f48;
+  border: 5px solid #d9c4a1;
+  box-shadow:
+    inset 0 0 0 2px #173a35,
+    inset 0 8px 20px rgba(0, 0, 0, 0.25);
+  border-radius: 18px;
   padding: 14px;
 }
 .trick-card {
+  --tilt: 0deg;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
   width: 100px;
   height: 105px;
-  border: 1px solid #e5ddd4;
-  border-radius: 10px;
-  background: #fff;
+  border: 1px solid rgba(65, 50, 48, 0.18);
+  border-radius: 12px;
+  background: linear-gradient(145deg, #fff 0%, #faf7f1 100%);
+  box-shadow:
+    0 7px 12px rgba(0, 0, 0, 0.3),
+    0 2px 1px rgba(255, 255, 255, 0.8) inset;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  transform: rotate(var(--tilt));
+}
+.trick-card:nth-child(4n + 1) {
+  --tilt: -3deg;
+}
+.trick-card:nth-child(4n + 2) {
+  --tilt: 2deg;
+}
+.trick-card:nth-child(4n + 3) {
+  --tilt: -1deg;
+}
+.trick-card:nth-child(4n) {
+  --tilt: 3deg;
+}
+.trick-card:not(.placeholder)::before,
+.hand-card::before,
+.bid-card::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.75),
+    transparent 42%
+  );
+}
+.trick-card:not(.placeholder)::after,
+.hand-card::after,
+.bid-card::after {
+  content: "✦";
+  position: absolute;
+  z-index: -1;
+  right: 6px;
+  bottom: -15px;
+  color: rgba(57, 47, 57, 0.06);
+  font:
+    700 64px Georgia,
+    serif;
 }
 .trick-card small {
   font-size: 9px;
@@ -321,8 +387,9 @@ header {
 }
 .trick-card.placeholder {
   border-style: dashed;
-  background: transparent;
-  color: #b0aab0;
+  background: rgba(255, 255, 255, 0.08);
+  color: #d1ddd9;
+  box-shadow: none;
 }
 .trick-card.placeholder strong {
   color: #c5bec2;
@@ -330,11 +397,14 @@ header {
 @keyframes card-arrival {
   from {
     opacity: 0;
-    transform: translateY(-22px) scale(0.9);
+    transform: translateY(-34px) rotate(var(--tilt)) scale(0.82);
+  }
+  72% {
+    transform: translateY(3px) rotate(var(--tilt)) scale(1.035);
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(0) rotate(var(--tilt)) scale(1);
   }
 }
 .trick-card.entering {
@@ -348,9 +418,11 @@ header {
   margin-top: 14px;
   border: 1px solid #f0b4a8;
   border-radius: 10px;
-  background: #fff0ec;
+  background: linear-gradient(110deg, #fff5ef, #ffe4dc);
   padding: 11px;
   color: #9f4638;
+  box-shadow: 0 8px 18px rgba(170, 80, 63, 0.13);
+  animation: winner-arrival 0.42s cubic-bezier(0.18, 0.9, 0.32, 1.25);
 }
 .winner-banner span {
   font-size: 18px;
@@ -361,6 +433,16 @@ header {
 .winner-banner small {
   font-size: 10px;
   color: #b27068;
+}
+@keyframes winner-arrival {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 .hand {
   margin-top: 20px;
@@ -384,16 +466,26 @@ header {
   padding: 19px 0;
 }
 .hand-card {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
   width: 78px;
   height: 100px;
-  border: 1px solid #e4dcd5;
-  border-radius: 10px;
-  background: #fff;
+  border: 1px solid rgba(61, 48, 53, 0.17);
+  border-radius: 12px;
+  background: linear-gradient(145deg, #fff, #faf7f1);
+  box-shadow:
+    0 4px 8px rgba(44, 33, 35, 0.1),
+    0 1px 1px rgba(255, 255, 255, 0.85) inset;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   color: #433d45;
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease,
+    filter 160ms ease;
 }
 .hand-card strong {
   font:
@@ -406,29 +498,57 @@ header {
   margin-top: 7px;
 }
 .hand-card.red {
-  background: #fff0ec;
+  background: linear-gradient(145deg, #fff9f6, #ffe0d8);
 }
 .hand-card.orange {
-  background: #fff2df;
+  background: linear-gradient(145deg, #fffaf2, #ffe4bd);
 }
 .hand-card.yellow {
-  background: #fffbe6;
+  background: linear-gradient(145deg, #fffdf4, #fff2a8);
 }
 .hand-card.green {
-  background: #edf7ef;
+  background: linear-gradient(145deg, #f8fff8, #cfe9d2);
 }
 .hand-card.blue {
-  background: #e9f5f8;
+  background: linear-gradient(145deg, #f5fdff, #ccecf4);
 }
 .hand-card.purple {
-  background: #f1edfa;
+  background: linear-gradient(145deg, #faf8ff, #dfd3f5);
 }
 .hand-card.special {
-  background: #f8f4ef;
+  background: linear-gradient(145deg, #fffdf9, #e8e0d8);
+}
+.rage-wild {
+  background: linear-gradient(
+    135deg,
+    #ffe0e9,
+    #fff3a8 30%,
+    #c9f4e9 58%,
+    #d6d2ff 100%
+  ) !important;
+}
+.rage-bonus {
+  background: linear-gradient(145deg, #fffef7, #bce8cc) !important;
+}
+.rage-mad {
+  background: linear-gradient(145deg, #fff4f1, #f5b7ae) !important;
+}
+.rage-change {
+  background: linear-gradient(145deg, #f5f4ff, #c3d9fb) !important;
+}
+.rage-out {
+  background: linear-gradient(145deg, #f6f4f2, #b7b1b8) !important;
+}
+.hand-card:not(:disabled):hover {
+  transform: translateY(-8px) rotate(-1deg);
+  box-shadow:
+    0 12px 18px rgba(44, 33, 35, 0.18),
+    0 1px 1px rgba(255, 255, 255, 0.9) inset;
 }
 .hand-card.selected {
   outline: 3px solid var(--coral);
-  transform: translateY(-5px);
+  transform: translateY(-9px) scale(1.035);
+  box-shadow: 0 14px 24px rgba(190, 79, 60, 0.27);
 }
 .hand-card:disabled {
   opacity: 0.34;
@@ -595,16 +715,20 @@ footer {
   padding-top: 14px;
 }
 .bid-card {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
   width: 69px;
   height: 82px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  border: 1px solid #e4dcd5;
-  border-radius: 9px;
+  border: 1px solid rgba(61, 48, 53, 0.16);
+  border-radius: 11px;
   color: #433d45;
-  background: #fff;
+  background: linear-gradient(145deg, #fff, #faf7f1);
+  box-shadow: 0 3px 7px rgba(44, 33, 35, 0.08);
 }
 .bid-card strong {
   font:
@@ -617,25 +741,33 @@ footer {
   font-weight: 700;
 }
 .bid-card.red {
-  background: #fff0ec;
+  background: linear-gradient(145deg, #fff9f6, #ffe0d8);
 }
 .bid-card.orange {
-  background: #fff2df;
+  background: linear-gradient(145deg, #fffaf2, #ffe4bd);
 }
 .bid-card.yellow {
-  background: #fffbe6;
+  background: linear-gradient(145deg, #fffdf4, #fff2a8);
 }
 .bid-card.green {
-  background: #edf7ef;
+  background: linear-gradient(145deg, #f8fff8, #cfe9d2);
 }
 .bid-card.blue {
-  background: #e9f5f8;
+  background: linear-gradient(145deg, #f5fdff, #ccecf4);
 }
 .bid-card.purple {
-  background: #f1edfa;
+  background: linear-gradient(145deg, #faf8ff, #dfd3f5);
 }
 .bid-card.special {
-  background: #f8f4ef;
+  background: linear-gradient(145deg, #fffdf9, #e8e0d8);
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
 }
 @media (max-width: 720px) {
   .bid-preview {
