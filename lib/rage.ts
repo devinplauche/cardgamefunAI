@@ -310,7 +310,7 @@ function scoreRound(state: GameState): GameState {
       player.tricks +
       player.roundBonus +
       (player.tricks === tricksInRound ? 5 : 0) +
-      (player.tricks === player.bid ? (player.bid === 0 ? 5 : 10) : -5),
+      (player.tricks === player.bid ? 10 : -5),
   );
   const players = state.players.map((player, index) => ({
     ...player,
