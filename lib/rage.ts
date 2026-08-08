@@ -338,15 +338,20 @@ export function playCard(
     throw new Error("Must follow suit");
   if (card.type === "wild" && !play.declaredSuit)
     throw new Error("Wild Rage needs a declared suit");
-  if (card.type === "change" && !play.chosenTrump)
-    throw new Error("Change Rage needs a new trump");
+  const [randomTrump, nextRng] =
+    card.type === "change"
+      ? pick(
+          SUITS.filter((suit) => suit !== state.trump),
+          state.rng,
+        )
+      : ([undefined, state.rng] as [undefined, number]);
   const trick = [
     ...state.trick,
     {
       player: playerId,
       card,
       declaredSuit: play.declaredSuit,
-      chosenTrump: play.chosenTrump,
+      chosenTrump: randomTrump,
     },
   ];
   const players = state.players.map((player) =>
@@ -359,7 +364,7 @@ export function playCard(
   );
   const trump =
     card.type === "change"
-      ? play.chosenTrump!
+      ? randomTrump!
       : card.type === "out"
         ? null
         : state.trump;
@@ -370,6 +375,7 @@ export function playCard(
     trump,
     leadSuit: establishLead(trick),
     currentPlayer: advance(state),
+    rng: nextRng,
     log: [
       ...state.log,
       `${state.players[playerId].name} plays ${cardName(card)}`,
@@ -446,7 +452,6 @@ export function chooseBotPlay(state: GameState, playerId: number): Play {
     cardId: card.id,
     declaredSuit:
       card.type === "wild" ? (state.trump ?? preferredTrump) : undefined,
-    chosenTrump: card.type === "change" ? preferredTrump : undefined,
   };
 }
 

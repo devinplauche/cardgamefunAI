@@ -157,7 +157,6 @@ export default function Home() {
       {
         cardId: selected.id,
         declaredSuit: selected.type === "wild" ? suitChoice : undefined,
-        chosenTrump: selected.type === "change" ? suitChoice : undefined,
       },
       true,
     );
@@ -458,22 +457,19 @@ export default function Home() {
               {humanTurn && !busy ? "Choose a legal card" : "Watch the table"}
             </h2>
           </div>
-          {selected?.type &&
-            (selected.type === "wild" || selected.type === "change") && (
-              <label className="suit-choice">
-                {selected.type === "change" ? "Change trump to" : "Wild suit"}
-                <select
-                  value={suitChoice}
-                  onChange={(event) =>
-                    setSuitChoice(event.target.value as Suit)
-                  }
-                >
-                  {SUITS.map((suit) => (
-                    <option key={suit}>{suit}</option>
-                  ))}
-                </select>
-              </label>
-            )}
+          {selected?.type === "wild" && (
+            <label className="suit-choice">
+              Wild suit
+              <select
+                value={suitChoice}
+                onChange={(event) => setSuitChoice(event.target.value as Suit)}
+              >
+                {SUITS.map((suit) => (
+                  <option key={suit}>{suit}</option>
+                ))}
+              </select>
+            </label>
+          )}
           <div className="hand-cards">
             {human.hand.map((card) => (
               <button

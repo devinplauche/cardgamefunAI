@@ -109,10 +109,10 @@ test("Change and Out Rage update trump immediately", () => {
     [{ id: "change", type: "change" }],
     [{ id: "red", suit: "red", rank: 2 }],
   ]);
-  assert.equal(
-    playCard(change, 0, { cardId: "change", chosenTrump: "red" }).trump,
-    "red",
-  );
+  const changed = playCard(change, 0, { cardId: "change", chosenTrump: "red" });
+  const randomlyChanged = playCard(change, 0, { cardId: "change" });
+  assert.notEqual(changed.trump, "blue");
+  assert.equal(changed.trump, randomlyChanged.trump);
   const out = trickFixture([
     [{ id: "out", type: "out" }],
     [{ id: "red", suit: "red", rank: 2 }],
