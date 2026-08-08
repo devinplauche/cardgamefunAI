@@ -53,7 +53,6 @@ const rageModifier = (trick: PlayedCard[]) =>
   );
 
 export default function Home() {
-  const [seed, setSeed] = useState(20260807);
   const [players, setPlayers] = useState(4);
   const [botLevel, setBotLevel] = useState<BotLevel>("medium");
   const [game, setGame] = useState<GameState>(() =>
@@ -63,6 +62,7 @@ export default function Home() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [suitChoice, setSuitChoice] = useState<Suit>("red");
   const [wildRank, setWildRank] = useState(16);
+  const [newGameOpen, setNewGameOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [winnerNotice, setWinnerNotice] = useState<string | null>(null);
   const [storageReady, setStorageReady] = useState(false);
@@ -85,13 +85,11 @@ export default function Home() {
       }
       if (!isCurrent) return;
       if (restoredGame) {
-        setSeed(restoredGame.seed);
         runBots(restoredGame);
       } else {
         const values = new Uint32Array(1);
         crypto.getRandomValues(values);
         const nextSeed = values[0] || 1;
-        setSeed(nextSeed);
         runBots(
           createGame({
             seed: nextSeed,
@@ -238,15 +236,26 @@ export default function Home() {
     };
     step();
   }
+  function openNewGame() {
+    setPlayers(game.playerCount);
+    const currentOpponents = game.players.slice(1).map((player) => player.bot);
+    if (currentOpponents.every((level) => level === currentOpponents[0]))
+      setBotLevel(currentOpponents[0]);
+    setNewGameOpen(true);
+  }
   function startGame() {
     clearTimers();
     setBusy(false);
     setWinnerNotice(null);
     setBid(2);
     setSelectedId(null);
+    const values = new Uint32Array(1);
+    crypto.getRandomValues(values);
+    const nextSeed = values[0] || 1;
+    setNewGameOpen(false);
     runBots(
       createGame({
-        seed: seed || 1,
+        seed: nextSeed,
         playerCount: players,
         bots: botsFor(players, botLevel),
       }),
@@ -303,46 +312,61 @@ export default function Home() {
             Ten descending rounds. Binding bids. Actual tricks. Actual scores.
           </p>
         </div>
-        <button className="outline" onClick={startGame}>
+        <button className="outline" onClick={openNewGame}>
           ↻ New game
         </button>
       </section>
-      <section
-        className={`setup-bar ${game.phase === "playing" || game.phase === "resolving" ? "in-play" : ""}`}
-        aria-label="Game setup"
-      >
-        <label>
-          Seed
-          <input
-            type="number"
-            value={seed}
-            onChange={(event) => setSeed(Number(event.target.value))}
+      {newGameOpen && (
+        <div className="new-game-backdrop">
+          <button
+            className="new-game-dismiss"
+            aria-label="Keep current game"
+            onClick={() => setNewGameOpen(false)}
           />
-        </label>
-        <label>
-          Players
-          <select
-            value={players}
-            onChange={(event) => setPlayers(Number(event.target.value))}
+          <section
+            className="new-game-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-game-title"
           >
-            {[2, 3, 4, 5, 6].map((count) => (
-              <option key={count}>{count}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Opponent strength
-          <select
-            value={botLevel}
-            onChange={(event) => setBotLevel(event.target.value as BotLevel)}
-          >
-            {(["easy", "medium", "hard"] as BotLevel[]).map((level) => (
-              <option key={level}>{botNames[level]}</option>
-            ))}
-          </select>
-        </label>
-        <button onClick={startGame}>Deal this table</button>
-      </section>
+            <span className="kicker">NEW TABLE</span>
+            <h2 id="new-game-title">Start a fresh game</h2>
+            <p>This replaces your saved table with a newly shuffled game.</p>
+            <label>
+              Players
+              <select
+                value={players}
+                onChange={(event) => setPlayers(Number(event.target.value))}
+              >
+                {[2, 3, 4, 5, 6].map((count) => (
+                  <option key={count}>{count}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Opponent strength
+              <select
+                value={botLevel}
+                onChange={(event) =>
+                  setBotLevel(event.target.value as BotLevel)
+                }
+              >
+                {(["easy", "medium", "hard"] as BotLevel[]).map((level) => (
+                  <option key={level}>{botNames[level]}</option>
+                ))}
+              </select>
+            </label>
+            <div className="dialog-actions">
+              <button className="outline" onClick={() => setNewGameOpen(false)}>
+                Keep current game
+              </button>
+              <button className="primary" onClick={startGame}>
+                Start new game
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
       <section className="status">
         <div>
           <span className="kicker">ROUND {game.round} OF 10</span>
@@ -620,8 +644,8 @@ export default function Home() {
                       .map((player) => `${player.name} ${player.score}`)
                       .join(" · ")}
                   </p>
-                  <button className="primary" onClick={startGame}>
-                    Play again
+                  <button className="primary" onClick={openNewGame}>
+                    New game
                   </button>
                 </div>
               )}

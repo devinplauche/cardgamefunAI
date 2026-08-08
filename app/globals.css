@@ -147,6 +147,71 @@ header {
   color: #fff;
   border-color: var(--dark);
 }
+.new-game-backdrop {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(40, 35, 40, 0.46);
+  backdrop-filter: blur(5px);
+}
+.new-game-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 390px);
+  padding: 26px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 18px;
+  background: linear-gradient(145deg, #fff, #f5f0e8);
+  box-shadow: 0 24px 70px rgba(42, 35, 42, 0.32);
+}
+.new-game-dismiss {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: transparent;
+}
+.new-game-dialog h2 {
+  margin: 0 0 8px;
+  font:
+    500 29px/1 Georgia,
+    serif;
+}
+.new-game-dialog p {
+  margin: 0 0 21px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.new-game-dialog label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 14px 0;
+  color: #756f78;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.new-game-dialog select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fff;
+  color: var(--ink);
+}
+.dialog-actions {
+  display: flex;
+  gap: 9px;
+  justify-content: end;
+  margin-top: 24px;
+}
+.dialog-actions button {
+  padding: 10px 12px;
+}
 .status {
   display: flex;
   justify-content: space-between;
