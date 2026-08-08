@@ -785,7 +785,20 @@ footer {
     padding: 0 15px 18px;
   }
   .intro {
+    display: flex;
+    justify-content: stretch;
+    padding: 12px 0 3px;
+  }
+  .intro > div {
     display: none;
+  }
+  .intro .outline {
+    width: 100%;
+    min-height: 42px;
+    border-color: var(--dark);
+    background: var(--dark);
+    color: #fff;
+    font-weight: 700;
   }
   .setup-bar {
     margin-top: 13px;
