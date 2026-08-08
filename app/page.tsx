@@ -42,6 +42,13 @@ const playedLabel = (played: PlayedCard) =>
     : played.card.type === "wild"
       ? `WILD ${played.declaredRank} → ${played.declaredSuit?.toUpperCase()}`
       : cardLabel(played.card);
+const rageModifier = (trick: PlayedCard[]) =>
+  trick.reduce(
+    (total, played) =>
+      total +
+      (played.card.type === "bonus" ? 5 : played.card.type === "mad" ? -5 : 0),
+    0,
+  );
 
 export default function Home() {
   const [seed, setSeed] = useState(20260807);
@@ -63,7 +70,7 @@ export default function Home() {
       crypto.getRandomValues(values);
       const nextSeed = values[0] || 1;
       setSeed(nextSeed);
-      setGame(
+      runBots(
         createGame({
           seed: nextSeed,
           playerCount: 4,
@@ -72,6 +79,8 @@ export default function Home() {
       );
     }, 0);
     return () => window.clearTimeout(initialDeal);
+    // runBots intentionally starts only this freshly dealt game on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
     if ("serviceWorker" in navigator)
@@ -119,8 +128,15 @@ export default function Home() {
         if (current.phase === "resolving") {
           current = finishTrick(current);
           setGame(current);
-          const winner = current.players[current.lastWinner!];
-          setWinnerNotice(`${winner.name} takes the trick`);
+          if (current.lastWinner === null) {
+            setWinnerNotice("No one takes the all-action trick");
+          } else {
+            const winner = current.players[current.lastWinner];
+            const modifier = rageModifier(current.lastTrick);
+            setWinnerNotice(
+              `${winner.name} takes the trick${modifier ? ` · Rage ${modifier > 0 ? "+" : ""}${modifier}` : ""}`,
+            );
+          }
           schedule(() => {
             setWinnerNotice(null);
             step();
@@ -159,7 +175,7 @@ export default function Home() {
     setWinnerNotice(null);
     setBid(2);
     setSelectedId(null);
-    setGame(
+    runBots(
       createGame({
         seed: seed || 1,
         playerCount: players,
@@ -317,6 +333,12 @@ export default function Home() {
                 {player.tricks}
                 <small>tricks</small>
               </span>
+              <span className="rage-read">
+                {player.roundBonus === 0
+                  ? "—"
+                  : `${player.roundBonus > 0 ? "+" : ""}${player.roundBonus}`}
+                <small>rage</small>
+              </span>
               <strong>{player.score}</strong>
             </div>
           ))}
@@ -425,7 +447,11 @@ export default function Home() {
                 <div className="winner-banner" role="status">
                   <span>✦</span>
                   <strong>{winnerNotice}</strong>
-                  <small>Leads the next trick</small>
+                  <small>
+                    {game.lastWinner === null
+                      ? `${game.players[game.currentPlayer].name} leads again`
+                      : "Leads the next trick"}
+                  </small>
                 </div>
               )}
               {game.phase === "roundSummary" && (

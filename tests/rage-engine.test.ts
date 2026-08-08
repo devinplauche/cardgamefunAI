@@ -29,6 +29,15 @@ test("same seed produces an identical first deal", () => {
     b.players.map((p) => p.hand),
   );
 });
+test("the first player is seeded-random instead of always being the human", () => {
+  const firstPlayers = new Set(
+    Array.from(
+      { length: 20 },
+      (_, seed) => createGame({ seed: seed + 1, playerCount: 4 }).currentPlayer,
+    ),
+  );
+  assert.ok(firstPlayers.size > 1);
+});
 test("every player bids once before play begins", () => {
   let state = createGame({ seed: 4, playerCount: 3 });
   for (let i = 0; i < 3; i += 1)
@@ -119,7 +128,7 @@ test("Change and Out Rage update trump immediately", () => {
   ]);
   assert.equal(playCard(out, 0, { cardId: "out" }).trump, null);
 });
-test("Wild Rage requires a declaration and Bonus Rage is scored for the trick winner", () => {
+test("Wild Rage requires a declaration and Rage modifiers apply to the trick winner", () => {
   const wild = trickFixture([
     [{ id: "wild", type: "wild" }],
     [{ id: "red", suit: "red", rank: 2 }],
@@ -154,6 +163,49 @@ test("Wild Rage requires a declaration and Bonus Rage is scored for the trick wi
   const scored = playCard(afterBonus, 1, { cardId: "green" });
   assert.equal(scored.phase, "roundSummary");
   assert.equal(scored.lastRoundScores?.[1], 1);
+  const mad = trickFixture([
+    [{ id: "mad", type: "mad" }],
+    [{ id: "green", suit: "green", rank: 2 }],
+  ]);
+  const afterMad = playCard(mad, 0, { cardId: "mad" });
+  const madScored = playCard(afterMad, 1, { cardId: "green" });
+  assert.equal(madScored.players[1].roundBonus, -5);
+  assert.equal(madScored.lastRoundScores?.[1], -9);
+});
+test("an all-action trick has no winner and leaves the lead in place", () => {
+  const base = createGame({ seed: 88, playerCount: 4 });
+  let state: GameState = {
+    ...base,
+    phase: "playing",
+    currentPlayer: 0,
+    trump: "blue",
+    players: base.players.map((player, index) => ({
+      ...player,
+      hand: [["mad", "bonus", "change", "out"]][0]
+        .map((type, cardIndex) =>
+          cardIndex === index
+            ? {
+                id: `${type}-${index}`,
+                type: type as "mad" | "bonus" | "change" | "out",
+              }
+            : null,
+        )
+        .filter(Boolean) as GameState["players"][number]["hand"],
+      bid: 0,
+      tricks: 0,
+      roundBonus: 0,
+    })),
+    trick: [],
+    leadSuit: null,
+  };
+  for (let playerId = 0; playerId < 4; playerId += 1)
+    state = playCard(state, playerId, {
+      cardId: ["mad-0", "bonus-1", "change-2", "out-3"][playerId],
+    });
+  assert.equal(state.lastWinner, null);
+  assert.equal(state.currentPlayer, 0);
+  assert.ok(state.players.every((player) => player.tricks === 0));
+  assert.ok(state.players.every((player) => player.roundBonus === 0));
 });
 test("the final card can remain visible before a trick resolves", () => {
   const state = trickFixture([

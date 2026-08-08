@@ -177,7 +177,7 @@ header {
 }
 .score-row {
   display: grid;
-  grid-template-columns: 1fr 35px 42px 38px;
+  grid-template-columns: 1fr 35px 42px 38px 38px;
   gap: 7px;
   align-items: center;
   border-top: 1px solid #f0ece7;
@@ -200,7 +200,8 @@ header {
   margin-top: 3px;
 }
 .bid-read,
-.trick-read {
+.trick-read,
+.rage-read {
   text-align: center;
 }
 .rules-note {
@@ -491,7 +492,7 @@ footer {
     display: none;
   }
   .score-row {
-    grid-template-columns: 1fr 34px 40px 34px;
+    grid-template-columns: 1fr 31px 37px 34px 34px;
     padding: 7px 0;
   }
   .score-row:first-of-type {

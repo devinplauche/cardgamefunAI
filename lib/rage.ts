@@ -165,12 +165,16 @@ export function createGame({
     score: 0,
     roundBonus: 0,
   }));
+  const [dealer, rng] = pick(
+    Array.from({ length: playerCount }, (_, playerId) => playerId),
+    seed >>> 0 || 1,
+  );
   return dealRound({
     seed,
-    rng: seed >>> 0 || 1,
+    rng,
     playerCount,
     round: 1,
-    dealer: playerCount - 1,
+    dealer,
     phase: "bidding",
     players,
     trump: null,
@@ -192,11 +196,7 @@ export function legalPlays(
   if (state.phase !== "playing" || playerId !== state.currentPlayer) return [];
   const hand = state.players[playerId].hand;
   if (!state.leadSuit) {
-    if (state.trick.length === 0) return hand;
-    const leadSetters = hand.filter((card) =>
-      Boolean(card.suit || card.type === "wild"),
-    );
-    return leadSetters.length ? leadSetters : hand;
+    return hand;
   }
   const followers = hand.filter((card) => card.suit === state.leadSuit);
   return followers.length ? followers : hand;
@@ -244,6 +244,19 @@ function winsAgainst(
 
 function resolveTrick(state: GameState): GameState {
   const leadSuit = establishLead(state.trick);
+  if (!leadSuit) {
+    const base = {
+      ...state,
+      trick: [],
+      lastTrick: state.trick,
+      leadSuit: null,
+      lastWinner: null,
+      log: [...state.log, "No one takes the all-action trick"],
+    };
+    if (state.players.every((player) => player.hand.length === 0))
+      return scoreRound(base);
+    return base;
+  }
   let winner = state.trick[0];
   for (const challenger of state.trick.slice(1))
     if (winsAgainst(challenger, winner, leadSuit, state.trump))
