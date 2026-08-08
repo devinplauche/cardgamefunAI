@@ -73,6 +73,10 @@ export default function Home() {
     }, 0);
     return () => window.clearTimeout(initialDeal);
   }, []);
+  useEffect(() => {
+    if ("serviceWorker" in navigator)
+      void navigator.serviceWorker.register("/sw.js");
+  }, []);
   const human = game.players[0];
   const humanTurn = game.currentPlayer === 0;
   const legal = useMemo(
