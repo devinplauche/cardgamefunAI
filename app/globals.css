@@ -371,6 +371,11 @@ header {
 .suit-choice {
   float: right;
 }
+.wild-choices {
+  float: right;
+  display: flex;
+  gap: 10px;
+}
 .hand-cards {
   display: flex;
   flex-wrap: wrap;
@@ -539,6 +544,10 @@ footer {
     float: none;
     margin-top: 10px;
     width: max-content;
+  }
+  .wild-choices {
+    float: none;
+    margin-top: 10px;
   }
   .hand-cards {
     padding: 12px 0;

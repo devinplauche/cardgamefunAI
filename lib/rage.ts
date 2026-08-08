@@ -14,6 +14,7 @@ export type PlayedCard = {
   player: number;
   card: Card;
   declaredSuit?: Suit;
+  declaredRank?: number;
   chosenTrump?: Suit;
 };
 export type Phase =
@@ -50,7 +51,12 @@ export type GameState = {
   lastRoundScores: number[] | null;
   log: string[];
 };
-export type Play = { cardId: string; declaredSuit?: Suit; chosenTrump?: Suit };
+export type Play = {
+  cardId: string;
+  declaredSuit?: Suit;
+  declaredRank?: number;
+  chosenTrump?: Suit;
+};
 
 const next = (rng: number) => (rng * 1664525 + 1013904223) >>> 0;
 const pick = <T>(items: T[], rng: number): [T, number] => {
@@ -227,8 +233,12 @@ function winsAgainst(
   if (challengerSuit !== currentSuit)
     return challengerSuit === lead && currentSuit !== lead;
   return (
-    (challenger.card.type === "wild" ? 16 : (challenger.card.rank ?? -1)) >
-    (current.card.type === "wild" ? 16 : (current.card.rank ?? -1))
+    (challenger.card.type === "wild"
+      ? (challenger.declaredRank ?? -1)
+      : (challenger.card.rank ?? -1)) >
+    (current.card.type === "wild"
+      ? (current.declaredRank ?? -1)
+      : (current.card.rank ?? -1))
   );
 }
 
@@ -338,6 +348,13 @@ export function playCard(
     throw new Error("Must follow suit");
   if (card.type === "wild" && !play.declaredSuit)
     throw new Error("Wild Rage needs a declared suit");
+  if (
+    card.type === "wild" &&
+    (!Number.isInteger(play.declaredRank) ||
+      play.declaredRank! < 0 ||
+      play.declaredRank! > 15)
+  )
+    throw new Error("Wild Rage needs a declared number from 0 to 15");
   const [randomTrump, nextRng] =
     card.type === "change"
       ? pick(
@@ -351,6 +368,7 @@ export function playCard(
       player: playerId,
       card,
       declaredSuit: play.declaredSuit,
+      declaredRank: play.declaredRank,
       chosenTrump: randomTrump,
     },
   ];
@@ -452,6 +470,12 @@ export function chooseBotPlay(state: GameState, playerId: number): Play {
     cardId: card.id,
     declaredSuit:
       card.type === "wild" ? (state.trump ?? preferredTrump) : undefined,
+    declaredRank:
+      card.type === "wild"
+        ? (player.bid ?? 0) > player.tricks
+          ? 15
+          : 0
+        : undefined,
   };
 }
 

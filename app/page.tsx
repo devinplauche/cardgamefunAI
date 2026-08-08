@@ -40,7 +40,7 @@ const playedLabel = (played: PlayedCard) =>
   played.card.type === "change"
     ? `CHANGE → ${played.chosenTrump?.toUpperCase()}`
     : played.card.type === "wild"
-      ? `WILD → ${played.declaredSuit?.toUpperCase()}`
+      ? `WILD ${played.declaredRank} → ${played.declaredSuit?.toUpperCase()}`
       : cardLabel(played.card);
 
 export default function Home() {
@@ -53,6 +53,7 @@ export default function Home() {
   const [bid, setBid] = useState(2);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [suitChoice, setSuitChoice] = useState<Suit>("red");
+  const [wildRank, setWildRank] = useState(15);
   const [busy, setBusy] = useState(false);
   const [winnerNotice, setWinnerNotice] = useState<string | null>(null);
   const timers = useRef<number[]>([]);
@@ -173,6 +174,7 @@ export default function Home() {
       {
         cardId: selected.id,
         declaredSuit: selected.type === "wild" ? suitChoice : undefined,
+        declaredRank: selected.type === "wild" ? wildRank : undefined,
       },
       true,
     );
@@ -474,17 +476,34 @@ export default function Home() {
             </h2>
           </div>
           {selected?.type === "wild" && (
-            <label className="suit-choice">
-              Wild suit
-              <select
-                value={suitChoice}
-                onChange={(event) => setSuitChoice(event.target.value as Suit)}
-              >
-                {SUITS.map((suit) => (
-                  <option key={suit}>{suit}</option>
-                ))}
-              </select>
-            </label>
+            <div className="wild-choices">
+              <label className="suit-choice">
+                Wild suit
+                <select
+                  value={suitChoice}
+                  onChange={(event) =>
+                    setSuitChoice(event.target.value as Suit)
+                  }
+                >
+                  {SUITS.map((suit) => (
+                    <option key={suit}>{suit}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="suit-choice">
+                Wild number
+                <select
+                  value={wildRank}
+                  onChange={(event) => setWildRank(Number(event.target.value))}
+                >
+                  {Array.from({ length: 16 }, (_, rank) => (
+                    <option key={rank} value={rank}>
+                      {rank}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
           )}
           <div className="hand-cards">
             {human.hand.map((card) => (
