@@ -137,9 +137,25 @@ test("Change Rage chooses its new trump only when played; Out Rage clears it", (
   ]);
   assert.equal(change.trump, "blue");
   assert.equal(change.trick[0], undefined);
-  const played = playCard(change, 0, { cardId: "change" });
-  assert.notEqual(played.trump, "blue");
-  assert.ok(played.trick[0].chosenTrump);
+  const played = playCard(
+    {
+      ...change,
+      stock: [
+        { id: "bonus-stock", type: "bonus" },
+        { id: "red-stock", suit: "red", rank: 5 },
+      ],
+      trumpReveal: [],
+    },
+    0,
+    { cardId: "change" },
+  );
+  assert.equal(played.trump, "red");
+  assert.equal(played.trick[0].chosenTrump, "red");
+  assert.deepEqual(
+    played.trumpReveal.map((card) => card.id),
+    ["bonus-stock", "red-stock"],
+  );
+  assert.equal(played.stock.length, 0);
   const out = trickFixture([
     [{ id: "out", type: "out" }],
     [{ id: "red", suit: "red", rank: 2 }],

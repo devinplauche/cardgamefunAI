@@ -327,6 +327,22 @@ function scoreRound(state: GameState): GameState {
   return scored;
 }
 
+function revealNextTrump(stock: Card[]): {
+  trump: Suit | null;
+  revealed: Card[];
+  stock: Card[];
+} {
+  const revealed: Card[] = [];
+  let cursor = 0;
+  while (cursor < stock.length) {
+    const card = stock[cursor++];
+    revealed.push(card);
+    if (card.suit)
+      return { trump: card.suit, revealed, stock: stock.slice(cursor) };
+  }
+  return { trump: null, revealed, stock: [] };
+}
+
 export function continueGame(state: GameState): GameState {
   if (state.phase !== "roundSummary") return state;
   return dealRound({
@@ -383,13 +399,8 @@ export function playCard(
       play.declaredRank! > 16)
   )
     throw new Error("Wild Rage needs a declared number from 0 to 16");
-  const [randomTrump, nextRng] =
-    card.type === "change"
-      ? pick(
-          SUITS.filter((suit) => suit !== state.trump),
-          state.rng,
-        )
-      : ([undefined, state.rng] as [undefined, number]);
+  const changedTrump =
+    card.type === "change" ? revealNextTrump(state.stock) : null;
   const trick = [
     ...state.trick,
     {
@@ -397,7 +408,7 @@ export function playCard(
       card,
       declaredSuit: play.declaredSuit,
       declaredRank: play.declaredRank,
-      chosenTrump: randomTrump,
+      chosenTrump: changedTrump?.trump ?? undefined,
     },
   ];
   const players = state.players.map((player) =>
@@ -410,7 +421,7 @@ export function playCard(
   );
   const trump =
     card.type === "change"
-      ? randomTrump!
+      ? (changedTrump?.trump ?? state.trump)
       : card.type === "out"
         ? null
         : state.trump;
@@ -419,9 +430,13 @@ export function playCard(
     players,
     trick,
     trump,
+    stock: changedTrump?.stock ?? state.stock,
+    trumpReveal: changedTrump
+      ? [...(state.trumpReveal ?? []), ...changedTrump.revealed]
+      : (state.trumpReveal ?? []),
     leadSuit: establishLead(trick),
     currentPlayer: advance(state),
-    rng: nextRng,
+    rng: state.rng,
     log: [
       ...state.log,
       `${state.players[playerId].name} plays ${cardName(card)}`,
