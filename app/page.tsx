@@ -30,7 +30,9 @@ const botNames: Record<BotLevel, string> = {
   medium: "Medium",
   hard: "Hard",
 };
-const botLabel = (level: BotLevel | undefined) => botNames[level ?? "medium"];
+const botLevelFromSave = (level: unknown): BotLevel =>
+  level === "easy" || level === "medium" || level === "hard" ? level : "medium";
+const botLabel = (level: unknown) => botNames[botLevelFromSave(level)];
 const botsFor = (count: number, level: BotLevel): BotLevel[] =>
   Array.from({ length: count }, (_, index) => (index === 0 ? "medium" : level));
 const cardLabel = (card: { rank?: number; suit?: Suit; type?: string }) =>
@@ -241,7 +243,7 @@ export default function Home() {
     setPlayers(game.playerCount);
     const currentOpponents = game.players
       .slice(1)
-      .map((player) => player.bot ?? "medium");
+      .map((player) => botLevelFromSave(player.bot));
     if (currentOpponents.every((level) => level === currentOpponents[0]))
       setBotLevel(currentOpponents[0]);
     setNewGameOpen(true);
