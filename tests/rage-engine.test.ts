@@ -29,6 +29,18 @@ test("same seed produces an identical first deal", () => {
     b.players.map((p) => p.hand),
   );
 });
+test("trump is revealed by turning over stock cards until a color appears", () => {
+  const game = createGame({ seed: 42, playerCount: 4 });
+  const revealedTrump = game.trumpReveal.at(-1);
+  assert.ok(game.trumpReveal.length >= 1);
+  assert.equal(revealedTrump?.suit, game.trump);
+  assert.ok(game.trumpReveal.slice(0, -1).every((card) => !card.suit));
+  assert.ok(
+    game.trumpReveal.every(
+      (card) => !game.stock.some((stockCard) => stockCard.id === card.id),
+    ),
+  );
+});
 test("the first player is seeded-random instead of always being the human", () => {
   const games = Array.from({ length: 20 }, (_, seed) =>
     createGame({ seed: seed + 1, playerCount: 4 }),

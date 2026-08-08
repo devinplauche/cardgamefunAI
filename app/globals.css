@@ -177,6 +177,58 @@ header {
   text-transform: capitalize;
   color: var(--ink);
 }
+.trump-reveal {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 4px;
+  gap: 3px;
+}
+.trump .reveal-card {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 21px;
+  margin: 0;
+  border: 1px solid rgba(68, 63, 72, 0.25);
+  border-radius: 3px;
+  background: #fff;
+  color: #443f48;
+  font:
+    700 9px Georgia,
+    serif;
+}
+.trump .reveal-card.red {
+  background: #ffe0d8;
+  color: #a5423b;
+}
+.trump .reveal-card.orange {
+  background: #ffe4bd;
+  color: #a05d19;
+}
+.trump .reveal-card.yellow {
+  background: #fff2a8;
+  color: #826900;
+}
+.trump .reveal-card.green {
+  background: #cfe9d2;
+  color: #2d6b41;
+}
+.trump .reveal-card.blue {
+  background: #ccecf4;
+  color: #276f82;
+}
+.trump .reveal-card.purple {
+  background: #dfd3f5;
+  color: #5b4190;
+}
+.trump .reveal-card.rage-wild,
+.trump .reveal-card.rage-bonus,
+.trump .reveal-card.rage-mad,
+.trump .reveal-card.rage-change,
+.trump .reveal-card.rage-out {
+  background: #d8d4d2 !important;
+  color: #443f48;
+}
 .table-grid {
   display: grid;
   grid-template-columns: 310px 1fr;

@@ -45,6 +45,7 @@ export type GameState = {
   players: Player[];
   trump: Suit | null;
   stock: Card[];
+  trumpReveal: Card[];
   trick: PlayedCard[];
   lastTrick: PlayedCard[];
   leadSuit: Suit | null;
@@ -128,8 +129,10 @@ function dealRound(state: GameState): GameState {
         deck[cursor++],
       );
   let trump: Suit | null = null;
+  const trumpReveal: Card[] = [];
   while (cursor < deck.length && !trump) {
     const card = deck[cursor++];
+    trumpReveal.push(card);
     if (card.suit) trump = card.suit;
   }
   return {
@@ -138,6 +141,7 @@ function dealRound(state: GameState): GameState {
     players,
     cardsPerPlayer: cardsEach,
     stock: deck.slice(cursor),
+    trumpReveal,
     trump,
     trick: [],
     lastTrick: [],
@@ -186,6 +190,7 @@ export function createGame({
     players,
     trump: null,
     stock: [],
+    trumpReveal: [],
     trick: [],
     lastTrick: [],
     leadSuit: null,

@@ -358,6 +358,19 @@ export default function Home() {
           ) : (
             <b>out</b>
           )}
+          {(game.trumpReveal ?? []).length > 0 && (
+            <span className="trump-reveal" aria-label="Trump deck reveal">
+              {(game.trumpReveal ?? []).map((card) => (
+                <i
+                  className={`reveal-card ${cardFaceClass(card)}`}
+                  key={card.id}
+                  title={cardLabel(card)}
+                >
+                  {card.rank ?? "✦"}
+                </i>
+              ))}
+            </span>
+          )}
         </div>
         <div>
           <span className="kicker">TO ACT</span>
