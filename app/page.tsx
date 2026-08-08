@@ -30,6 +30,7 @@ const botNames: Record<BotLevel, string> = {
   medium: "Medium",
   hard: "Hard",
 };
+const botLabel = (level: BotLevel | undefined) => botNames[level ?? "medium"];
 const botsFor = (count: number, level: BotLevel): BotLevel[] =>
   Array.from({ length: count }, (_, index) => (index === 0 ? "medium" : level));
 const cardLabel = (card: { rank?: number; suit?: Suit; type?: string }) =>
@@ -238,7 +239,9 @@ export default function Home() {
   }
   function openNewGame() {
     setPlayers(game.playerCount);
-    const currentOpponents = game.players.slice(1).map((player) => player.bot);
+    const currentOpponents = game.players
+      .slice(1)
+      .map((player) => player.bot ?? "medium");
     if (currentOpponents.every((level) => level === currentOpponents[0]))
       setBotLevel(currentOpponents[0]);
     setNewGameOpen(true);
@@ -437,7 +440,7 @@ export default function Home() {
               <span>
                 <b>{player.name}</b>
                 <small>
-                  {player.id === 0 ? "You" : botNames[player.bot] + " bot"}
+                  {player.id === 0 ? "You" : `${botLabel(player.bot)} bot`}
                 </small>
               </span>
               <span className="bid-read">
