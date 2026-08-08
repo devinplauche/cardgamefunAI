@@ -93,6 +93,21 @@ export default function Home() {
     [game],
   );
   const selected = human.hand.find((card) => card.id === selectedId);
+  const sortedHand = useMemo(
+    () =>
+      [...human.hand].sort((a, b) => {
+        const suitDifference =
+          (a.suit ? SUITS.indexOf(a.suit) : SUITS.length) -
+          (b.suit ? SUITS.indexOf(b.suit) : SUITS.length);
+        if (suitDifference) return suitDifference;
+        const rankDifference =
+          (a.rank ?? Number.MAX_SAFE_INTEGER) -
+          (b.rank ?? Number.MAX_SAFE_INTEGER);
+        if (rankDifference) return rankDifference;
+        return (a.type ?? "").localeCompare(b.type ?? "");
+      }),
+    [human.hand],
+  );
   const phaseLabel =
     game.phase === "bidding"
       ? "Bidding"
@@ -299,7 +314,7 @@ export default function Home() {
             <h2>Read your hand before you bid</h2>
           </div>
           <div className="bid-hand">
-            {human.hand.map((card) => (
+            {sortedHand.map((card) => (
               <article
                 className={`bid-card ${card.suit ?? "special"}`}
                 key={card.id}
@@ -536,7 +551,7 @@ export default function Home() {
             </div>
           )}
           <div className="hand-cards">
-            {human.hand.map((card) => (
+            {sortedHand.map((card) => (
               <button
                 disabled={!humanTurn || busy || !legal.has(card.id)}
                 onClick={() => setSelectedId(card.id)}
