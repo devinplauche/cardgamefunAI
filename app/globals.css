@@ -54,8 +54,31 @@ header {
   margin-right: 8px;
 }
 .seed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
   color: var(--muted);
+}
+.save-status {
+  border-radius: 99px;
+  padding: 3px 6px;
+  background: #ede9e3;
+  color: #827b82;
+  font-size: 9px;
+  font-weight: 700;
+}
+.save-status.saved {
+  background: #e5f3e9;
+  color: #38734d;
+}
+.save-status.saving {
+  background: #fff0dc;
+  color: #9b6929;
+}
+.save-status.offline {
+  background: #ffe7e2;
+  color: #a54d3f;
 }
 .intro {
   display: flex;

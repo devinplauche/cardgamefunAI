@@ -65,22 +65,48 @@ export default function Home() {
   const [wildRank, setWildRank] = useState(16);
   const [busy, setBusy] = useState(false);
   const [winnerNotice, setWinnerNotice] = useState<string | null>(null);
+  const [storageReady, setStorageReady] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<
+    "loading" | "saved" | "saving" | "offline"
+  >("loading");
   const timers = useRef<number[]>([]);
   useEffect(() => {
-    const initialDeal = window.setTimeout(() => {
-      const values = new Uint32Array(1);
-      crypto.getRandomValues(values);
-      const nextSeed = values[0] || 1;
-      setSeed(nextSeed);
-      runBots(
-        createGame({
-          seed: nextSeed,
-          playerCount: 4,
-          bots: botsFor(4, "medium"),
-        }),
-      );
-    }, 0);
-    return () => window.clearTimeout(initialDeal);
+    let isCurrent = true;
+    async function restoreOrDeal() {
+      let restoredGame: GameState | null = null;
+      try {
+        const response = await fetch("/api/game", { cache: "no-store" });
+        if (response.ok) {
+          const saved = (await response.json()) as { game: GameState | null };
+          restoredGame = saved.game;
+        }
+      } catch {
+        // A fresh game is still playable if the save service is unavailable.
+      }
+      if (!isCurrent) return;
+      if (restoredGame) {
+        setSeed(restoredGame.seed);
+        runBots(restoredGame);
+      } else {
+        const values = new Uint32Array(1);
+        crypto.getRandomValues(values);
+        const nextSeed = values[0] || 1;
+        setSeed(nextSeed);
+        runBots(
+          createGame({
+            seed: nextSeed,
+            playerCount: 4,
+            bots: botsFor(4, "medium"),
+          }),
+        );
+      }
+      setStorageReady(true);
+      setSaveStatus("saved");
+    }
+    void restoreOrDeal();
+    return () => {
+      isCurrent = false;
+    };
     // runBots intentionally starts only this freshly dealt game on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -88,6 +114,23 @@ export default function Home() {
     if ("serviceWorker" in navigator)
       void navigator.serviceWorker.register("/sw.js");
   }, []);
+  useEffect(() => {
+    if (!storageReady) return;
+    const saveTimer = window.setTimeout(async () => {
+      setSaveStatus("saving");
+      try {
+        const response = await fetch("/api/game", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ game }),
+        });
+        setSaveStatus(response.ok ? "saved" : "offline");
+      } catch {
+        setSaveStatus("offline");
+      }
+    }, 700);
+    return () => window.clearTimeout(saveTimer);
+  }, [game, storageReady]);
   const human = game.players[0];
   const humanTurn = game.currentPlayer === 0;
   const legal = useMemo(
@@ -232,6 +275,15 @@ export default function Home() {
         </div>
         <div className="seed">
           Seed <b>{game.seed}</b>
+          <small className={`save-status ${saveStatus}`}>
+            {saveStatus === "loading"
+              ? "Loading save…"
+              : saveStatus === "saving"
+                ? "Saving…"
+                : saveStatus === "saved"
+                  ? "Saved"
+                  : "Save offline"}
+          </small>
         </div>
       </header>
       <section className="intro">
