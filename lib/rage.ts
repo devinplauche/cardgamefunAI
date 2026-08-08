@@ -38,6 +38,7 @@ export type GameState = {
   rng: number;
   playerCount: number;
   round: number;
+  cardsPerPlayer: number;
   dealer: number;
   phase: Phase;
   players: Player[];
@@ -132,6 +133,7 @@ function dealRound(state: GameState): GameState {
     ...state,
     rng,
     players,
+    cardsPerPlayer: cardsEach,
     stock: deck.slice(cursor),
     trump,
     trick: [],
@@ -174,6 +176,7 @@ export function createGame({
     rng,
     playerCount,
     round: 1,
+    cardsPerPlayer: 0,
     dealer,
     phase: "bidding",
     players,
@@ -292,10 +295,12 @@ function resolveTrick(state: GameState): GameState {
 }
 
 function scoreRound(state: GameState): GameState {
+  const tricksInRound = state.cardsPerPlayer;
   const roundScores = state.players.map(
     (player) =>
       player.tricks +
       player.roundBonus +
+      (player.tricks === tricksInRound ? 5 : 0) +
       (player.tricks === player.bid ? (player.bid === 0 ? 5 : 10) : -5),
   );
   const players = state.players.map((player, index) => ({

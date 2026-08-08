@@ -128,7 +128,7 @@ test("Change and Out Rage update trump immediately", () => {
   ]);
   assert.equal(playCard(out, 0, { cardId: "out" }).trump, null);
 });
-test("Wild Rage requires a declaration and Rage modifiers apply to the trick winner", () => {
+test("Wild Rage, Rage modifiers, and clean sweeps score correctly", () => {
   const wild = trickFixture([
     [{ id: "wild", type: "wild" }],
     [{ id: "red", suit: "red", rank: 2 }],
@@ -171,6 +171,16 @@ test("Wild Rage requires a declaration and Rage modifiers apply to the trick win
   const madScored = playCard(afterMad, 1, { cardId: "green" });
   assert.equal(madScored.players[1].roundBonus, -5);
   assert.equal(madScored.lastRoundScores?.[1], -9);
+  const cleanSweep = {
+    ...trickFixture([
+      [{ id: "red-high", suit: "red", rank: 10 }],
+      [{ id: "red-low", suit: "red", rank: 2 }],
+    ]),
+    cardsPerPlayer: 1,
+  };
+  const sweepAfterLead = playCard(cleanSweep, 0, { cardId: "red-high" });
+  const sweepScored = playCard(sweepAfterLead, 1, { cardId: "red-low" });
+  assert.equal(sweepScored.lastRoundScores?.[0], 1);
 });
 test("an all-action trick has no winner and leaves the lead in place", () => {
   const base = createGame({ seed: 88, playerCount: 4 });

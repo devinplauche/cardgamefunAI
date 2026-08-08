@@ -344,7 +344,7 @@ export default function Home() {
           ))}
           <p className="rules-note">
             Exact bid: +10 (+5 for exact zero). Miss your bid: −5. Each trick:
-            +1. Bonus/Mad Rage modifies the trick winner.
+            +1. Take every trick: +5. Bonus/Mad Rage modifies the trick winner.
           </p>
         </aside>
         <section className="table">
