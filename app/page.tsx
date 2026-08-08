@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   SUITS,
   chooseBotBid,
@@ -56,6 +56,22 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [winnerNotice, setWinnerNotice] = useState<string | null>(null);
   const timers = useRef<number[]>([]);
+  useEffect(() => {
+    const initialDeal = window.setTimeout(() => {
+      const values = new Uint32Array(1);
+      crypto.getRandomValues(values);
+      const nextSeed = values[0] || 1;
+      setSeed(nextSeed);
+      setGame(
+        createGame({
+          seed: nextSeed,
+          playerCount: 4,
+          bots: botsFor(4, "medium"),
+        }),
+      );
+    }, 0);
+    return () => window.clearTimeout(initialDeal);
+  }, []);
   const human = game.players[0];
   const humanTurn = game.currentPlayer === 0;
   const legal = useMemo(
