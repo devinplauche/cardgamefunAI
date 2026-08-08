@@ -35,11 +35,13 @@ test("the first player is seeded-random instead of always being the human", () =
   );
   const firstPlayers = new Set(games.map((game) => game.currentPlayer));
   assert.ok(firstPlayers.size > 1);
-  assert.ok(
-    games.every(
-      (game) => game.currentPlayer === (game.dealer + 1) % game.playerCount,
-    ),
-  );
+  assert.ok(games.every((game) => game.currentPlayer === game.leader));
+});
+test("the round leader advances clockwise after the opening round", () => {
+  const state = createGame({ seed: 12, playerCount: 4 });
+  const nextRound = continueGame({ ...state, phase: "roundSummary" });
+  assert.equal(nextRound.leader, (state.leader! + 1) % state.playerCount);
+  assert.equal(nextRound.currentPlayer, nextRound.leader);
 });
 test("every player bids once before play begins", () => {
   let state = createGame({ seed: 4, playerCount: 3 });

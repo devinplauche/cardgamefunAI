@@ -155,7 +155,11 @@ export default function Home() {
   );
   const bidOrder = Array.from(
     { length: game.playerCount },
-    (_, index) => game.players[(game.dealer + 1 + index) % game.playerCount],
+    (_, index) =>
+      game.players[
+        ((game.leader ?? (game.dealer + 1) % game.playerCount) + index) %
+          game.playerCount
+      ],
   );
   const bidLeader = bidOrder[0];
   const phaseLabel =

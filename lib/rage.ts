@@ -40,6 +40,7 @@ export type GameState = {
   round: number;
   cardsPerPlayer: number;
   dealer: number;
+  leader?: number;
   phase: Phase;
   players: Player[];
   trump: Suit | null;
@@ -66,6 +67,8 @@ const pick = <T>(items: T[], rng: number): [T, number] => {
 };
 const advance = (state: GameState, from = state.currentPlayer) =>
   (from + 1) % state.playerCount;
+const roundLeader = (state: GameState) =>
+  state.leader ?? advance(state, state.dealer);
 const cloneCard = (card: Card) => ({ ...card });
 
 export function cardName(card: Card) {
@@ -140,7 +143,7 @@ function dealRound(state: GameState): GameState {
     lastTrick: [],
     leadSuit: null,
     phase: "bidding",
-    currentPlayer: advance(state, state.dealer),
+    currentPlayer: roundLeader(state),
     lastWinner: null,
     lastRoundScores: null,
     log: [
@@ -167,7 +170,7 @@ export function createGame({
     score: 0,
     roundBonus: 0,
   }));
-  const [dealer, rng] = pick(
+  const [leader, rng] = pick(
     Array.from({ length: playerCount }, (_, playerId) => playerId),
     seed >>> 0 || 1,
   );
@@ -177,7 +180,8 @@ export function createGame({
     playerCount,
     round: 1,
     cardsPerPlayer: 0,
-    dealer,
+    dealer: leader,
+    leader,
     phase: "bidding",
     players,
     trump: null,
@@ -324,6 +328,7 @@ export function continueGame(state: GameState): GameState {
     ...state,
     round: state.round + 1,
     dealer: advance(state, state.dealer),
+    leader: advance(state, roundLeader(state)),
   });
 }
 
@@ -345,7 +350,7 @@ export function submitBid(
     ...state,
     players,
     phase: allBids ? "playing" : "bidding",
-    currentPlayer: allBids ? advance(state, state.dealer) : advance(state),
+    currentPlayer: allBids ? roundLeader(state) : advance(state),
     log: [...state.log, `${state.players[playerId].name} bids ${bid}`],
   };
 }
