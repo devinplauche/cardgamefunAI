@@ -116,15 +116,16 @@ function trickFixture(
     leadSuit: null,
   };
 }
-test("Change and Out Rage update trump immediately", () => {
+test("Change Rage chooses its new trump only when played; Out Rage clears it", () => {
   const change = trickFixture([
     [{ id: "change", type: "change" }],
     [{ id: "red", suit: "red", rank: 2 }],
   ]);
-  const changed = playCard(change, 0, { cardId: "change", chosenTrump: "red" });
-  const randomlyChanged = playCard(change, 0, { cardId: "change" });
-  assert.notEqual(changed.trump, "blue");
-  assert.equal(changed.trump, randomlyChanged.trump);
+  assert.equal(change.trump, "blue");
+  assert.equal(change.trick[0], undefined);
+  const played = playCard(change, 0, { cardId: "change" });
+  assert.notEqual(played.trump, "blue");
+  assert.ok(played.trick[0].chosenTrump);
   const out = trickFixture([
     [{ id: "out", type: "out" }],
     [{ id: "red", suit: "red", rank: 2 }],
