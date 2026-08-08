@@ -30,13 +30,16 @@ test("same seed produces an identical first deal", () => {
   );
 });
 test("the first player is seeded-random instead of always being the human", () => {
-  const firstPlayers = new Set(
-    Array.from(
-      { length: 20 },
-      (_, seed) => createGame({ seed: seed + 1, playerCount: 4 }).currentPlayer,
+  const games = Array.from({ length: 20 }, (_, seed) =>
+    createGame({ seed: seed + 1, playerCount: 4 }),
+  );
+  const firstPlayers = new Set(games.map((game) => game.currentPlayer));
+  assert.ok(firstPlayers.size > 1);
+  assert.ok(
+    games.every(
+      (game) => game.currentPlayer === (game.dealer + 1) % game.playerCount,
     ),
   );
-  assert.ok(firstPlayers.size > 1);
 });
 test("every player bids once before play begins", () => {
   let state = createGame({ seed: 4, playerCount: 3 });

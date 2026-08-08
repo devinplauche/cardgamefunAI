@@ -153,6 +153,11 @@ export default function Home() {
       }),
     [human.hand],
   );
+  const bidOrder = Array.from(
+    { length: game.playerCount },
+    (_, index) => game.players[(game.dealer + 1 + index) % game.playerCount],
+  );
+  const bidLeader = bidOrder[0];
   const phaseLabel =
     game.phase === "bidding"
       ? "Bidding"
@@ -440,24 +445,67 @@ export default function Home() {
           </div>
           {game.phase === "bidding" ? (
             <div className="bid-stage">
-              <h2>Make your one bid</h2>
-              <p>Each bot will visibly bid after you commit.</p>
-              <div className="bid-picker">
-                <button onClick={() => setBid(Math.max(0, bid - 1))}>−</button>
-                <strong>{bid}</strong>
-                <button
-                  onClick={() => setBid(Math.min(human.hand.length, bid + 1))}
-                >
-                  +
-                </button>
+              <span className="kicker">BIDDING ORDER</span>
+              <p className="bid-leader">{bidLeader.name} leads this round</p>
+              <div className="bid-steps" aria-label="Bids so far">
+                {bidOrder.map((player) => (
+                  <div
+                    className={`bid-step ${player.id === game.currentPlayer ? "acting" : ""} ${player.bid !== null ? "locked" : ""}`}
+                    key={player.id}
+                  >
+                    <small>{player.name}</small>
+                    <strong>
+                      {player.bid !== null
+                        ? player.bid
+                        : player.id === game.currentPlayer
+                          ? busy
+                            ? "…"
+                            : "?"
+                          : "—"}
+                    </strong>
+                    <span>
+                      {player.bid !== null
+                        ? "bid"
+                        : player.id === game.currentPlayer
+                          ? "to bid"
+                          : "waiting"}
+                    </span>
+                  </div>
+                ))}
               </div>
-              <button
-                className="primary"
-                disabled={!humanTurn || busy}
-                onClick={placeBid}
-              >
-                Lock bid
-              </button>
+              {humanTurn ? (
+                <>
+                  <h2>Make your one bid</h2>
+                  <p>Previous bids are locked. Read the table, then commit.</p>
+                  <div className="bid-picker">
+                    <button onClick={() => setBid(Math.max(0, bid - 1))}>
+                      −
+                    </button>
+                    <strong>{bid}</strong>
+                    <button
+                      onClick={() =>
+                        setBid(Math.min(human.hand.length, bid + 1))
+                      }
+                    >
+                      +
+                    </button>
+                  </div>
+                  <button
+                    className="primary"
+                    disabled={busy}
+                    onClick={placeBid}
+                  >
+                    Lock bid
+                  </button>
+                </>
+              ) : (
+                <div className="bid-wait" role="status">
+                  <strong>
+                    {game.players[game.currentPlayer].name} is bidding
+                  </strong>
+                  <span>Your hand stays visible while you wait.</span>
+                </div>
+              )}
             </div>
           ) : (
             <>

@@ -266,6 +266,83 @@ header {
   color: var(--muted);
   font-size: 13px;
 }
+.bid-stage .kicker {
+  display: block;
+  margin-bottom: 5px;
+}
+.bid-leader {
+  margin: 0 0 13px;
+  font-size: 12px !important;
+}
+.bid-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(66px, 1fr));
+  gap: 7px;
+  margin: 0 auto 23px;
+  max-width: 440px;
+}
+.bid-step {
+  min-height: 58px;
+  border: 1px dashed #ded6ce;
+  border-radius: 10px;
+  background: #faf8f5;
+  padding: 7px 4px;
+  color: #938c93;
+}
+.bid-step small,
+.bid-step span {
+  display: block;
+  font-size: 8px;
+  font-weight: 700;
+}
+.bid-step strong {
+  display: block;
+  margin: 3px 0;
+  font:
+    700 19px Georgia,
+    serif;
+  color: #625a62;
+}
+.bid-step.acting {
+  border-style: solid;
+  border-color: #ed9d8f;
+  background: #fff0ec;
+}
+.bid-step.acting strong {
+  color: #bf5747;
+  animation: bid-pulse 0.9s ease-in-out infinite alternate;
+}
+.bid-step.locked {
+  border-style: solid;
+  border-color: #b6dac1;
+  background: #f1faf2;
+}
+.bid-step.locked strong {
+  color: #39764e;
+}
+.bid-wait {
+  display: grid;
+  gap: 6px;
+  margin: 0 auto;
+  padding: 15px;
+  max-width: 330px;
+  border-radius: 11px;
+  background: #f7f3ee;
+  color: #5f5961;
+  font-size: 12px;
+}
+.bid-wait span {
+  color: #928a92;
+  font-size: 11px;
+}
+@keyframes bid-pulse {
+  from {
+    transform: scale(0.96);
+  }
+  to {
+    transform: scale(1.07);
+  }
+}
 .bid-picker {
   display: flex;
   justify-content: center;
