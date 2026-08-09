@@ -499,7 +499,7 @@ export default function Home() {
           <span>
             {game.familyRuling
               ? "Family ruling overturned your win."
-              : "They are coordinating to make sure you do not win."} Card swaps this
+              : "They are coordinating to make sure you do not win, including down-trades to dump tricks on you."} Card swaps this
             round: {(game.inLawSwaps ?? []).reduce((sum, count) => sum + count, 0)}.
           </span>
         </section>

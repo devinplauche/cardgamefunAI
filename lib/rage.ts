@@ -1018,9 +1018,14 @@ export function chooseAbsoluteInLawPlay(state: GameState, playerId: number): Pla
   });
 }
 
-function inLawCardValue(state: GameState, player: Player, card: Card): number {
+function inLawWantsToShed(state: GameState, player: Player): boolean {
   const needs = (player.bid ?? 0) - player.tricks;
-  if (needs <= 0) {
+  const user = state.players[0];
+  return needs <= 0 || (user.bid !== null && user.tricks >= user.bid);
+}
+
+function inLawCardValue(state: GameState, player: Player, card: Card): number {
+  if (inLawWantsToShed(state, player)) {
     if (card.type === "mad") return 90;
     if (card.type === "bonus") return 70;
     if (card.type === "change" || card.type === "out") return 55;
@@ -1034,9 +1039,9 @@ function inLawCardValue(state: GameState, player: Player, card: Card): number {
 }
 
 /**
- * The visible In-laws cheat: once per round they exchange their weakest card
- * with a stronger card still hidden in the undealt stock. No card is created
- * or duplicated, so the swap remains within the possible unseen deck.
+ * The visible In-laws cheat: they exchange for the card that best suits their
+ * intent, upgrading to win or downgrading to shed/force an unwanted user trick.
+ * No card is created or duplicated, so every swap stays in the unseen deck.
  */
 export function applyInLawCheat(state: GameState, playerId: number): GameState {
   const player = state.players[playerId];
@@ -1080,12 +1085,18 @@ export function applyInLawCheat(state: GameState, playerId: number): GameState {
   const inLawSwaps = swaps.map((count, index) =>
     index === playerId ? count + 1 : count,
   );
+  const downTrade = inLawWantsToShed(state, player);
   return {
     ...state,
     players,
     stock,
     inLawSwaps,
-    log: [...state.log, `${player.name} swaps a card from the stock`],
+    log: [
+      ...state.log,
+      downTrade
+        ? `${player.name} swaps a strong card for a weak one`
+        : `${player.name} swaps a card from the stock`,
+    ],
   };
 }
 

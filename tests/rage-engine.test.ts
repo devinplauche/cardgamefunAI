@@ -231,6 +231,29 @@ test("In-laws visibly exchange one weak card for an unseen stock card", () => {
   assert.equal(swapped.inLawSwaps?.[1], 1);
   assert.equal(applyInLawCheat(swapped, 1), swapped);
 });
+test("In-laws can down-trade a strong card to shed an unwanted trick", () => {
+  const base = createGame({
+    seed: 147,
+    playerCount: 2,
+    bots: ["medium", "inlaws"],
+  });
+  const state: GameState = {
+    ...base,
+    phase: "playing",
+    currentPlayer: 1,
+    trump: "blue",
+    stock: [{ id: "red-1-stock", suit: "red", rank: 1 }],
+    players: base.players.map((player, index) => ({
+      ...player,
+      bid: 1,
+      tricks: index === 0 ? 1 : 0,
+      hand: index === 1 ? [{ id: "blue-15-hand", suit: "blue", rank: 15 }] : player.hand,
+    })),
+  };
+  const swapped = applyInLawCheat(state, 1);
+  assert.equal(swapped.players[1].hand[0].id, "red-1-stock");
+  assert.match(swapped.log.at(-1) ?? "", /strong card for a weak one/);
+});
 test("Absolute In-laws visibly overturn a final winning user score", () => {
   const base = createGame({
     seed: 146,
