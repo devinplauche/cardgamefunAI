@@ -8,7 +8,7 @@ export const SUITS = [
 ] as const;
 export type Suit = (typeof SUITS)[number];
 export type CardType = "wild" | "bonus" | "mad" | "change" | "out";
-export type BotLevel = "easy" | "medium" | "hard";
+export type BotLevel = "easy" | "medium" | "hard" | "extreme";
 export type Card = { id: string; suit?: Suit; rank?: number; type?: CardType };
 export type PlayedCard = {
   player: number;
@@ -65,8 +65,9 @@ export type Play = {
 export type MctsOptions = {
   iterations?: number;
   rolloutPlies?: number;
+  threatAware?: boolean;
 };
-export type MctsBidOptions = { simulations?: number };
+export type MctsBidOptions = { simulations?: number; threatAware?: boolean };
 
 const next = (rng: number) => (rng * 1664525 + 1013904223) >>> 0;
 const pick = <T>(items: T[], rng: number): [T, number] => {
@@ -498,9 +499,9 @@ function chooseHeuristicBid(state: GameState, playerId: number): number {
   );
 }
 export function chooseBotBid(state: GameState, playerId: number): number {
-  return state.players[playerId].bot === "hard"
-    ? chooseMctsBid(state, playerId)
-    : chooseHeuristicBid(state, playerId);
+  const level = state.players[playerId].bot;
+  if (level === "extreme") return chooseExtremeBid(state, playerId);
+  return level === "hard" ? chooseMctsBid(state, playerId) : chooseHeuristicBid(state, playerId);
 }
 
 function cloneState(state: GameState): GameState {
@@ -597,6 +598,46 @@ function rolloutValue(state: GameState, playerId: number): number {
   return player.score - opponentAverage - Math.abs(bidProgress) * 2;
 }
 
+function extremeThreatWeights(state: GameState, playerId: number): Map<number, number> {
+  const myScore = state.players[playerId].score;
+  return new Map(
+    state.players
+      .filter((player) => player.id !== playerId)
+      .map((player) => {
+        const gap = player.score - myScore;
+        // Nearby leaders matter most: they are the players Extreme should deny.
+        const proximity = 0.55 / (1 + Math.abs(gap) / 15);
+        return [player.id, 1 + proximity + (gap >= 0 ? 0.35 : 0)];
+      }),
+  );
+}
+
+function extremeRolloutValue(state: GameState, playerId: number): number {
+  const player = state.players[playerId];
+  const weights = extremeThreatWeights(state, playerId);
+  let weightedOpponentScore = 0;
+  let totalWeight = 0;
+  let opponentExactBids = 0;
+  for (const opponent of state.players) {
+    if (opponent.id === playerId) continue;
+    const weight = weights.get(opponent.id) ?? 1;
+    weightedOpponentScore += opponent.score * weight;
+    totalWeight += weight;
+    if (opponent.bid !== null && opponent.tricks === opponent.bid)
+      opponentExactBids += weight;
+  }
+  const bidProgress = Math.abs(player.tricks - (player.bid ?? 0));
+  const scoreEdge =
+    player.score - weightedOpponentScore / Math.max(1, totalWeight);
+  // Extreme protects a lead more fiercely than it chases one: falling behind
+  // is deliberately more expensive than an equal-sized gain is valuable.
+  const lossAverseEdge = scoreEdge < 0 ? scoreEdge * 1.65 : scoreEdge;
+  return (
+    lossAverseEdge - bidProgress * 2.25 -
+    opponentExactBids * 0.75
+  );
+}
+
 function finishBidsForSimulation(
   state: GameState,
   playerId: number,
@@ -614,11 +655,12 @@ function finishBidsForSimulation(
   return current;
 }
 
-function simulateBidScore(
+function simulateBidValue(
   state: GameState,
   playerId: number,
   bid: number,
   seed: number,
+  threatAware: boolean,
 ): number {
   let current = determinizeForMcts(state, playerId, seed);
   current = finishBidsForSimulation(current, playerId, bid);
@@ -634,7 +676,8 @@ function simulateBidScore(
             heuristicPlay(current, current.currentPlayer),
           );
   }
-  return current.players[playerId].score - state.players[playerId].score;
+  const evaluate = threatAware ? extremeRolloutValue : rolloutValue;
+  return evaluate(current, playerId) - evaluate(state, playerId);
 }
 
 function hasStrategicOpponents(state: GameState, playerId: number) {
@@ -653,7 +696,8 @@ export function chooseMctsBid(
   const handSize = state.players[playerId].hand.length;
   const simulations = Math.max(
     1,
-    options.simulations ?? (hasStrategicOpponents(state, playerId) ? 16 : 10),
+    options.simulations ??
+      (options.threatAware ? 20 : hasStrategicOpponents(state, playerId) ? 16 : 10),
   );
   const rootSeed = (state.seed ^ state.rng ^ (playerId * 2246822519)) >>> 0;
   let bestBid = 0;
@@ -661,11 +705,12 @@ export function chooseMctsBid(
   for (let bid = 0; bid <= handSize; bid += 1) {
     let total = 0;
     for (let simulation = 0; simulation < simulations; simulation += 1)
-      total += simulateBidScore(
+      total += simulateBidValue(
         state,
         playerId,
         bid,
         next((rootSeed + bid * 4099 + simulation) >>> 0),
+        options.threatAware ?? false,
       );
     const expectedScore = total / simulations;
     if (
@@ -681,14 +726,22 @@ export function chooseMctsBid(
   return bestBid;
 }
 
+export function chooseExtremeBid(state: GameState, playerId: number): number {
+  // Bids set the bot's own contract; threat targeting belongs in trick play,
+  // where it can deliberately deny a nearby rival without sacrificing a sound bid.
+  return chooseMctsBid(state, playerId, { simulations: 24 });
+}
+
 function runMctsRollout(
   state: GameState,
   playerId: number,
   rolloutPlies: number,
+  threatAware: boolean,
 ): number {
   let current = state;
   for (let ply = 0; ply < rolloutPlies; ply += 1) {
-    if (current.phase === "gameOver") return rolloutValue(current, playerId);
+    if (current.phase === "gameOver")
+      return (threatAware ? extremeRolloutValue : rolloutValue)(current, playerId);
     if (current.phase === "roundSummary") {
       current = continueGame(current);
       continue;
@@ -711,7 +764,7 @@ function runMctsRollout(
       heuristicPlay(current, current.currentPlayer),
     );
   }
-  return rolloutValue(current, playerId);
+  return (threatAware ? extremeRolloutValue : rolloutValue)(current, playerId);
 }
 
 export function chooseMctsPlay(
@@ -742,7 +795,7 @@ export function chooseMctsPlay(
   );
   const rolloutPlies = Math.max(
     1,
-    options.rolloutPlies ?? (deeperSearch ? 100 : 80),
+    options.rolloutPlies ?? (options.threatAware ? 120 : deeperSearch ? 100 : 80),
   );
   const totals = new Map<string, number>(legal.map((card) => [card.id, 0]));
   const visits = new Map<string, number>(legal.map((card) => [card.id, 0]));
@@ -767,7 +820,12 @@ export function chooseMctsPlay(
     const seed = next((rootSeed + iteration) >>> 0);
     const determinized = determinizeForMcts(state, playerId, seed);
     const afterAction = playCard(determinized, playerId, declare(selected));
-    const value = runMctsRollout(afterAction, playerId, rolloutPlies);
+    const value = runMctsRollout(
+      afterAction,
+      playerId,
+      rolloutPlies,
+      options.threatAware ?? false,
+    );
     visits.set(selected.id, visits.get(selected.id)! + 1);
     totals.set(selected.id, totals.get(selected.id)! + value);
   }
@@ -783,6 +841,14 @@ export function chooseMctsPlay(
   return declare(best);
 }
 
+export function chooseExtremePlay(state: GameState, playerId: number): Play {
+  return chooseMctsPlay(state, playerId, {
+    iterations: 48,
+    rolloutPlies: 120,
+    threatAware: true,
+  });
+}
+
 export function chooseBotPlay(state: GameState, playerId: number): Play {
   const legal = legalPlays(state, playerId);
   const player = state.players[playerId];
@@ -791,6 +857,7 @@ export function chooseBotPlay(state: GameState, playerId: number): Play {
   let rng = state.rng;
   if (player.bot === "easy") [card, rng] = pick(legal, rng);
   else if (player.bot === "hard") return chooseMctsPlay(state, playerId);
+  else if (player.bot === "extreme") return chooseExtremePlay(state, playerId);
   else {
     const chosen = heuristicPlay(state, playerId);
     card = legal.find((candidate) => candidate.id === chosen.cardId)!;

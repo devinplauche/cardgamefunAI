@@ -4,9 +4,11 @@ import {
   SUITS,
   advanceBots,
   chooseMctsBid,
+  chooseExtremeBid,
   chooseBotBid,
   chooseBotPlay,
   chooseMctsPlay,
+  chooseExtremePlay,
   continueGame,
   createDeck,
   createGame,
@@ -153,6 +155,27 @@ test("MCTS bidding is deterministic and stays within the hand size", () => {
   const second = chooseMctsBid(state, playerId, { simulations: 3 });
   assert.equal(first, second);
   assert.ok(first >= 0 && first <= state.players[playerId].hand.length);
+});
+test("Extreme bot bidding and play are deterministic and legal", () => {
+  let state = createGame({
+    seed: 133,
+    playerCount: 4,
+    bots: ["medium", "extreme", "hard", "easy"],
+  });
+  const bidder = state.currentPlayer;
+  const firstBid = chooseExtremeBid(state, bidder);
+  assert.equal(firstBid, chooseExtremeBid(state, bidder));
+  assert.ok(firstBid >= 0 && firstBid <= state.players[bidder].hand.length);
+  for (let i = 0; i < 4; i += 1)
+    state = submitBid(
+      state,
+      state.currentPlayer,
+      state.currentPlayer === bidder ? firstBid : 1,
+    );
+  const playerId = state.currentPlayer;
+  const firstPlay = chooseExtremePlay(state, playerId);
+  assert.deepEqual(firstPlay, chooseExtremePlay(state, playerId));
+  assert.ok(legalPlays(state, playerId).some((card) => card.id === firstPlay.cardId));
 });
 
 function trickFixture(

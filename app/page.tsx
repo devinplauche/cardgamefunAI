@@ -29,9 +29,12 @@ const botNames: Record<BotLevel, string> = {
   easy: "Easy",
   medium: "Medium",
   hard: "Hard",
+  extreme: "Extreme",
 };
 const botLevelFromSave = (level: unknown): BotLevel =>
-  level === "easy" || level === "medium" || level === "hard" ? level : "medium";
+  level === "easy" || level === "medium" || level === "hard" || level === "extreme"
+    ? level
+    : "medium";
 const botLabel = (level: unknown) => botNames[botLevelFromSave(level)];
 const botsFor = (count: number, level: BotLevel): BotLevel[] =>
   Array.from({ length: count }, (_, index) => (index === 0 ? "medium" : level));
@@ -430,7 +433,7 @@ export default function Home() {
                   setBotLevel(event.target.value as BotLevel)
                 }
               >
-                {(["easy", "medium", "hard"] as BotLevel[]).map((level) => (
+                {(["easy", "medium", "hard", "extreme"] as BotLevel[]).map((level) => (
                   <option key={level}>{botNames[level]}</option>
                 ))}
               </select>
