@@ -53,6 +53,7 @@ export type GameState = {
   lastWinner: number | null;
   lastRoundScores: number[] | null;
   log: string[];
+  shareResults?: boolean;
 };
 export type Play = {
   cardId: string;
@@ -167,12 +168,20 @@ export function createGame({
   seed = 1,
   playerCount = 4,
   bots = [],
-}: { seed?: number; playerCount?: number; bots?: BotLevel[] } = {}): GameState {
+  playerName = "You",
+  shareResults = false,
+}: {
+  seed?: number;
+  playerCount?: number;
+  bots?: BotLevel[];
+  playerName?: string;
+  shareResults?: boolean;
+} = {}): GameState {
   if (playerCount < 2 || playerCount > 6)
     throw new Error("Rage supports 2–6 players");
   const players = Array.from({ length: playerCount }, (_, id) => ({
     id,
-    name: id === 0 ? "You" : ["Mia", "Ken", "Ari", "Zoe", "Sam"][id - 1],
+    name: id === 0 ? playerName : ["Mia", "Ken", "Ari", "Zoe", "Sam"][id - 1],
     bot: bots[id] ?? (id === 0 ? "medium" : id % 3 === 0 ? "hard" : "medium"),
     hand: [],
     bid: null,
@@ -204,6 +213,7 @@ export function createGame({
     lastWinner: null,
     lastRoundScores: null,
     log: [`Game seed ${seed}`],
+    shareResults,
   });
 }
 
