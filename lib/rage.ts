@@ -61,6 +61,11 @@ export type Play = {
   chosenTrump?: Suit;
 };
 
+export type MctsOptions = {
+  iterations?: number;
+  rolloutPlies?: number;
+};
+
 const next = (rng: number) => (rng * 1664525 + 1013904223) >>> 0;
 const pick = <T>(items: T[], rng: number): [T, number] => {
   const updated = next(rng);
@@ -456,6 +461,15 @@ export function finishTrick(state: GameState): GameState {
 }
 
 function handValue(hand: Card[], trump: Suit | null) {
+  return hand.reduce((value, card) => {
+    if (card.type === "wild") return value + 1.1;
+    const rank = card.rank ?? 0;
+    if (card.suit === trump) return value + (rank >= 13 ? 0.95 : rank >= 10 ? 0.65 : rank >= 7 ? 0.3 : 0.05);
+    return value + (rank >= 15 ? 0.55 : rank >= 13 ? 0.3 : 0);
+  }, 0);
+}
+
+function legacyHandValue(hand: Card[], trump: Suit | null) {
   return hand.reduce(
     (value, card) =>
       value +
@@ -470,13 +484,181 @@ function handValue(hand: Card[], trump: Suit | null) {
   );
 }
 export function chooseBotBid(state: GameState, playerId: number): number {
+  const player = state.players[playerId];
+  const value = player.bot === "hard" ? handValue(player.hand, state.trump) : legacyHandValue(player.hand, state.trump);
   return Math.max(
     0,
     Math.min(
       state.players[playerId].hand.length,
-      Math.round(handValue(state.players[playerId].hand, state.trump)),
+      Math.round(value),
     ),
   );
+}
+
+function preferredSuit(hand: Card[]): Suit {
+  return [...SUITS].sort(
+    (a, b) =>
+      hand.filter((card) => card.suit === b).length -
+      hand.filter((card) => card.suit === a).length,
+  )[0] ?? SUITS[0];
+}
+
+function cloneState(state: GameState): GameState {
+  return {
+    ...state,
+    players: state.players.map((player) => ({ ...player, hand: player.hand.map(cloneCard) })),
+    stock: state.stock.map(cloneCard),
+    trumpReveal: state.trumpReveal.map(cloneCard),
+    trick: state.trick.map((played) => ({ ...played, card: cloneCard(played.card) })),
+    lastTrick: state.lastTrick.map((played) => ({ ...played, card: cloneCard(played.card) })),
+    log: [...state.log],
+  };
+}
+
+function shuffleCards(cards: Card[], rng: number): [Card[], number] {
+  const out = cards.map(cloneCard);
+  let current = rng >>> 0;
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    current = next(current);
+    const j = current % (i + 1);
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return [out, current];
+}
+
+function determinize(state: GameState, playerId: number, seed: number): GameState {
+  const result = cloneState(state);
+  const hidden = result.players.filter((player) => player.id !== playerId).flatMap((player) => player.hand);
+  const [shuffled, rng] = shuffleCards(hidden, seed);
+  let cursor = 0;
+  result.players = result.players.map((player) => {
+    if (player.id === playerId) return player;
+    const hand = shuffled.slice(cursor, cursor + player.hand.length);
+    cursor += player.hand.length;
+    return { ...player, hand };
+  });
+  result.rng = rng;
+  return result;
+}
+
+function declarationFor(state: GameState, playerId: number, card: Card): Play {
+  const player = state.players[playerId];
+  const needs = (player.bid ?? 0) - player.tricks;
+  return {
+    cardId: card.id,
+    declaredSuit: card.type === "wild" ? state.trump ?? preferredSuit(player.hand) : undefined,
+    declaredRank: card.type === "wild" ? (needs > 0 ? 16 : 0) : undefined,
+  };
+}
+
+function cardWinsCurrentTrick(state: GameState, playerId: number, card: Card): boolean {
+  if (!state.trick.length) return false;
+  const play = declarationFor(state, playerId, card);
+  const candidate: PlayedCard = {
+    player: playerId,
+    card,
+    declaredSuit: play.declaredSuit,
+    declaredRank: play.declaredRank,
+  };
+  const lead = establishLead([...state.trick, candidate]);
+  let winner = state.trick[0];
+  for (const played of state.trick.slice(1))
+    if (winsAgainst(played, winner, lead, state.trump)) winner = played;
+  return winsAgainst(candidate, winner, lead, state.trump);
+}
+
+function rolloutPlay(state: GameState, playerId: number): Play {
+  const legal = legalPlays(state, playerId);
+  const player = state.players[playerId];
+  const needs = (player.bid ?? 0) - player.tricks;
+  const cardScore = (card: Card) =>
+    (card.type === "wild" ? 40 : card.suit === state.trump ? 25 : 0) + (card.rank ?? 0);
+  let card: Card;
+  if (!state.trick.length) {
+    const sorted = [...legal].sort((a, b) => cardScore(a) - cardScore(b));
+    card = needs > 0 ? sorted[sorted.length - 1] : sorted[0];
+  } else {
+    const winners = legal.filter((candidate) => cardWinsCurrentTrick(state, playerId, candidate));
+    const losers = legal.filter((candidate) => !cardWinsCurrentTrick(state, playerId, candidate));
+    if (needs > 0 && winners.length)
+      card = [...winners].sort((a, b) => cardScore(a) - cardScore(b))[0];
+    else if (needs <= 0 && losers.length)
+      card = [...losers].sort((a, b) => cardScore(a) - cardScore(b))[0];
+    else {
+      const fallback = [...legal].sort((a, b) => cardScore(a) - cardScore(b));
+      card = needs > 0 ? fallback[fallback.length - 1] : fallback[0];
+    }
+  }
+  return declarationFor(state, playerId, card);
+}
+
+function rolloutValue(state: GameState, playerId: number): number {
+  const player = state.players[playerId];
+  const opponents = state.players.filter((candidate) => candidate.id !== playerId);
+  const averageOpponentScore = opponents.reduce((sum, opponent) => sum + opponent.score, 0) / Math.max(1, opponents.length);
+  return player.score - averageOpponentScore - Math.abs(player.tricks - (player.bid ?? 0)) * 2;
+}
+
+function rollout(state: GameState, playerId: number, plies: number): number {
+  let current = state;
+  for (let ply = 0; ply < plies; ply += 1) {
+    if (current.phase === "gameOver") return rolloutValue(current, playerId);
+    if (current.phase === "roundSummary") current = continueGame(current);
+    else if (current.phase === "resolving") current = finishTrick(current);
+    else if (current.phase === "bidding") current = submitBid(current, current.currentPlayer, chooseBotBid(current, current.currentPlayer));
+    else current = playCard(current, current.currentPlayer, rolloutPlay(current, current.currentPlayer));
+  }
+  return rolloutValue(current, playerId);
+}
+
+export function chooseMctsPlay(state: GameState, playerId: number, options: MctsOptions = {}): Play {
+  const legal = legalPlays(state, playerId);
+  if (!legal.length) throw new Error("No legal bot move");
+  const declare = (card: Card): Play => declarationFor(state, playerId, card);
+  if (legal.length === 1) return declare(legal[0]);
+  const player = state.players[playerId];
+  const needs = (player.bid ?? 0) - player.tricks;
+  const highStakes = state.trick.length > 0 && needs !== 0;
+  const endgame = player.hand.length <= 3;
+  const defaultIterations = highStakes || endgame ? 32 : 24;
+  const defaultRolloutPlies = highStakes || endgame ? 96 : 80;
+  const iterations = Math.max(legal.length, options.iterations ?? defaultIterations);
+  const rolloutPlies = Math.max(1, options.rolloutPlies ?? defaultRolloutPlies);
+  const tacticalPrior = (card: Card) => {
+    if (!state.trick.length) return 0;
+    const wins = cardWinsCurrentTrick(state, playerId, card);
+    if (needs > 0) return wins ? 3 : -1;
+    return wins ? -2 : 2;
+  };
+  const totals = new Map(legal.map((card) => [card.id, tacticalPrior(card)]));
+  const visits = new Map(legal.map((card) => [card.id, 0]));
+  const rootSeed = (state.seed ^ state.rng ^ (playerId * 2654435761)) >>> 0;
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    let selected = legal[0];
+    let bestUct = Number.NEGATIVE_INFINITY;
+    for (const card of legal) {
+      const count = visits.get(card.id)!;
+      const mean = count ? totals.get(card.id)! / count : 0;
+      const uct = mean + (count ? Math.SQRT2 * Math.sqrt(Math.log(iteration + 2) / count) : Number.POSITIVE_INFINITY);
+      if (uct > bestUct) {
+        bestUct = uct;
+        selected = card;
+      }
+    }
+    const simulated = determinize(state, playerId, next((rootSeed + iteration) >>> 0));
+    const after = playCard(simulated, playerId, declare(selected));
+    const value = rollout(after, playerId, rolloutPlies);
+    visits.set(selected.id, visits.get(selected.id)! + 1);
+    totals.set(selected.id, totals.get(selected.id)! + value);
+  }
+  const best = legal.reduce((winner, card) => {
+    const winnerVisits = visits.get(winner.id)!;
+    const cardVisits = visits.get(card.id)!;
+    const winnerMean = totals.get(winner.id)! / winnerVisits;
+    const cardMean = totals.get(card.id)! / cardVisits;
+    return cardVisits > winnerVisits || (cardVisits === winnerVisits && cardMean > winnerMean) ? card : winner;
+  });
+  return declare(best);
 }
 
 export function chooseBotPlay(state: GameState, playerId: number): Play {
@@ -486,29 +668,10 @@ export function chooseBotPlay(state: GameState, playerId: number): Play {
   let card: Card;
   let rng = state.rng;
   if (player.bot === "easy") [card, rng] = pick(legal, rng);
-  else {
-    const needs = (player.bid ?? 0) - player.tricks;
-    const score = (candidate: Card) =>
-      (candidate.type === "wild"
-        ? 40
-        : candidate.suit === state.trump
-          ? 25
-          : 0) + (candidate.rank ?? 0);
-    const sorted = [...legal].sort((a, b) => score(a) - score(b));
-    card = needs > 0 ? sorted[sorted.length - 1] : sorted[0];
-    if (player.bot === "hard" && state.trick.length) {
-      const contenders = [...sorted].sort(
-        (a, b) => Math.abs(score(a) - 16) - Math.abs(score(b) - 16),
-      );
-      card = needs > 0 ? contenders[contenders.length - 1] : contenders[0];
-    }
-  }
+  else if (player.bot === "hard") return chooseMctsPlay(state, playerId);
+  else card = legal.sort((a, b) => ((a.rank ?? 0) + (a.suit === state.trump ? 25 : 0)) - ((b.rank ?? 0) + (b.suit === state.trump ? 25 : 0)))[(player.bid ?? 0) > player.tricks ? legal.length - 1 : 0];
   void rng;
-  const preferredTrump = [...SUITS].sort(
-    (a, b) =>
-      player.hand.filter((candidate) => candidate.suit === b).length -
-      player.hand.filter((candidate) => candidate.suit === a).length,
-  )[0];
+  const preferredTrump = preferredSuit(player.hand);
   return {
     cardId: card.id,
     declaredSuit:

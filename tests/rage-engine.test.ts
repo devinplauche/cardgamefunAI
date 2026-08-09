@@ -5,6 +5,7 @@ import {
   advanceBots,
   chooseBotBid,
   chooseBotPlay,
+  chooseMctsPlay,
   continueGame,
   createDeck,
   createGame,
@@ -105,6 +106,16 @@ test("bot stepping stops for the human player", () => {
   void chooseBotPlay;
   void continueGame;
   void SUITS;
+});
+test("MCTS selects a legal and deterministic play", () => {
+  let state = createGame({ seed: 91, playerCount: 4 });
+  for (let i = 0; i < 4; i += 1)
+    state = submitBid(state, state.currentPlayer, 1);
+  const playerId = state.currentPlayer;
+  const first = chooseMctsPlay(state, playerId, { iterations: 8, rolloutPlies: 24 });
+  const second = chooseMctsPlay(state, playerId, { iterations: 8, rolloutPlies: 24 });
+  assert.deepEqual(first, second);
+  assert.ok(legalPlays(state, playerId).some((card) => card.id === first.cardId));
 });
 
 function trickFixture(
