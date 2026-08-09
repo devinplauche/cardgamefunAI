@@ -52,6 +52,8 @@ export type GameState = {
   currentPlayer: number;
   lastWinner: number | null;
   lastRoundScores: number[] | null;
+  /** Suits a player has proved they cannot follow during this round. */
+  voidSuits?: Suit[][];
   log: string[];
   shareResults?: boolean;
 };
@@ -66,8 +68,13 @@ export type MctsOptions = {
   iterations?: number;
   rolloutPlies?: number;
   threatAware?: boolean;
+  evidenceAware?: boolean;
 };
-export type MctsBidOptions = { simulations?: number; threatAware?: boolean };
+export type MctsBidOptions = {
+  simulations?: number;
+  threatAware?: boolean;
+  evidenceAware?: boolean;
+};
 
 const next = (rng: number) => (rng * 1664525 + 1013904223) >>> 0;
 const pick = <T>(items: T[], rng: number): [T, number] => {
@@ -158,6 +165,7 @@ function dealRound(state: GameState): GameState {
     currentPlayer: roundLeader(state),
     lastWinner: null,
     lastRoundScores: null,
+    voidSuits: Array.from({ length: state.playerCount }, () => []),
     log: [
       ...state.log,
       `Round ${state.round}: ${cardsEach} cards, ${trump} trump`,
@@ -213,6 +221,7 @@ export function createGame({
     currentPlayer: 0,
     lastWinner: null,
     lastRoundScores: null,
+    voidSuits: Array.from({ length: playerCount }, () => []),
     log: [`Game seed ${seed}`],
     shareResults,
   });
@@ -421,6 +430,16 @@ export function playCard(
     throw new Error("Wild Rage needs a declared number from 0 to 16");
   const changedTrump =
     card.type === "change" ? revealNextTrump(state.stock) : null;
+  const voidSuit =
+    state.leadSuit && card.type !== "wild" && card.suit !== state.leadSuit
+      ? state.leadSuit
+      : null;
+  const voidSuits = (state.voidSuits ?? Array.from({ length: state.playerCount }, () => [])).map(
+    (suits, index) =>
+      index === playerId && voidSuit && !suits.includes(voidSuit)
+        ? [...suits, voidSuit]
+        : [...suits],
+  );
   const trick = [
     ...state.trick,
     {
@@ -455,6 +474,7 @@ export function playCard(
       ? [...(state.trumpReveal ?? []), ...changedTrump.revealed]
       : (state.trumpReveal ?? []),
     leadSuit: establishLead(trick),
+    voidSuits,
     currentPlayer: advance(state),
     rng: state.rng,
     log: [
@@ -521,6 +541,7 @@ function cloneState(state: GameState): GameState {
       ...played,
       card: cloneCard(played.card),
     })),
+    voidSuits: state.voidSuits?.map((suits) => [...suits]),
     log: [...state.log],
   };
 }
@@ -540,19 +561,42 @@ function determinizeForMcts(
   state: GameState,
   playerId: number,
   seed: number,
+  respectVoidSuits = false,
 ): GameState {
   const determinized = cloneState(state);
   const hidden = determinized.players
     .filter((player) => player.id !== playerId)
     .flatMap((player) => player.hand);
   const [shuffled, rng] = shuffleCards(hidden, seed);
-  let cursor = 0;
-  determinized.players = determinized.players.map((player) => {
-    if (player.id === playerId) return player;
-    const hand = shuffled.slice(cursor, cursor + player.hand.length);
-    cursor += player.hand.length;
-    return { ...player, hand };
-  });
+  const pool = [...shuffled];
+  const opponentHands = new Map<number, Card[]>();
+  const opponents = determinized.players
+    .filter((player) => player.id !== playerId)
+    // Fill the most constrained hands first, so proven void suits stay true.
+    .sort(
+      (a, b) =>
+        respectVoidSuits
+          ? (determinized.voidSuits?.[b.id]?.length ?? 0) -
+            (determinized.voidSuits?.[a.id]?.length ?? 0)
+          : 0,
+    );
+  for (const opponent of opponents) {
+    const voids = new Set(
+      respectVoidSuits ? (determinized.voidSuits?.[opponent.id] ?? []) : [],
+    );
+    const hand: Card[] = [];
+    while (hand.length < opponent.hand.length) {
+      const index = pool.findIndex((card) => !card.suit || !voids.has(card.suit));
+      // This fallback only occurs for an impossible partial observation.
+      hand.push(pool.splice(index >= 0 ? index : 0, 1)[0]);
+    }
+    opponentHands.set(opponent.id, hand);
+  }
+  determinized.players = determinized.players.map((player) =>
+    player.id === playerId
+      ? player
+      : { ...player, hand: opponentHands.get(player.id)! },
+  );
   determinized.rng = rng;
   return determinized;
 }
@@ -669,8 +713,9 @@ function simulateBidValue(
   bid: number,
   seed: number,
   threatAware: boolean,
+  evidenceAware: boolean,
 ): number {
-  let current = determinizeForMcts(state, playerId, seed);
+  let current = determinizeForMcts(state, playerId, seed, evidenceAware);
   current = finishBidsForSimulation(current, playerId, bid);
   let guard = 0;
   while (current.phase === "playing" || current.phase === "resolving") {
@@ -719,6 +764,7 @@ export function chooseMctsBid(
         bid,
         next((rootSeed + bid * 4099 + simulation) >>> 0),
         options.threatAware ?? false,
+        options.evidenceAware ?? false,
       );
     const expectedScore = total / simulations;
     if (
@@ -737,7 +783,7 @@ export function chooseMctsBid(
 export function chooseExtremeBid(state: GameState, playerId: number): number {
   // Bids set the bot's own contract; threat targeting belongs in trick play,
   // where it can deliberately deny a nearby rival without sacrificing a sound bid.
-  return chooseMctsBid(state, playerId, { simulations: 24 });
+  return chooseMctsBid(state, playerId, { simulations: 24, evidenceAware: true });
 }
 
 function runMctsRollout(
@@ -826,7 +872,12 @@ export function chooseMctsPlay(
       }
     }
     const seed = next((rootSeed + iteration) >>> 0);
-    const determinized = determinizeForMcts(state, playerId, seed);
+    const determinized = determinizeForMcts(
+      state,
+      playerId,
+      seed,
+      options.evidenceAware ?? false,
+    );
     const afterAction = playCard(determinized, playerId, declare(selected));
     const value = runMctsRollout(
       afterAction,
@@ -854,6 +905,7 @@ export function chooseExtremePlay(state: GameState, playerId: number): Play {
     iterations: 48,
     rolloutPlies: 120,
     threatAware: true,
+    evidenceAware: true,
   });
 }
 

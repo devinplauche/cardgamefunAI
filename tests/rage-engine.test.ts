@@ -98,6 +98,15 @@ test("Wild Rage remains legal even when its player can follow suit", () => {
     ["red-follow", "wild-anytime"],
   );
 });
+test("off-suit plays record void-suit evidence for future bot inference", () => {
+  const state = trickFixture([
+    [{ id: "red-lead", suit: "red", rank: 4 }],
+    [{ id: "blue-off", suit: "blue", rank: 2 }],
+  ]);
+  const afterLead = playCard(state, 0, { cardId: "red-lead" });
+  const afterOffSuit = playCard(afterLead, 1, { cardId: "blue-off" });
+  assert.deepEqual(afterOffSuit.voidSuits?.[1], ["red"]);
+});
 test("all player counts and seed blocks complete ten rounds", () => {
   for (let players = 2; players <= 6; players += 1)
     for (let seed = 1; seed <= 20; seed += 1) {
