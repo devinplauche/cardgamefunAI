@@ -80,6 +80,22 @@ test("follow suit restricts legal cards", () => {
   )
     assert.ok(legal.every((card) => card.suit === lead.suit));
 });
+test("Wild Rage remains legal even when its player can follow suit", () => {
+  const state = trickFixture([
+    [{ id: "red-lead", suit: "red", rank: 4 }],
+    [
+      { id: "red-follow", suit: "red", rank: 2 },
+      { id: "wild-anytime", type: "wild" },
+    ],
+  ]);
+  const afterLead = playCard(state, 0, { cardId: "red-lead" });
+  assert.deepEqual(
+    legalPlays(afterLead)
+      .map((card) => card.id)
+      .sort(),
+    ["red-follow", "wild-anytime"],
+  );
+});
 test("all player counts and seed blocks complete ten rounds", () => {
   for (let players = 2; players <= 6; players += 1)
     for (let seed = 1; seed <= 20; seed += 1) {
@@ -246,7 +262,19 @@ test("Wild Rage, Rage modifiers, and clean sweeps score correctly", () => {
   };
   const sweepAfterLead = playCard(cleanSweep, 0, { cardId: "red-high" });
   const sweepScored = playCard(sweepAfterLead, 1, { cardId: "red-low" });
-  assert.equal(sweepScored.lastRoundScores?.[0], 1);
+  assert.equal(sweepScored.lastRoundScores?.[0], -4);
+  const bidSweep = {
+    ...cleanSweep,
+    players: cleanSweep.players.map((player, index) => ({
+      ...player,
+      bid: index === 0 ? 1 : 0,
+    })),
+  };
+  const bidSweepAfterLead = playCard(bidSweep, 0, { cardId: "red-high" });
+  const bidSweepScored = playCard(bidSweepAfterLead, 1, {
+    cardId: "red-low",
+  });
+  assert.equal(bidSweepScored.lastRoundScores?.[0], 16);
 });
 test("an all-action trick has no winner and leaves the lead in place", () => {
   const base = createGame({ seed: 88, playerCount: 4 });

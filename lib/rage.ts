@@ -217,7 +217,8 @@ export function legalPlays(
     return hand;
   }
   const followers = hand.filter((card) => card.suit === state.leadSuit);
-  return followers.length ? followers : hand;
+  const wilds = hand.filter((card) => card.type === "wild");
+  return followers.length ? [...followers, ...wilds] : hand;
 }
 
 function establishLead(trick: PlayedCard[]) {
@@ -315,7 +316,9 @@ function scoreRound(state: GameState): GameState {
     (player) =>
       player.tricks +
       player.roundBonus +
-      (player.tricks === tricksInRound ? 5 : 0) +
+      (player.tricks === tricksInRound && player.bid === tricksInRound
+        ? 5
+        : 0) +
       (player.tricks === player.bid ? 10 : -5),
   );
   const players = state.players.map((player, index) => ({
