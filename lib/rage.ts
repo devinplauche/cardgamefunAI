@@ -8,7 +8,7 @@ export const SUITS = [
 ] as const;
 export type Suit = (typeof SUITS)[number];
 export type CardType = "wild" | "bonus" | "mad" | "change" | "out";
-export type BotLevel = "easy" | "medium" | "hard" | "extreme";
+export type BotLevel = "easy" | "medium" | "hard" | "extreme" | "inlaws";
 export type Card = { id: string; suit?: Suit; rank?: number; type?: CardType };
 export type PlayedCard = {
   player: number;
@@ -69,11 +69,14 @@ export type MctsOptions = {
   rolloutPlies?: number;
   threatAware?: boolean;
   evidenceAware?: boolean;
+  perfectInfo?: boolean;
+  targetUser?: boolean;
 };
 export type MctsBidOptions = {
   simulations?: number;
   threatAware?: boolean;
   evidenceAware?: boolean;
+  perfectInfo?: boolean;
 };
 
 const next = (rng: number) => (rng * 1664525 + 1013904223) >>> 0;
@@ -521,6 +524,7 @@ function chooseHeuristicBid(state: GameState, playerId: number): number {
 export function chooseBotBid(state: GameState, playerId: number): number {
   const level = state.players[playerId].bot;
   if (level === "extreme") return chooseExtremeBid(state, playerId);
+  if (level === "inlaws") return chooseInLawBid(state, playerId);
   return level === "hard" ? chooseMctsBid(state, playerId) : chooseHeuristicBid(state, playerId);
 }
 
@@ -562,8 +566,10 @@ function determinizeForMcts(
   playerId: number,
   seed: number,
   respectVoidSuits = false,
+  perfectInfo = false,
 ): GameState {
   const determinized = cloneState(state);
+  if (perfectInfo) return { ...determinized, rng: seed };
   const hidden = determinized.players
     .filter((player) => player.id !== playerId)
     .flatMap((player) => player.hand);
@@ -690,6 +696,23 @@ function extremeRolloutValue(state: GameState, playerId: number): number {
   );
 }
 
+function inLawRolloutValue(state: GameState, playerId: number): number {
+  const player = state.players[playerId];
+  const user = state.players[0];
+  const ownBidGap = Math.abs(player.tricks - (player.bid ?? 0));
+  const userBidGap = Math.abs(user.tricks - (user.bid ?? 0));
+  const userExact = user.bid !== null && user.tricks === user.bid;
+  // The in-laws cooperate against the user: their own contract remains
+  // valuable, but denying the user's contract is deliberately worth more.
+  return (
+    player.score -
+    user.score * 1.5 -
+    ownBidGap * 3 +
+    userBidGap * 5 -
+    (userExact ? 4 : 0)
+  );
+}
+
 function finishBidsForSimulation(
   state: GameState,
   playerId: number,
@@ -714,8 +737,15 @@ function simulateBidValue(
   seed: number,
   threatAware: boolean,
   evidenceAware: boolean,
+  perfectInfo: boolean,
 ): number {
-  let current = determinizeForMcts(state, playerId, seed, evidenceAware);
+  let current = determinizeForMcts(
+    state,
+    playerId,
+    seed,
+    evidenceAware,
+    perfectInfo,
+  );
   current = finishBidsForSimulation(current, playerId, bid);
   let guard = 0;
   while (current.phase === "playing" || current.phase === "resolving") {
@@ -765,6 +795,7 @@ export function chooseMctsBid(
         next((rootSeed + bid * 4099 + simulation) >>> 0),
         options.threatAware ?? false,
         options.evidenceAware ?? false,
+        options.perfectInfo ?? false,
       );
     const expectedScore = total / simulations;
     if (
@@ -786,16 +817,25 @@ export function chooseExtremeBid(state: GameState, playerId: number): number {
   return chooseMctsBid(state, playerId, { simulations: 24, evidenceAware: true });
 }
 
+export function chooseInLawBid(state: GameState, playerId: number): number {
+  return chooseMctsBid(state, playerId, { simulations: 30, perfectInfo: true });
+}
+
 function runMctsRollout(
   state: GameState,
   playerId: number,
   rolloutPlies: number,
   threatAware: boolean,
+  targetUser: boolean,
 ): number {
+  const evaluate = targetUser
+    ? inLawRolloutValue
+    : threatAware
+      ? extremeRolloutValue
+      : rolloutValue;
   let current = state;
   for (let ply = 0; ply < rolloutPlies; ply += 1) {
-    if (current.phase === "gameOver")
-      return (threatAware ? extremeRolloutValue : rolloutValue)(current, playerId);
+    if (current.phase === "gameOver") return evaluate(current, playerId);
     if (current.phase === "roundSummary") {
       current = continueGame(current);
       continue;
@@ -818,7 +858,7 @@ function runMctsRollout(
       heuristicPlay(current, current.currentPlayer),
     );
   }
-  return (threatAware ? extremeRolloutValue : rolloutValue)(current, playerId);
+  return evaluate(current, playerId);
 }
 
 export function chooseMctsPlay(
@@ -877,6 +917,7 @@ export function chooseMctsPlay(
       playerId,
       seed,
       options.evidenceAware ?? false,
+      options.perfectInfo ?? false,
     );
     const afterAction = playCard(determinized, playerId, declare(selected));
     const value = runMctsRollout(
@@ -884,6 +925,7 @@ export function chooseMctsPlay(
       playerId,
       rolloutPlies,
       options.threatAware ?? false,
+      options.targetUser ?? false,
     );
     visits.set(selected.id, visits.get(selected.id)! + 1);
     totals.set(selected.id, totals.get(selected.id)! + value);
@@ -909,6 +951,15 @@ export function chooseExtremePlay(state: GameState, playerId: number): Play {
   });
 }
 
+export function chooseInLawPlay(state: GameState, playerId: number): Play {
+  return chooseMctsPlay(state, playerId, {
+    iterations: 56,
+    rolloutPlies: 130,
+    perfectInfo: true,
+    targetUser: true,
+  });
+}
+
 export function chooseBotPlay(state: GameState, playerId: number): Play {
   const legal = legalPlays(state, playerId);
   const player = state.players[playerId];
@@ -918,6 +969,7 @@ export function chooseBotPlay(state: GameState, playerId: number): Play {
   if (player.bot === "easy") [card, rng] = pick(legal, rng);
   else if (player.bot === "hard") return chooseMctsPlay(state, playerId);
   else if (player.bot === "extreme") return chooseExtremePlay(state, playerId);
+  else if (player.bot === "inlaws") return chooseInLawPlay(state, playerId);
   else {
     const chosen = heuristicPlay(state, playerId);
     card = legal.find((candidate) => candidate.id === chosen.cardId)!;

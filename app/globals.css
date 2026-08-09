@@ -238,6 +238,25 @@ header {
 .status strong {
   font-size: 14px;
 }
+.cheat-warning {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 13px;
+  border: 1px solid #c94f3f;
+  border-radius: 10px;
+  background: #ffe6df;
+  color: #8f3328;
+  font-size: 12px;
+}
+.cheat-warning strong {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+.cheat-warning span {
+  text-align: right;
+}
 .trump {
   align-items: end;
   font-size: 11px;

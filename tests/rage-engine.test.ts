@@ -5,10 +5,12 @@ import {
   advanceBots,
   chooseMctsBid,
   chooseExtremeBid,
+  chooseInLawBid,
   chooseBotBid,
   chooseBotPlay,
   chooseMctsPlay,
   chooseExtremePlay,
+  chooseInLawPlay,
   continueGame,
   createDeck,
   createGame,
@@ -185,6 +187,23 @@ test("Extreme bot bidding and play are deterministic and legal", () => {
   const firstPlay = chooseExtremePlay(state, playerId);
   assert.deepEqual(firstPlay, chooseExtremePlay(state, playerId));
   assert.ok(legalPlays(state, playerId).some((card) => card.id === firstPlay.cardId));
+});
+test("In-laws use deterministic perfect-information choices", () => {
+  let state = createGame({
+    seed: 144,
+    playerCount: 4,
+    bots: ["medium", "inlaws", "inlaws", "inlaws"],
+  });
+  const bidder = state.currentPlayer;
+  const bid = chooseInLawBid(state, bidder);
+  assert.equal(bid, chooseInLawBid(state, bidder));
+  assert.ok(bid >= 0 && bid <= state.players[bidder].hand.length);
+  for (let i = 0; i < 4; i += 1)
+    state = submitBid(state, state.currentPlayer, 1);
+  const playerId = state.currentPlayer;
+  const play = chooseInLawPlay(state, playerId);
+  assert.deepEqual(play, chooseInLawPlay(state, playerId));
+  assert.ok(legalPlays(state, playerId).some((card) => card.id === play.cardId));
 });
 
 function trickFixture(

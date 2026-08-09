@@ -30,9 +30,10 @@ const botNames: Record<BotLevel, string> = {
   medium: "Medium",
   hard: "Hard",
   extreme: "Extreme",
+  inlaws: "In-laws — CHEATING",
 };
 const botLevelFromSave = (level: unknown): BotLevel =>
-  level === "easy" || level === "medium" || level === "hard" || level === "extreme"
+  level === "easy" || level === "medium" || level === "hard" || level === "extreme" || level === "inlaws"
     ? level
     : "medium";
 const botLabel = (level: unknown) => botNames[botLevelFromSave(level)];
@@ -433,7 +434,7 @@ export default function Home() {
                   setBotLevel(event.target.value as BotLevel)
                 }
               >
-                {(["easy", "medium", "hard", "extreme"] as BotLevel[]).map((level) => (
+                {(["easy", "medium", "hard", "extreme", "inlaws"] as BotLevel[]).map((level) => (
                   <option key={level}>{botNames[level]}</option>
                 ))}
               </select>
@@ -487,6 +488,12 @@ export default function Home() {
           </strong>
         </div>
       </section>
+      {game.players.some((player) => player.bot === "inlaws") && (
+        <section className="cheat-warning" role="status">
+          <strong>IN-LAWS MODE: THEY CAN SEE EVERY HAND AND THE DECK.</strong>
+          <span>They are coordinating to make you miss your bid.</span>
+        </section>
+      )}
       {game.phase === "bidding" && (
         <section className="bid-preview">
           <div>
