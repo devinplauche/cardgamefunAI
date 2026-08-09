@@ -600,6 +600,7 @@ function rolloutValue(state: GameState, playerId: number): number {
 
 function extremeThreatWeights(state: GameState, playerId: number): Map<number, number> {
   const myScore = state.players[playerId].score;
+  const lateGamePressure = state.round >= 7 ? 1 : 0.2;
   return new Map(
     state.players
       .filter((player) => player.id !== playerId)
@@ -607,7 +608,12 @@ function extremeThreatWeights(state: GameState, playerId: number): Map<number, n
         const gap = player.score - myScore;
         // Nearby leaders matter most: they are the players Extreme should deny.
         const proximity = 0.55 / (1 + Math.abs(gap) / 15);
-        return [player.id, 1 + proximity + (gap >= 0 ? 0.35 : 0)];
+        return [
+          player.id,
+          1 +
+            proximity * lateGamePressure +
+            (gap >= 0 ? 0.35 * lateGamePressure : 0),
+        ];
       }),
   );
 }
@@ -627,14 +633,16 @@ function extremeRolloutValue(state: GameState, playerId: number): number {
       opponentExactBids += weight;
   }
   const bidProgress = Math.abs(player.tricks - (player.bid ?? 0));
+  const lateGamePressure = state.round >= 7 ? 1 : 0.2;
   const scoreEdge =
     player.score - weightedOpponentScore / Math.max(1, totalWeight);
   // Extreme protects a lead more fiercely than it chases one: falling behind
   // is deliberately more expensive than an equal-sized gain is valuable.
-  const lossAverseEdge = scoreEdge < 0 ? scoreEdge * 1.65 : scoreEdge;
+  const lossAverseEdge =
+    scoreEdge < 0 ? scoreEdge * (1.1 + 0.55 * lateGamePressure) : scoreEdge;
   return (
-    lossAverseEdge - bidProgress * 2.25 -
-    opponentExactBids * 0.75
+    lossAverseEdge - bidProgress * (2 + 0.25 * lateGamePressure) -
+    opponentExactBids * (0.15 + 0.6 * lateGamePressure)
   );
 }
 
