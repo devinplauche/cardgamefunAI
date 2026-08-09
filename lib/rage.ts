@@ -8,7 +8,13 @@ export const SUITS = [
 ] as const;
 export type Suit = (typeof SUITS)[number];
 export type CardType = "wild" | "bonus" | "mad" | "change" | "out";
-export type BotLevel = "easy" | "medium" | "hard" | "extreme" | "inlaws";
+export type BotLevel =
+  | "easy"
+  | "medium"
+  | "hard"
+  | "extreme"
+  | "inlaws"
+  | "absolute-inlaws";
 export type Card = { id: string; suit?: Suit; rank?: number; type?: CardType };
 export type PlayedCard = {
   player: number;
@@ -56,6 +62,7 @@ export type GameState = {
   voidSuits?: Suit[][];
   /** One concealed stock-card exchange per In-law each round. */
   inLawSwaps?: number[];
+  familyRuling?: boolean;
   log: string[];
   shareResults?: boolean;
 };
@@ -229,6 +236,7 @@ export function createGame({
     lastRoundScores: null,
     voidSuits: Array.from({ length: playerCount }, () => []),
     inLawSwaps: Array.from({ length: playerCount }, () => 0),
+    familyRuling: false,
     log: [`Game seed ${seed}`],
     shareResults,
   });
@@ -348,17 +356,35 @@ function scoreRound(state: GameState): GameState {
         : 0) +
       (player.tricks === player.bid ? 10 : -5),
   );
-  const players = state.players.map((player, index) => ({
+  let players = state.players.map((player, index) => ({
     ...player,
     score: player.score + roundScores[index],
   }));
+  const absoluteInLaws = players.some(
+    (player) => player.bot === "absolute-inlaws",
+  );
+  const userWouldWin =
+    absoluteInLaws &&
+    state.round === 10 &&
+    players[0].score > Math.max(...players.slice(1).map((player) => player.score));
+  if (userWouldWin) {
+    const highestInLaw = Math.max(...players.slice(1).map((player) => player.score));
+    players = players.map((player) =>
+      player.id === 0 ? { ...player, score: highestInLaw - 1 } : player,
+    );
+  }
   const scored = {
     ...state,
     players,
     phase:
       state.round === 10 ? ("gameOver" as const) : ("roundSummary" as const),
     lastRoundScores: roundScores,
-    log: [...state.log, `Round ${state.round} scored`],
+    familyRuling: Boolean(state.familyRuling || userWouldWin),
+    log: [
+      ...state.log,
+      `Round ${state.round} scored`,
+      ...(userWouldWin ? ["Family ruling overturns your win"] : []),
+    ],
   };
   return scored;
 }
@@ -529,6 +555,7 @@ export function chooseBotBid(state: GameState, playerId: number): number {
   const level = state.players[playerId].bot;
   if (level === "extreme") return chooseExtremeBid(state, playerId);
   if (level === "inlaws") return chooseInLawBid(state, playerId);
+  if (level === "absolute-inlaws") return chooseAbsoluteInLawBid(state, playerId);
   return level === "hard" ? chooseMctsBid(state, playerId) : chooseHeuristicBid(state, playerId);
 }
 
@@ -839,6 +866,10 @@ export function chooseInLawBid(state: GameState, playerId: number): number {
   return chooseMctsBid(state, playerId, { simulations: 30, perfectInfo: true });
 }
 
+export function chooseAbsoluteInLawBid(state: GameState, playerId: number): number {
+  return chooseMctsBid(state, playerId, { simulations: 42, perfectInfo: true });
+}
+
 function runMctsRollout(
   state: GameState,
   playerId: number,
@@ -978,6 +1009,15 @@ export function chooseInLawPlay(state: GameState, playerId: number): Play {
   });
 }
 
+export function chooseAbsoluteInLawPlay(state: GameState, playerId: number): Play {
+  return chooseMctsPlay(state, playerId, {
+    iterations: 80,
+    rolloutPlies: 190,
+    perfectInfo: true,
+    targetUser: true,
+  });
+}
+
 function inLawCardValue(state: GameState, player: Player, card: Card): number {
   const needs = (player.bid ?? 0) - player.tricks;
   if (needs <= 0) {
@@ -1004,8 +1044,8 @@ export function applyInLawCheat(state: GameState, playerId: number): GameState {
   if (
     state.phase !== "playing" ||
     state.currentPlayer !== playerId ||
-    player.bot !== "inlaws" ||
-    swaps[playerId] >= 1 ||
+    (player.bot !== "inlaws" && player.bot !== "absolute-inlaws") ||
+    swaps[playerId] >= (player.bot === "absolute-inlaws" ? 3 : 1) ||
     !state.stock.length ||
     !player.hand.length
   )
@@ -1059,6 +1099,8 @@ export function chooseBotPlay(state: GameState, playerId: number): Play {
   else if (player.bot === "hard") return chooseMctsPlay(state, playerId);
   else if (player.bot === "extreme") return chooseExtremePlay(state, playerId);
   else if (player.bot === "inlaws") return chooseInLawPlay(state, playerId);
+  else if (player.bot === "absolute-inlaws")
+    return chooseAbsoluteInLawPlay(state, playerId);
   else {
     const chosen = heuristicPlay(state, playerId);
     card = legal.find((candidate) => candidate.id === chosen.cardId)!;

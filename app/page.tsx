@@ -31,9 +31,10 @@ const botNames: Record<BotLevel, string> = {
   hard: "Hard",
   extreme: "Extreme",
   inlaws: "In-laws — CHEATING",
+  "absolute-inlaws": "Absolute In-laws — IMPOSSIBLE",
 };
 const botLevelFromSave = (level: unknown): BotLevel =>
-  level === "easy" || level === "medium" || level === "hard" || level === "extreme" || level === "inlaws"
+  level === "easy" || level === "medium" || level === "hard" || level === "extreme" || level === "inlaws" || level === "absolute-inlaws"
     ? level
     : "medium";
 const botLabel = (level: unknown) => botNames[botLevelFromSave(level)];
@@ -434,7 +435,7 @@ export default function Home() {
                   setBotLevel(event.target.value as BotLevel)
                 }
               >
-                {(["easy", "medium", "hard", "extreme", "inlaws"] as BotLevel[]).map((level) => (
+                {(["easy", "medium", "hard", "extreme", "inlaws", "absolute-inlaws"] as BotLevel[]).map((level) => (
                   <option key={level}>{botNames[level]}</option>
                 ))}
               </select>
@@ -488,11 +489,17 @@ export default function Home() {
           </strong>
         </div>
       </section>
-      {game.players.some((player) => player.bot === "inlaws") && (
+      {game.players.some((player) => player.bot === "inlaws" || player.bot === "absolute-inlaws") && (
         <section className="cheat-warning" role="status">
-          <strong>IN-LAWS MODE: THEY CAN SEE EVERY HAND AND THE DECK.</strong>
+          <strong>
+            {game.players.some((player) => player.bot === "absolute-inlaws")
+              ? "ABSOLUTE IN-LAWS: YOU CANNOT WIN."
+              : "IN-LAWS MODE: THEY CAN SEE EVERY HAND AND THE DECK."}
+          </strong>
           <span>
-            They are coordinating to make sure you do not win. Card swaps this
+            {game.familyRuling
+              ? "Family ruling overturned your win."
+              : "They are coordinating to make sure you do not win."} Card swaps this
             round: {(game.inLawSwaps ?? []).reduce((sum, count) => sum + count, 0)}.
           </span>
         </section>
