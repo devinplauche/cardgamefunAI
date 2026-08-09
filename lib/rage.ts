@@ -624,13 +624,24 @@ function simulateBidScore(
   return current.players[playerId].score - state.players[playerId].score;
 }
 
+function hasStrategicOpponents(state: GameState, playerId: number) {
+  return state.players.some(
+    (player) =>
+      player.id !== playerId &&
+      (player.bot === "medium" || player.bot === "hard"),
+  );
+}
+
 export function chooseMctsBid(
   state: GameState,
   playerId: number,
   options: MctsBidOptions = {},
 ): number {
   const handSize = state.players[playerId].hand.length;
-  const simulations = Math.max(1, options.simulations ?? 10);
+  const simulations = Math.max(
+    1,
+    options.simulations ?? (hasStrategicOpponents(state, playerId) ? 16 : 10),
+  );
   const rootSeed = (state.seed ^ state.rng ^ (playerId * 2246822519)) >>> 0;
   let bestBid = 0;
   let bestScore = Number.NEGATIVE_INFINITY;
@@ -711,8 +722,15 @@ export function chooseMctsPlay(
         : undefined,
   });
   if (legal.length === 1) return declare(legal[0]);
-  const iterations = Math.max(legal.length, options.iterations ?? 24);
-  const rolloutPlies = Math.max(1, options.rolloutPlies ?? 80);
+  const deeperSearch = hasStrategicOpponents(state, playerId);
+  const iterations = Math.max(
+    legal.length,
+    options.iterations ?? (deeperSearch ? 36 : 24),
+  );
+  const rolloutPlies = Math.max(
+    1,
+    options.rolloutPlies ?? (deeperSearch ? 100 : 80),
+  );
   const totals = new Map<string, number>(legal.map((card) => [card.id, 0]));
   const visits = new Map<string, number>(legal.map((card) => [card.id, 0]));
   const rootSeed = (state.seed ^ state.rng ^ (playerId * 2654435761)) >>> 0;
