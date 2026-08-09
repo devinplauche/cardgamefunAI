@@ -31,7 +31,7 @@ const botNames: Record<BotLevel, string> = {
   hard: "Hard",
   extreme: "Extreme",
   inlaws: "In-laws — CHEATING",
-  "absolute-inlaws": "Absolute In-laws — IMPOSSIBLE",
+  "absolute-inlaws": "Absolute In-laws — LEGAL CHEATS",
 };
 const botLevelFromSave = (level: unknown): BotLevel =>
   level === "easy" || level === "medium" || level === "hard" || level === "extreme" || level === "inlaws" || level === "absolute-inlaws"
@@ -493,13 +493,11 @@ export default function Home() {
         <section className="cheat-warning" role="status">
           <strong>
             {game.players.some((player) => player.bot === "absolute-inlaws")
-              ? "ABSOLUTE IN-LAWS: YOU CANNOT WIN."
+              ? "ABSOLUTE IN-LAWS: FULL FORESIGHT, LEGAL SCORING."
               : "IN-LAWS MODE: THEY CAN SEE EVERY HAND AND THE DECK."}
           </strong>
           <span>
-            {game.familyRuling
-              ? "Family ruling overturned your win."
-              : "They are coordinating to make sure you do not win, including down-trades to dump tricks on you."} Card swaps this
+            They are coordinating to make sure you do not win, including down-trades to dump tricks on you. Card swaps this
             round: {(game.inLawSwaps ?? []).reduce((sum, count) => sum + count, 0)}.
           </span>
         </section>

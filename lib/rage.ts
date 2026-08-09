@@ -62,7 +62,6 @@ export type GameState = {
   voidSuits?: Suit[][];
   /** One concealed stock-card exchange per In-law each round. */
   inLawSwaps?: number[];
-  familyRuling?: boolean;
   log: string[];
   shareResults?: boolean;
 };
@@ -236,7 +235,6 @@ export function createGame({
     lastRoundScores: null,
     voidSuits: Array.from({ length: playerCount }, () => []),
     inLawSwaps: Array.from({ length: playerCount }, () => 0),
-    familyRuling: false,
     log: [`Game seed ${seed}`],
     shareResults,
   });
@@ -356,35 +354,17 @@ function scoreRound(state: GameState): GameState {
         : 0) +
       (player.tricks === player.bid ? 10 : -5),
   );
-  let players = state.players.map((player, index) => ({
+  const players = state.players.map((player, index) => ({
     ...player,
     score: player.score + roundScores[index],
   }));
-  const absoluteInLaws = players.some(
-    (player) => player.bot === "absolute-inlaws",
-  );
-  const userWouldWin =
-    absoluteInLaws &&
-    state.round === 10 &&
-    players[0].score > Math.max(...players.slice(1).map((player) => player.score));
-  if (userWouldWin) {
-    const highestInLaw = Math.max(...players.slice(1).map((player) => player.score));
-    players = players.map((player) =>
-      player.id === 0 ? { ...player, score: highestInLaw - 1 } : player,
-    );
-  }
   const scored = {
     ...state,
     players,
     phase:
       state.round === 10 ? ("gameOver" as const) : ("roundSummary" as const),
     lastRoundScores: roundScores,
-    familyRuling: Boolean(state.familyRuling || userWouldWin),
-    log: [
-      ...state.log,
-      `Round ${state.round} scored`,
-      ...(userWouldWin ? ["Family ruling overturns your win"] : []),
-    ],
+    log: [...state.log, `Round ${state.round} scored`],
   };
   return scored;
 }
@@ -1021,6 +1001,9 @@ export function chooseAbsoluteInLawPlay(state: GameState, playerId: number): Pla
 function inLawWantsToShed(state: GameState, player: Player): boolean {
   const needs = (player.bid ?? 0) - player.tricks;
   const user = state.players[0];
+  // Bid sabotage takes priority: deny a user who still needs tricks, then
+  // dump tricks onto them once they have already made the bid.
+  if (user.bid !== null && user.tricks < user.bid) return false;
   return needs <= 0 || (user.bid !== null && user.tricks >= user.bid);
 }
 

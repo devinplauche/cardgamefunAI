@@ -254,36 +254,6 @@ test("In-laws can down-trade a strong card to shed an unwanted trick", () => {
   assert.equal(swapped.players[1].hand[0].id, "red-1-stock");
   assert.match(swapped.log.at(-1) ?? "", /strong card for a weak one/);
 });
-test("Absolute In-laws visibly overturn a final winning user score", () => {
-  const base = createGame({
-    seed: 146,
-    playerCount: 2,
-    bots: ["medium", "absolute-inlaws"],
-  });
-  const finalTrick: GameState = {
-    ...base,
-    round: 10,
-    cardsPerPlayer: 1,
-    phase: "playing",
-    currentPlayer: 0,
-    trump: "blue",
-    players: base.players.map((player, index) => ({
-      ...player,
-      score: index === 0 ? 20 : 10,
-      bid: index === 0 ? 1 : 0,
-      tricks: 0,
-      hand:
-        index === 0
-          ? [{ id: "red-high", suit: "red", rank: 10 }]
-          : [{ id: "red-low", suit: "red", rank: 1 }],
-    })),
-  };
-  const afterLead = playCard(finalTrick, 0, { cardId: "red-high" });
-  const finished = playCard(afterLead, 1, { cardId: "red-low" });
-  assert.equal(finished.phase, "gameOver");
-  assert.equal(finished.familyRuling, true);
-  assert.ok(finished.players[0].score < finished.players[1].score);
-});
 
 function trickFixture(
   cards: [
