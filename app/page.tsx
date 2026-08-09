@@ -54,6 +54,16 @@ const rageModifier = (trick: PlayedCard[]) =>
       (played.card.type === "bonus" ? 5 : played.card.type === "mad" ? -5 : 0),
     0,
   );
+type MatchResult = {
+  id: string;
+  playerName: string;
+  playerScore: number;
+  winnerName: string;
+  winnerScore: number;
+  playerCount: number;
+  botLevel: string;
+  playedAt: string;
+};
 
 export default function Home() {
   const [players, setPlayers] = useState(4);
@@ -66,6 +76,9 @@ export default function Home() {
   const [suitChoice, setSuitChoice] = useState<Suit>("red");
   const [wildRank, setWildRank] = useState(16);
   const [newGameOpen, setNewGameOpen] = useState(false);
+  const [playerName, setPlayerName] = useState("You");
+  const [shareResults, setShareResults] = useState(false);
+  const [matchHistory, setMatchHistory] = useState<MatchResult[]>([]);
   const [busy, setBusy] = useState(false);
   const [winnerNotice, setWinnerNotice] = useState<string | null>(null);
   const [storageReady, setStorageReady] = useState(false);
@@ -73,6 +86,7 @@ export default function Home() {
     "loading" | "saved" | "saving" | "offline"
   >("loading");
   const timers = useRef<number[]>([]);
+  const recordedMatches = useRef(new Set<number>());
   useEffect(() => {
     let isCurrent = true;
     async function restoreOrDeal() {
@@ -132,6 +146,46 @@ export default function Home() {
     }, 700);
     return () => window.clearTimeout(saveTimer);
   }, [game, storageReady]);
+  const loadMatchHistory = async () => {
+    try {
+      const response = await fetch("/api/matches", { cache: "no-store" });
+      if (response.ok)
+        setMatchHistory(
+          ((await response.json()) as { matches: MatchResult[] }).matches,
+        );
+    } catch {
+      // History is optional; the game remains playable offline.
+    }
+  };
+  useEffect(() => {
+    const historyTimer = window.setTimeout(() => {
+      void loadMatchHistory();
+    }, 0);
+    return () => window.clearTimeout(historyTimer);
+  }, []);
+  useEffect(() => {
+    if (
+      game.phase !== "gameOver" ||
+      !game.shareResults ||
+      recordedMatches.current.has(game.seed)
+    )
+      return;
+    recordedMatches.current.add(game.seed);
+    const ordered = [...game.players].sort((a, b) => b.score - a.score);
+    const winner = ordered[0];
+    void fetch("/api/matches", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        playerName: game.players[0].name,
+        playerScore: game.players[0].score,
+        winnerName: winner.name,
+        winnerScore: winner.score,
+        playerCount: game.playerCount,
+        botLevel,
+      }),
+    }).then(() => loadMatchHistory());
+  }, [game, botLevel]);
   const human = game.players[0];
   const humanTurn = game.currentPlayer === 0;
   const legal = useMemo(
@@ -246,6 +300,8 @@ export default function Home() {
       .map((player) => botLevelFromSave(player.bot));
     if (currentOpponents.every((level) => level === currentOpponents[0]))
       setBotLevel(currentOpponents[0]);
+    setPlayerName(game.players[0].name);
+    setShareResults(Boolean(game.shareResults));
     setNewGameOpen(true);
   }
   function startGame() {
@@ -263,6 +319,8 @@ export default function Home() {
         seed: nextSeed,
         playerCount: players,
         bots: botsFor(players, botLevel),
+        playerName: playerName.trim().slice(0, 24) || "You",
+        shareResults,
       }),
     );
   }
@@ -338,6 +396,14 @@ export default function Home() {
             <h2 id="new-game-title">Start a fresh game</h2>
             <p>This replaces your saved table with a newly shuffled game.</p>
             <label>
+              Your name
+              <input
+                maxLength={24}
+                value={playerName}
+                onChange={(event) => setPlayerName(event.target.value)}
+              />
+            </label>
+            <label>
               Players
               <select
                 value={players}
@@ -347,6 +413,14 @@ export default function Home() {
                   <option key={count}>{count}</option>
                 ))}
               </select>
+            </label>
+            <label className="share-match">
+              <input
+                type="checkbox"
+                checked={shareResults}
+                onChange={(event) => setShareResults(event.target.checked)}
+              />
+              Share this finished match in the public history
             </label>
             <label>
               Opponent strength
@@ -470,6 +544,28 @@ export default function Home() {
             Exact bid: +10. Miss your bid: -5. Each trick: +1. Take every trick:
             +5. Bonus/Mad Rage modifies the trick winner.
           </p>
+        </aside>
+        <aside className="match-history">
+          <div>
+            <span className="kicker">OPT-IN</span>
+            <h2>Recent matches</h2>
+          </div>
+          {matchHistory.length ? (
+            matchHistory.map((match) => (
+              <div className="match-row" key={match.id}>
+                <span>
+                  <b>{match.winnerName}</b> won
+                  <small>
+                    {match.playerName} {match.playerScore} · {match.playerCount}{" "}
+                    players
+                  </small>
+                </span>
+                <strong>{match.winnerScore}</strong>
+              </div>
+            ))
+          ) : (
+            <p>No shared matches yet.</p>
+          )}
         </aside>
         <section className="table">
           <div className="phase-tabs">

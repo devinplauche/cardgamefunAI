@@ -195,13 +195,25 @@ header {
   font-weight: 700;
   letter-spacing: 0.08em;
 }
-.new-game-dialog select {
+.new-game-dialog select,
+.new-game-dialog input[type="text"],
+.new-game-dialog input:not([type]) {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px;
   background: #fff;
   color: var(--ink);
+}
+.share-match {
+  flex-direction: row !important;
+  align-items: center;
+  letter-spacing: normal !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+}
+.share-match input {
+  accent-color: var(--coral);
 }
 .dialog-actions {
   display: flex;
@@ -301,10 +313,44 @@ header {
 }
 .scoreboard,
 .table,
-.hand {
+.hand,
+.match-history {
   border: 1px solid var(--line);
   border-radius: 15px;
   background: #fff;
+}
+.match-history {
+  padding: 19px;
+}
+.match-history h2 {
+  margin: 0 0 12px;
+  font:
+    500 21px Georgia,
+    serif;
+}
+.match-history > p {
+  color: var(--muted);
+  font-size: 12px;
+}
+.match-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+.match-row span,
+.match-row small {
+  display: block;
+}
+.match-row small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.match-row strong {
+  color: var(--coral);
 }
 .scoreboard {
   padding: 19px;
