@@ -54,6 +54,8 @@ export type GameState = {
   lastRoundScores: number[] | null;
   /** Suits a player has proved they cannot follow during this round. */
   voidSuits?: Suit[][];
+  /** One concealed stock-card exchange per In-law each round. */
+  inLawSwaps?: number[];
   log: string[];
   shareResults?: boolean;
 };
@@ -169,6 +171,7 @@ function dealRound(state: GameState): GameState {
     lastWinner: null,
     lastRoundScores: null,
     voidSuits: Array.from({ length: state.playerCount }, () => []),
+    inLawSwaps: Array.from({ length: state.playerCount }, () => 0),
     log: [
       ...state.log,
       `Round ${state.round}: ${cardsEach} cards, ${trump} trump`,
@@ -225,6 +228,7 @@ export function createGame({
     lastWinner: null,
     lastRoundScores: null,
     voidSuits: Array.from({ length: playerCount }, () => []),
+    inLawSwaps: Array.from({ length: playerCount }, () => 0),
     log: [`Game seed ${seed}`],
     shareResults,
   });
@@ -546,6 +550,7 @@ function cloneState(state: GameState): GameState {
       card: cloneCard(played.card),
     })),
     voidSuits: state.voidSuits?.map((suits) => [...suits]),
+    inLawSwaps: state.inLawSwaps ? [...state.inLawSwaps] : undefined,
     log: [...state.log],
   };
 }
@@ -700,16 +705,29 @@ function inLawRolloutValue(state: GameState, playerId: number): number {
   const player = state.players[playerId];
   const user = state.players[0];
   const ownBidGap = Math.abs(player.tricks - (player.bid ?? 0));
+  const projectedScore = (candidate: Player) =>
+    candidate.score +
+    candidate.tricks +
+    candidate.roundBonus +
+    (candidate.tricks === candidate.bid ? 10 : -5);
+  const projectedUserScore = projectedScore(user);
+  const bestInLawScore = Math.max(
+    ...state.players
+      .filter((candidate) => candidate.id !== 0)
+      .map(projectedScore),
+  );
+  const teamLead = bestInLawScore - projectedUserScore;
   const userBidGap = Math.abs(user.tricks - (user.bid ?? 0));
-  const userExact = user.bid !== null && user.tricks === user.bid;
-  // The in-laws cooperate against the user: their own contract remains
-  // valuable, but denying the user's contract is deliberately worth more.
+  // The in-laws cooperate to keep one of their own ahead. Once the user is
+  // safely behind, they stop spending tricks merely to make the loss worse.
+  const lossAverseTeamLead = teamLead < 0 ? teamLead * 2.5 : teamLead;
+  const userIsWinning = projectedUserScore >= bestInLawScore;
   return (
-    player.score -
-    user.score * 1.5 -
-    ownBidGap * 3 +
-    userBidGap * 5 -
-    (userExact ? 4 : 0)
+    lossAverseTeamLead * 4 +
+    player.score * 0.2 -
+    ownBidGap * 1.5 +
+    userBidGap * 1.25 -
+    (userIsWinning ? 30 : 0)
   );
 }
 
@@ -960,6 +978,77 @@ export function chooseInLawPlay(state: GameState, playerId: number): Play {
   });
 }
 
+function inLawCardValue(state: GameState, player: Player, card: Card): number {
+  const needs = (player.bid ?? 0) - player.tricks;
+  if (needs <= 0) {
+    if (card.type === "mad") return 90;
+    if (card.type === "bonus") return 70;
+    if (card.type === "change" || card.type === "out") return 55;
+    if (card.type === "wild") return 45;
+    return 30 - (card.rank ?? 0);
+  }
+  if (card.type === "wild") return 100;
+  if (card.suit === state.trump) return 50 + (card.rank ?? 0);
+  if (card.type) return 4;
+  return card.rank ?? 0;
+}
+
+/**
+ * The visible In-laws cheat: once per round they exchange their weakest card
+ * with a stronger card still hidden in the undealt stock. No card is created
+ * or duplicated, so the swap remains within the possible unseen deck.
+ */
+export function applyInLawCheat(state: GameState, playerId: number): GameState {
+  const player = state.players[playerId];
+  const swaps = state.inLawSwaps ?? Array.from({ length: state.playerCount }, () => 0);
+  if (
+    state.phase !== "playing" ||
+    state.currentPlayer !== playerId ||
+    player.bot !== "inlaws" ||
+    swaps[playerId] >= 1 ||
+    !state.stock.length ||
+    !player.hand.length
+  )
+    return state;
+  const weakest = [...player.hand].sort(
+    (a, b) => inLawCardValue(state, player, a) - inLawCardValue(state, player, b),
+  )[0];
+  const bestStockIndex = state.stock.reduce(
+    (best, card, index) =>
+      inLawCardValue(state, player, card) >
+      inLawCardValue(state, player, state.stock[best])
+        ? index
+        : best,
+    0,
+  );
+  const replacement = state.stock[bestStockIndex];
+  if (inLawCardValue(state, player, replacement) < inLawCardValue(state, player, weakest) + 8)
+    return state;
+  const players = state.players.map((candidate) =>
+    candidate.id === playerId
+      ? {
+          ...candidate,
+          hand: candidate.hand.map((card) =>
+            card.id === weakest.id ? replacement : card,
+          ),
+        }
+      : candidate,
+  );
+  const stock = state.stock.map((card, index) =>
+    index === bestStockIndex ? weakest : card,
+  );
+  const inLawSwaps = swaps.map((count, index) =>
+    index === playerId ? count + 1 : count,
+  );
+  return {
+    ...state,
+    players,
+    stock,
+    inLawSwaps,
+    log: [...state.log, `${player.name} swaps a card from the stock`],
+  };
+}
+
 export function chooseBotPlay(state: GameState, playerId: number): Play {
   const legal = legalPlays(state, playerId);
   const player = state.players[playerId];
@@ -998,19 +1087,23 @@ export function advanceBots(state: GameState, humanPlayer = 0): GameState {
     (current.phase === "resolving" || current.currentPlayer !== humanPlayer) &&
     guard++ < 5000
   ) {
+    const prepared =
+      current.phase === "playing"
+        ? applyInLawCheat(current, current.currentPlayer)
+        : current;
     current =
       current.phase === "resolving"
         ? finishTrick(current)
         : current.phase === "bidding"
           ? submitBid(
-              current,
-              current.currentPlayer,
-              chooseBotBid(current, current.currentPlayer),
+              prepared,
+              prepared.currentPlayer,
+              chooseBotBid(prepared, prepared.currentPlayer),
             )
           : playCard(
-              current,
-              current.currentPlayer,
-              chooseBotPlay(current, current.currentPlayer),
+              prepared,
+              prepared.currentPlayer,
+              chooseBotPlay(prepared, prepared.currentPlayer),
             );
   }
   if (guard >= 5000) throw new Error("Bot loop stalled");
@@ -1033,12 +1126,14 @@ export function simulateGame(
         state.currentPlayer,
         chooseBotBid(state, state.currentPlayer),
       );
-    else
+    else {
+      const prepared = applyInLawCheat(state, state.currentPlayer);
       state = playCard(
-        state,
-        state.currentPlayer,
-        chooseBotPlay(state, state.currentPlayer),
+        prepared,
+        prepared.currentPlayer,
+        chooseBotPlay(prepared, prepared.currentPlayer),
       );
+    }
   }
   if (guard >= 20000) throw new Error("Simulation stalled");
   return state;

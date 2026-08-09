@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   SUITS,
+  applyInLawCheat,
   advanceBots,
   chooseMctsBid,
   chooseExtremeBid,
@@ -204,6 +205,31 @@ test("In-laws use deterministic perfect-information choices", () => {
   const play = chooseInLawPlay(state, playerId);
   assert.deepEqual(play, chooseInLawPlay(state, playerId));
   assert.ok(legalPlays(state, playerId).some((card) => card.id === play.cardId));
+});
+test("In-laws visibly exchange one weak card for an unseen stock card", () => {
+  const base = createGame({
+    seed: 145,
+    playerCount: 2,
+    bots: ["medium", "inlaws"],
+  });
+  const state: GameState = {
+    ...base,
+    phase: "playing",
+    currentPlayer: 1,
+    trump: "blue",
+    stock: [{ id: "blue-15-stock", suit: "blue", rank: 15 }],
+    players: base.players.map((player, index) => ({
+      ...player,
+      bid: 1,
+      tricks: 0,
+      hand: index === 1 ? [{ id: "red-1-hand", suit: "red", rank: 1 }] : player.hand,
+    })),
+  };
+  const swapped = applyInLawCheat(state, 1);
+  assert.equal(swapped.players[1].hand[0].id, "blue-15-stock");
+  assert.equal(swapped.stock[0].id, "red-1-hand");
+  assert.equal(swapped.inLawSwaps?.[1], 1);
+  assert.equal(applyInLawCheat(swapped, 1), swapped);
 });
 
 function trickFixture(

@@ -491,7 +491,10 @@ export default function Home() {
       {game.players.some((player) => player.bot === "inlaws") && (
         <section className="cheat-warning" role="status">
           <strong>IN-LAWS MODE: THEY CAN SEE EVERY HAND AND THE DECK.</strong>
-          <span>They are coordinating to make you miss your bid.</span>
+          <span>
+            They are coordinating to make sure you do not win. Card swaps this
+            round: {(game.inLawSwaps ?? []).reduce((sum, count) => sum + count, 0)}.
+          </span>
         </section>
       )}
       {game.phase === "bidding" && (
