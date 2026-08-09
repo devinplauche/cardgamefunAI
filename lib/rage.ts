@@ -65,6 +65,7 @@ export type MctsOptions = {
   iterations?: number;
   rolloutPlies?: number;
 };
+export type MctsBidOptions = { simulations?: number };
 
 const next = (rng: number) => (rng * 1664525 + 1013904223) >>> 0;
 const pick = <T>(items: T[], rng: number): [T, number] => {
@@ -474,7 +475,7 @@ function handValue(hand: Card[], trump: Suit | null) {
     0,
   );
 }
-export function chooseBotBid(state: GameState, playerId: number): number {
+function chooseHeuristicBid(state: GameState, playerId: number): number {
   return Math.max(
     0,
     Math.min(
@@ -482,6 +483,11 @@ export function chooseBotBid(state: GameState, playerId: number): number {
       Math.round(handValue(state.players[playerId].hand, state.trump)),
     ),
   );
+}
+export function chooseBotBid(state: GameState, playerId: number): number {
+  return state.players[playerId].bot === "hard"
+    ? chooseMctsBid(state, playerId)
+    : chooseHeuristicBid(state, playerId);
 }
 
 function cloneState(state: GameState): GameState {
@@ -578,6 +584,79 @@ function rolloutValue(state: GameState, playerId: number): number {
   return player.score - opponentAverage - Math.abs(bidProgress) * 2;
 }
 
+function finishBidsForSimulation(
+  state: GameState,
+  playerId: number,
+  bid: number,
+): GameState {
+  let current = state;
+  while (current.phase === "bidding") {
+    const bidder = current.currentPlayer;
+    current = submitBid(
+      current,
+      bidder,
+      bidder === playerId ? bid : chooseHeuristicBid(current, bidder),
+    );
+  }
+  return current;
+}
+
+function simulateBidScore(
+  state: GameState,
+  playerId: number,
+  bid: number,
+  seed: number,
+): number {
+  let current = determinizeForMcts(state, playerId, seed);
+  current = finishBidsForSimulation(current, playerId, bid);
+  let guard = 0;
+  while (current.phase === "playing" || current.phase === "resolving") {
+    if (guard++ > 500) throw new Error("Bid simulation exceeded its round");
+    current =
+      current.phase === "resolving"
+        ? finishTrick(current)
+        : playCard(
+            current,
+            current.currentPlayer,
+            heuristicPlay(current, current.currentPlayer),
+          );
+  }
+  return current.players[playerId].score - state.players[playerId].score;
+}
+
+export function chooseMctsBid(
+  state: GameState,
+  playerId: number,
+  options: MctsBidOptions = {},
+): number {
+  const handSize = state.players[playerId].hand.length;
+  const simulations = Math.max(1, options.simulations ?? 10);
+  const rootSeed = (state.seed ^ state.rng ^ (playerId * 2246822519)) >>> 0;
+  let bestBid = 0;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (let bid = 0; bid <= handSize; bid += 1) {
+    let total = 0;
+    for (let simulation = 0; simulation < simulations; simulation += 1)
+      total += simulateBidScore(
+        state,
+        playerId,
+        bid,
+        next((rootSeed + bid * 4099 + simulation) >>> 0),
+      );
+    const expectedScore = total / simulations;
+    if (
+      expectedScore > bestScore ||
+      (expectedScore === bestScore &&
+        Math.abs(bid - chooseHeuristicBid(state, playerId)) <
+          Math.abs(bestBid - chooseHeuristicBid(state, playerId)))
+    ) {
+      bestBid = bid;
+      bestScore = expectedScore;
+    }
+  }
+  return bestBid;
+}
+
 function runMctsRollout(
   state: GameState,
   playerId: number,
@@ -598,7 +677,7 @@ function runMctsRollout(
       current = submitBid(
         current,
         current.currentPlayer,
-        chooseBotBid(current, current.currentPlayer),
+        chooseHeuristicBid(current, current.currentPlayer),
       );
       continue;
     }

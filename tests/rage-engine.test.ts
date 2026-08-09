@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   SUITS,
   advanceBots,
+  chooseMctsBid,
   chooseBotBid,
   chooseBotPlay,
   chooseMctsPlay,
@@ -112,10 +113,30 @@ test("MCTS selects a legal and deterministic play", () => {
   for (let i = 0; i < 4; i += 1)
     state = submitBid(state, state.currentPlayer, 1);
   const playerId = state.currentPlayer;
-  const first = chooseMctsPlay(state, playerId, { iterations: 8, rolloutPlies: 24 });
-  const second = chooseMctsPlay(state, playerId, { iterations: 8, rolloutPlies: 24 });
+  const first = chooseMctsPlay(state, playerId, {
+    iterations: 8,
+    rolloutPlies: 24,
+  });
+  const second = chooseMctsPlay(state, playerId, {
+    iterations: 8,
+    rolloutPlies: 24,
+  });
   assert.deepEqual(first, second);
-  assert.ok(legalPlays(state, playerId).some((card) => card.id === first.cardId));
+  assert.ok(
+    legalPlays(state, playerId).some((card) => card.id === first.cardId),
+  );
+});
+test("MCTS bidding is deterministic and stays within the hand size", () => {
+  const state = createGame({
+    seed: 95,
+    playerCount: 4,
+    bots: ["medium", "hard", "medium", "easy"],
+  });
+  const playerId = state.currentPlayer;
+  const first = chooseMctsBid(state, playerId, { simulations: 3 });
+  const second = chooseMctsBid(state, playerId, { simulations: 3 });
+  assert.equal(first, second);
+  assert.ok(first >= 0 && first <= state.players[playerId].hand.length);
 });
 
 function trickFixture(
