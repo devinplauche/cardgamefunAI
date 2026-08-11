@@ -448,6 +448,22 @@ header {
   color: var(--muted);
   font-size: 13px;
 }
+.summary p.bid-review {
+  max-width: 46ch;
+  margin: 13px auto;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border-left: 3px solid var(--muted);
+  background: rgba(127, 127, 127, 0.09);
+  text-align: left;
+  line-height: 1.45;
+}
+.summary p.bid-review.exact {
+  border-left-color: #57946d;
+}
+.summary p.bid-review.missed {
+  border-left-color: #d85b51;
+}
 .bid-stage .kicker {
   display: block;
   margin-bottom: 5px;

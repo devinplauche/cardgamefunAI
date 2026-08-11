@@ -5,6 +5,7 @@ import {
   SUITS,
   chooseBotBid,
   chooseBotPlay,
+  chooseMctsBid,
   continueGame,
   createGame,
   finishTrick,
@@ -59,6 +60,40 @@ const rageModifier = (trick: PlayedCard[]) =>
       (played.card.type === "bonus" ? 5 : played.card.type === "mad" ? -5 : 0),
     0,
   );
+/**
+ * Post-round bid coaching. Hitting a contract is worth +10 and missing costs -5,
+ * so a missed bid is a ~15 point swing — by far the largest lever in the game.
+ * The review runs the same search the Hard bot bids with, on the hand you held.
+ */
+type BidReview = {
+  round: number;
+  yourBid: number;
+  suggested: number;
+  tricks: number;
+  /** 1-based trick on which the running count first passed the bid. */
+  overshotAt: number | null;
+};
+const COACH_SIMULATIONS = 40;
+const reviewLine = (review: BidReview) => {
+  const { yourBid, suggested, tricks, overshotAt } = review;
+  const cost = yourBid - tricks + 15;
+  const agreed =
+    suggested === yourBid
+      ? "The search agrees with that bid."
+      : `The search would have bid ${suggested}.`;
+  if (tricks === yourBid)
+    return `Bid ${yourBid}, took ${tricks} — exact. ${agreed}`;
+  if (tricks > yourBid)
+    return (
+      `Bid ${yourBid}, took ${tricks} — ${tricks - yourBid} too many` +
+      (overshotAt ? `, going past it on trick ${overshotAt}` : "") +
+      `. ${agreed} Cost: ${cost} points versus an exact contract.`
+    );
+  return (
+    `Bid ${yourBid}, took ${tricks} — ${yourBid - tricks} short. ${agreed} ` +
+    `Cost: ${cost} points versus an exact contract.`
+  );
+};
 type MatchResult = {
   id: string;
   playerName: string;
@@ -85,6 +120,13 @@ export default function Home() {
   const [shareResults, setShareResults] = useState(false);
   const [matchHistory, setMatchHistory] = useState<MatchResult[]>([]);
   const [busy, setBusy] = useState(false);
+  const [bidReview, setBidReview] = useState<BidReview | null>(null);
+  /** What the human bid this round, plus the search's answer on the same hand. */
+  const pendingBid = useRef<{ round: number; yourBid: number; suggested: number } | null>(
+    null,
+  );
+  /** The human's running trick total after each resolved trick this round. */
+  const trickTrace = useRef<number[]>([]);
   const [winnerNotice, setWinnerNotice] = useState<string | null>(null);
   const [storageReady, setStorageReady] = useState(false);
   const [saveStatus, setSaveStatus] = useState<
@@ -240,6 +282,22 @@ export default function Home() {
     timers.current.push(window.setTimeout(task, delay));
   };
 
+  function reviewRound(state: GameState) {
+    const pending = pendingBid.current;
+    if (!pending || pending.round !== state.round) return;
+    const tricks = state.players[0].tricks;
+    const overshot = trickTrace.current.findIndex(
+      (running) => running > pending.yourBid,
+    );
+    setBidReview({
+      round: pending.round,
+      yourBid: pending.yourBid,
+      suggested: pending.suggested,
+      tricks,
+      overshotAt: overshot >= 0 ? overshot + 1 : null,
+    });
+    pendingBid.current = null;
+  }
   function runBots(start: GameState) {
     let current = start;
     setGame(current);
@@ -249,6 +307,8 @@ export default function Home() {
         current.phase === "roundSummary" ||
         (current.phase !== "resolving" && current.currentPlayer === 0)
       ) {
+        if (current.phase === "gameOver" || current.phase === "roundSummary")
+          reviewRound(current);
         setBusy(false);
         return;
       }
@@ -256,6 +316,7 @@ export default function Home() {
       schedule(() => {
         if (current.phase === "resolving") {
           current = finishTrick(current);
+          trickTrace.current.push(current.players[0].tricks);
           setGame(current);
           if (current.lastWinner === null) {
             setWinnerNotice("No one takes the all-action trick");
@@ -315,6 +376,9 @@ export default function Home() {
     setWinnerNotice(null);
     setBid(2);
     setSelectedId(null);
+    setBidReview(null);
+    pendingBid.current = null;
+    trickTrace.current = [];
     const values = new Uint32Array(1);
     crypto.getRandomValues(values);
     const nextSeed = values[0] || 1;
@@ -330,7 +394,17 @@ export default function Home() {
     );
   }
   function placeBid() {
-    if (humanTurn && game.phase === "bidding") runBots(submitBid(game, 0, bid));
+    if (!humanTurn || game.phase !== "bidding") return;
+    // Run the search on the hand you actually held, before any card is played.
+    // Kept out of the bidding UI on purpose — it is a review, not a hint.
+    pendingBid.current = {
+      round: game.round,
+      yourBid: bid,
+      suggested: chooseMctsBid(game, 0, { simulations: COACH_SIMULATIONS }),
+    };
+    trickTrace.current = [];
+    setBidReview(null);
+    runBots(submitBid(game, 0, bid));
   }
   function playSelected() {
     if (!selected || !humanTurn || game.phase !== "playing") return;
@@ -350,6 +424,8 @@ export default function Home() {
   function nextRound() {
     setBid(2);
     setSelectedId(null);
+    setBidReview(null);
+    trickTrace.current = [];
     runBots(continueGame(game));
   }
 
@@ -746,6 +822,13 @@ export default function Home() {
                       )
                       .join(" · ")}
                   </p>
+                  {bidReview && bidReview.round === game.round && (
+                    <p
+                      className={`bid-review ${bidReview.tricks === bidReview.yourBid ? "exact" : "missed"}`}
+                    >
+                      {reviewLine(bidReview)}
+                    </p>
+                  )}
                   <button className="primary" onClick={nextRound}>
                     Deal round {game.round + 1}
                   </button>
@@ -767,6 +850,13 @@ export default function Home() {
                       .map((player) => `${player.name} ${player.score}`)
                       .join(" · ")}
                   </p>
+                  {bidReview && bidReview.round === game.round && (
+                    <p
+                      className={`bid-review ${bidReview.tricks === bidReview.yourBid ? "exact" : "missed"}`}
+                    >
+                      {reviewLine(bidReview)}
+                    </p>
+                  )}
                   <button className="primary" onClick={openNewGame}>
                     New game
                   </button>
