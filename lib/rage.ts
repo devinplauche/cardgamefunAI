@@ -788,11 +788,16 @@ function simulateBidValue(
   return evaluate(current, playerId) - evaluate(state, playerId);
 }
 
+const STRATEGIC_BOTS: ReadonlySet<BotLevel> = new Set<BotLevel>([
+  "medium",
+  "hard",
+  "extreme",
+  "inlaws",
+  "absolute-inlaws",
+]);
 function hasStrategicOpponents(state: GameState, playerId: number) {
   return state.players.some(
-    (player) =>
-      player.id !== playerId &&
-      (player.bot === "medium" || player.bot === "hard"),
+    (player) => player.id !== playerId && STRATEGIC_BOTS.has(player.bot),
   );
 }
 
@@ -914,23 +919,41 @@ export function chooseMctsPlay(
   const deeperSearch = hasStrategicOpponents(state, playerId);
   const iterations = Math.max(
     legal.length,
-    options.iterations ?? (deeperSearch ? 36 : 24),
+    options.iterations ?? (deeperSearch ? 60 : 36),
   );
-  const rolloutPlies = Math.max(
-    1,
-    options.rolloutPlies ?? (options.threatAware ? 120 : deeperSearch ? 100 : 80),
-  );
+  // Rollouts are meant to stop inside the current round. Past its final trick
+  // dealRound() reshuffles, so extra plies only score random future deals --
+  // measured to cost far more accuracy than the deeper look-ahead buys. Search
+  // effort belongs in `iterations`, not in a longer rollout.
+  const rolloutPlies = Math.max(1, options.rolloutPlies ?? 24);
   const totals = new Map<string, number>(legal.map((card) => [card.id, 0]));
   const visits = new Map<string, number>(legal.map((card) => [card.id, 0]));
-  const rootSeed = (state.seed ^ state.rng ^ (playerId * 2654435761)) >>> 0;
+  // `playCard` freezes `rng` for the whole round, so without mixing in the
+  // position the same determinizations get replayed at every decision.
+  const rootSeed =
+    (state.seed ^
+      state.rng ^
+      (playerId * 2654435761) ^
+      ((state.trick.length + 1) * 40503) ^
+      (state.players[playerId].hand.length * 2246822519)) >>>
+    0;
+  let lowest = Number.POSITIVE_INFINITY;
+  let highest = Number.NEGATIVE_INFINITY;
 
   for (let iteration = 0; iteration < iterations; iteration += 1) {
     const logTotal = Math.log(iteration + 2);
+    // Rollout values run to tens of points while the UCT bonus is around 1, so
+    // raw exploration never outweighs a mean and the arm with the luckiest first
+    // sample keeps the entire budget. Normalising by the spread seen at this
+    // node puts both terms on one scale and lets the search revisit rivals.
+    const spread = highest - lowest;
+    const normalise = (value: number) =>
+      spread > 0 ? (value - lowest) / spread : value;
     let selected = legal[0];
     let bestUct = Number.NEGATIVE_INFINITY;
     for (const card of legal) {
       const count = visits.get(card.id)!;
-      const mean = count ? totals.get(card.id)! / count : 0;
+      const mean = count ? normalise(totals.get(card.id)! / count) : 0;
       const exploration = count
         ? Math.sqrt(logTotal / count)
         : Number.POSITIVE_INFINITY;
@@ -956,6 +979,8 @@ export function chooseMctsPlay(
       options.threatAware ?? false,
       options.targetUser ?? false,
     );
+    if (value < lowest) lowest = value;
+    if (value > highest) highest = value;
     visits.set(selected.id, visits.get(selected.id)! + 1);
     totals.set(selected.id, totals.get(selected.id)! + value);
   }
@@ -973,17 +998,20 @@ export function chooseMctsPlay(
 
 export function chooseExtremePlay(state: GameState, playerId: number): Play {
   return chooseMctsPlay(state, playerId, {
-    iterations: 48,
-    rolloutPlies: 120,
+    iterations: 100,
+    rolloutPlies: 20,
     threatAware: true,
     evidenceAware: true,
   });
 }
 
+// Perfect information makes the determinization a no-op, so every rollout that
+// stays inside the round replays one identical line. Sampling it repeatedly adds
+// nothing; a small budget reaches the same choice for a fraction of the work.
 export function chooseInLawPlay(state: GameState, playerId: number): Play {
   return chooseMctsPlay(state, playerId, {
-    iterations: 56,
-    rolloutPlies: 130,
+    iterations: 20,
+    rolloutPlies: 24,
     perfectInfo: true,
     targetUser: true,
   });
@@ -991,8 +1019,8 @@ export function chooseInLawPlay(state: GameState, playerId: number): Play {
 
 export function chooseAbsoluteInLawPlay(state: GameState, playerId: number): Play {
   return chooseMctsPlay(state, playerId, {
-    iterations: 80,
-    rolloutPlies: 190,
+    iterations: 28,
+    rolloutPlies: 24,
     perfectInfo: true,
     targetUser: true,
   });
