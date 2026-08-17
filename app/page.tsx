@@ -17,6 +17,7 @@ import {
   type PlayedCard,
   type Suit,
 } from "@/lib/rage";
+import { reviewRound, type RoundReview } from "@/lib/coach";
 
 const colors: Record<Suit, string> = {
   red: "#d85b51",
@@ -60,39 +61,12 @@ const rageModifier = (trick: PlayedCard[]) =>
       (played.card.type === "bonus" ? 5 : played.card.type === "mad" ? -5 : 0),
     0,
   );
-/**
- * Post-round bid coaching. Hitting a contract is worth +10 and missing costs -5,
- * so a missed bid is a ~15 point swing — by far the largest lever in the game.
- * The review runs the same search the Hard bot bids with, on the hand you held.
- */
-type BidReview = {
-  round: number;
-  yourBid: number;
-  suggested: number;
-  tricks: number;
-  /** 1-based trick on which the running count first passed the bid. */
-  overshotAt: number | null;
-};
 const COACH_SIMULATIONS = 40;
-const reviewLine = (review: BidReview) => {
-  const { yourBid, suggested, tricks, overshotAt } = review;
-  const cost = yourBid - tricks + 15;
-  const agreed =
-    suggested === yourBid
-      ? "The search agrees with that bid."
-      : `The search would have bid ${suggested}.`;
-  if (tricks === yourBid)
-    return `Bid ${yourBid}, took ${tricks} — exact. ${agreed}`;
-  if (tricks > yourBid)
-    return (
-      `Bid ${yourBid}, took ${tricks} — ${tricks - yourBid} too many` +
-      (overshotAt ? `, going past it on trick ${overshotAt}` : "") +
-      `. ${agreed} Cost: ${cost} points versus an exact contract.`
-    );
-  return (
-    `Bid ${yourBid}, took ${tricks} — ${yourBid - tricks} short. ${agreed} ` +
-    `Cost: ${cost} points versus an exact contract.`
-  );
+const gradeLabel: Record<RoundReview["grade"], string> = {
+  A: "On the number",
+  B: "Off by one",
+  C: "Off by two",
+  D: "Way off",
 };
 type MatchResult = {
   id: string;
@@ -120,7 +94,9 @@ export default function Home() {
   const [shareResults, setShareResults] = useState(false);
   const [matchHistory, setMatchHistory] = useState<MatchResult[]>([]);
   const [busy, setBusy] = useState(false);
-  const [bidReview, setBidReview] = useState<BidReview | null>(null);
+  const [bidReview, setBidReview] = useState<
+    (RoundReview & { round: number }) | null
+  >(null);
   /** What the human bid this round, plus the search's answer on the same hand. */
   const pendingBid = useRef<{ round: number; yourBid: number; suggested: number } | null>(
     null,
@@ -282,19 +258,21 @@ export default function Home() {
     timers.current.push(window.setTimeout(task, delay));
   };
 
-  function reviewRound(state: GameState) {
+  function gradeRound(state: GameState) {
     const pending = pendingBid.current;
     if (!pending || pending.round !== state.round) return;
-    const tricks = state.players[0].tricks;
-    const overshot = trickTrace.current.findIndex(
-      (running) => running > pending.yourBid,
-    );
+    const player = state.players[0];
     setBidReview({
       round: pending.round,
-      yourBid: pending.yourBid,
-      suggested: pending.suggested,
-      tricks,
-      overshotAt: overshot >= 0 ? overshot + 1 : null,
+      ...reviewRound({
+        round: pending.round,
+        bid: pending.yourBid,
+        suggestedBid: pending.suggested,
+        tricks: player.tricks,
+        tricksInRound: state.cardsPerPlayer,
+        trickTrace: trickTrace.current,
+        roundBonus: player.roundBonus,
+      }),
     });
     pendingBid.current = null;
   }
@@ -308,7 +286,7 @@ export default function Home() {
         (current.phase !== "resolving" && current.currentPlayer === 0)
       ) {
         if (current.phase === "gameOver" || current.phase === "roundSummary")
-          reviewRound(current);
+          gradeRound(current);
         setBusy(false);
         return;
       }
@@ -823,11 +801,20 @@ export default function Home() {
                       .join(" · ")}
                   </p>
                   {bidReview && bidReview.round === game.round && (
-                    <p
-                      className={`bid-review ${bidReview.tricks === bidReview.yourBid ? "exact" : "missed"}`}
-                    >
-                      {reviewLine(bidReview)}
-                    </p>
+                    <section className={`bid-review ${bidReview.contract}`}>
+                      <header>
+                        <span className="bid-review-grade">{bidReview.grade}</span>
+                        <span className="bid-review-verdict">
+                          {gradeLabel[bidReview.grade]}
+                        </span>
+                      </header>
+                      <p className="bid-review-headline">{bidReview.headline}</p>
+                      <ul>
+                        {bidReview.notes.map((note) => (
+                          <li key={note}>{note}</li>
+                        ))}
+                      </ul>
+                    </section>
                   )}
                   <button className="primary" onClick={nextRound}>
                     Deal round {game.round + 1}
@@ -851,11 +838,20 @@ export default function Home() {
                       .join(" · ")}
                   </p>
                   {bidReview && bidReview.round === game.round && (
-                    <p
-                      className={`bid-review ${bidReview.tricks === bidReview.yourBid ? "exact" : "missed"}`}
-                    >
-                      {reviewLine(bidReview)}
-                    </p>
+                    <section className={`bid-review ${bidReview.contract}`}>
+                      <header>
+                        <span className="bid-review-grade">{bidReview.grade}</span>
+                        <span className="bid-review-verdict">
+                          {gradeLabel[bidReview.grade]}
+                        </span>
+                      </header>
+                      <p className="bid-review-headline">{bidReview.headline}</p>
+                      <ul>
+                        {bidReview.notes.map((note) => (
+                          <li key={note}>{note}</li>
+                        ))}
+                      </ul>
+                    </section>
                   )}
                   <button className="primary" onClick={openNewGame}>
                     New game

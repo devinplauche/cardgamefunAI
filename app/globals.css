@@ -448,21 +448,63 @@ header {
   color: var(--muted);
   font-size: 13px;
 }
-.summary p.bid-review {
-  max-width: 46ch;
-  margin: 13px auto;
-  padding: 9px 12px;
-  border-radius: 8px;
+.summary .bid-review {
+  max-width: 52ch;
+  margin: 15px auto;
+  padding: 11px 14px;
+  border-radius: 9px;
   border-left: 3px solid var(--muted);
   background: rgba(127, 127, 127, 0.09);
   text-align: left;
   line-height: 1.45;
 }
-.summary p.bid-review.exact {
+.summary .bid-review.exact {
   border-left-color: #57946d;
 }
-.summary p.bid-review.missed {
+.summary .bid-review.over,
+.summary .bid-review.under {
   border-left-color: #d85b51;
+}
+.summary .bid-review header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 7px;
+}
+.bid-review-grade {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  font-weight: 700;
+  font-size: 14px;
+  color: #fff;
+  background: #d85b51;
+}
+.bid-review.exact .bid-review-grade {
+  background: #57946d;
+}
+.bid-review-verdict {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.summary p.bid-review-headline {
+  margin: 0 0 7px;
+  font-size: 14px;
+  color: inherit;
+}
+.summary .bid-review ul {
+  margin: 0;
+  padding-left: 17px;
+}
+.summary .bid-review li {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 4px;
 }
 .bid-stage .kicker {
   display: block;
