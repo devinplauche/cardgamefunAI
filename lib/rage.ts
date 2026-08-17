@@ -919,7 +919,7 @@ export function chooseMctsPlay(
   const deeperSearch = hasStrategicOpponents(state, playerId);
   const iterations = Math.max(
     legal.length,
-    options.iterations ?? (deeperSearch ? 60 : 36),
+    options.iterations ?? (deeperSearch ? 36 : 24),
   );
   // Rollouts are meant to stop inside the current round. Past its final trick
   // dealRound() reshuffles, so extra plies only score random future deals --
