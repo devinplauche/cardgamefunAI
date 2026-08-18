@@ -18,6 +18,7 @@ import {
   type Suit,
 } from "@/lib/rage";
 import { reviewRound, type RoundReview } from "@/lib/coach";
+import { BOT_LEVEL_OPTIONS, BOT_NAMES, botLevelFromSave } from "@/lib/bot-levels";
 
 const colors: Record<Suit, string> = {
   red: "#d85b51",
@@ -27,19 +28,7 @@ const colors: Record<Suit, string> = {
   blue: "#4e91a1",
   purple: "#8067ad",
 };
-const botNames: Record<BotLevel, string> = {
-  easy: "Easy",
-  medium: "Medium",
-  hard: "Hard",
-  extreme: "Extreme",
-  inlaws: "In-laws — CHEATING",
-  "absolute-inlaws": "Absolute In-laws — LEGAL CHEATS",
-};
-const botLevelFromSave = (level: unknown): BotLevel =>
-  level === "easy" || level === "medium" || level === "hard" || level === "extreme" || level === "inlaws" || level === "absolute-inlaws"
-    ? level
-    : "medium";
-const botLabel = (level: unknown) => botNames[botLevelFromSave(level)];
+const botLabel = (level: unknown) => BOT_NAMES[botLevelFromSave(level)];
 const botsFor = (count: number, level: BotLevel): BotLevel[] =>
   Array.from({ length: count }, (_, index) => (index === 0 ? "medium" : level));
 const cardLabel = (card: { rank?: number; suit?: Suit; type?: string }) =>
@@ -97,6 +86,17 @@ export default function Home() {
   const [bidReview, setBidReview] = useState<
     (RoundReview & { round: number }) | null
   >(null);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
+  const [analysisHistory, setAnalysisHistory] = useState<
+    Array<{
+      round: number;
+      bid: number;
+      suggestedBid: number;
+      tricks: number;
+      score: number;
+      review: RoundReview;
+    }>
+  >([]);
   /** What the human bid this round, plus the search's answer on the same hand. */
   const pendingBid = useRef<{ round: number; yourBid: number; suggested: number } | null>(
     null,
@@ -262,18 +262,30 @@ export default function Home() {
     const pending = pendingBid.current;
     if (!pending || pending.round !== state.round) return;
     const player = state.players[0];
+    const review = reviewRound({
+      round: pending.round,
+      bid: pending.yourBid,
+      suggestedBid: pending.suggested,
+      tricks: player.tricks,
+      tricksInRound: state.cardsPerPlayer,
+      trickTrace: trickTrace.current,
+      roundBonus: player.roundBonus,
+    });
     setBidReview({
       round: pending.round,
-      ...reviewRound({
+      ...review,
+    });
+    setAnalysisHistory((history) => [
+      ...history.filter((entry) => entry.round !== pending.round),
+      {
         round: pending.round,
         bid: pending.yourBid,
         suggestedBid: pending.suggested,
         tricks: player.tricks,
-        tricksInRound: state.cardsPerPlayer,
-        trickTrace: trickTrace.current,
-        roundBonus: player.roundBonus,
-      }),
-    });
+        score: state.lastRoundScores?.[0] ?? 0,
+        review,
+      },
+    ]);
     pendingBid.current = null;
   }
   function runBots(start: GameState) {
@@ -355,6 +367,7 @@ export default function Home() {
     setBid(2);
     setSelectedId(null);
     setBidReview(null);
+    setAnalysisHistory([]);
     pendingBid.current = null;
     trickTrace.current = [];
     const values = new Uint32Array(1);
@@ -407,6 +420,17 @@ export default function Home() {
     runBots(continueGame(game));
   }
 
+  const completedAnalysis = [...analysisHistory].sort((a, b) => b.round - a.round);
+  const bestRound = analysisHistory.reduce(
+    (best, entry) => (!best || entry.score > best.score ? entry : best),
+    null as (typeof analysisHistory)[number] | null,
+  );
+  const biggestLeak = analysisHistory.reduce(
+    (worst, entry) => (!worst || entry.review.cost > worst.review.cost ? entry : worst),
+    null as (typeof analysisHistory)[number] | null,
+  );
+  const exactRounds = analysisHistory.filter((entry) => entry.review.grade === "A").length;
+
   return (
     <main className="rage-app">
       <header>
@@ -422,8 +446,12 @@ export default function Home() {
                 ? "Saving…"
                 : saveStatus === "saved"
                   ? "Saved"
-                  : "Save offline"}
+                : "Save offline"}
           </small>
+          <button className="analysis-button" onClick={() => setAnalysisOpen(true)}>
+            ◎ Game analysis
+            {analysisHistory.length > 0 && <span>{analysisHistory.length}</span>}
+          </button>
         </div>
       </header>
       <section className="intro">
@@ -489,8 +517,8 @@ export default function Home() {
                   setBotLevel(event.target.value as BotLevel)
                 }
               >
-                {(["easy", "medium", "hard", "extreme", "inlaws", "absolute-inlaws"] as BotLevel[]).map((level) => (
-                  <option key={level} value={level}>{botNames[level]}</option>
+                {BOT_LEVEL_OPTIONS.map(({ value, label }) => (
+                  <option key={value} value={value}>{label}</option>
                 ))}
               </select>
             </label>
@@ -502,6 +530,70 @@ export default function Home() {
                 Start new game
               </button>
             </div>
+          </section>
+        </div>
+      )}
+      {analysisOpen && (
+        <div className="analysis-backdrop">
+          <button
+            className="new-game-dismiss"
+            aria-label="Close game analysis"
+            onClick={() => setAnalysisOpen(false)}
+          />
+          <section
+            className="analysis-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="game-analysis-title"
+          >
+            <div className="analysis-dialog-header">
+              <div>
+                <span className="kicker">TABLE READ</span>
+                <h2 id="game-analysis-title">Game analysis</h2>
+                <p>Key moments from your bidding, play, and score swings.</p>
+              </div>
+              <button className="outline" onClick={() => setAnalysisOpen(false)}>
+                Close
+              </button>
+            </div>
+            {completedAnalysis.length === 0 ? (
+              <div className="analysis-empty">
+                <strong>Your first key moment will appear after round 1.</strong>
+                <span>Finish a round to see what moved the score and what to watch next time.</span>
+              </div>
+            ) : (
+              <>
+                <div className="analysis-metrics">
+                  <div><strong>{exactRounds}</strong><span>exact contracts</span></div>
+                  <div><strong>{analysisHistory.length}</strong><span>rounds reviewed</span></div>
+                  <div><strong>{game.players[0].score}</strong><span>your score</span></div>
+                </div>
+                <section className="analysis-highlights">
+                  <h3>Key moments</h3>
+                  {bestRound && (
+                    <p><b>Best round · Round {bestRound.round}.</b> You scored {bestRound.score} with a {bestRound.review.grade}-grade read: {bestRound.review.headline}</p>
+                  )}
+                  {biggestLeak && biggestLeak.review.cost > 0 && (
+                    <p><b>Biggest swing · Round {biggestLeak.round}.</b> Missing that contract cost about {biggestLeak.review.cost} points. {biggestLeak.review.notes[0]}</p>
+                  )}
+                  {exactRounds === 0 && <p><b>Pattern to watch.</b> You have not hit an exact contract yet. Start by protecting the number you bid once you are close to it.</p>}
+                  {exactRounds >= 2 && <p><b>Pattern to keep.</b> You are finding your number regularly. The next edge is avoiding the one extra trick that turns a strong round into a miss.</p>}
+                </section>
+                <section className="analysis-timeline">
+                  <h3>Round by round</h3>
+                  {completedAnalysis.map((entry) => (
+                    <article key={entry.round} className="analysis-entry">
+                      <div className={`analysis-grade grade-${entry.review.grade.toLowerCase()}`}>{entry.review.grade}</div>
+                      <div>
+                        <strong>Round {entry.round} · {entry.review.headline}</strong>
+                        <span>{entry.review.notes[0]}</span>
+                      </div>
+                      <b className="analysis-score">{entry.score > 0 ? "+" : ""}{entry.score}</b>
+                    </article>
+                  ))}
+                </section>
+              </>
+            )}
           </section>
         </div>
       )}
