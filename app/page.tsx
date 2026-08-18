@@ -490,7 +490,7 @@ export default function Home() {
                 }
               >
                 {(["easy", "medium", "hard", "extreme", "inlaws", "absolute-inlaws"] as BotLevel[]).map((level) => (
-                  <option key={level}>{botNames[level]}</option>
+                  <option key={level} value={level}>{botNames[level]}</option>
                 ))}
               </select>
             </label>
