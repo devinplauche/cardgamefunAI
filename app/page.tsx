@@ -68,17 +68,6 @@ const gradeLabel: Record<RoundReview["grade"], string> = {
   C: "Off by two",
   D: "Way off",
 };
-type MatchResult = {
-  id: string;
-  playerName: string;
-  playerScore: number;
-  winnerName: string;
-  winnerScore: number;
-  playerCount: number;
-  botLevel: string;
-  playedAt: string;
-};
-
 export default function Home() {
   const [players, setPlayers] = useState(4);
   const [botLevel, setBotLevel] = useState<BotLevel>("medium");
@@ -92,7 +81,6 @@ export default function Home() {
   const [newGameOpen, setNewGameOpen] = useState(false);
   const [playerName, setPlayerName] = useState("You");
   const [shareResults, setShareResults] = useState(false);
-  const [matchHistory, setMatchHistory] = useState<MatchResult[]>([]);
   const [busy, setBusy] = useState(false);
   const [bidReview, setBidReview] = useState<
     (RoundReview & { round: number }) | null
@@ -169,23 +157,6 @@ export default function Home() {
     }, 700);
     return () => window.clearTimeout(saveTimer);
   }, [game, storageReady]);
-  const loadMatchHistory = async () => {
-    try {
-      const response = await fetch("/api/matches", { cache: "no-store" });
-      if (response.ok)
-        setMatchHistory(
-          ((await response.json()) as { matches: MatchResult[] }).matches,
-        );
-    } catch {
-      // History is optional; the game remains playable offline.
-    }
-  };
-  useEffect(() => {
-    const historyTimer = window.setTimeout(() => {
-      void loadMatchHistory();
-    }, 0);
-    return () => window.clearTimeout(historyTimer);
-  }, []);
   useEffect(() => {
     if (
       game.phase !== "gameOver" ||
@@ -207,7 +178,7 @@ export default function Home() {
         playerCount: game.playerCount,
         botLevel,
       }),
-    }).then(() => loadMatchHistory());
+    });
   }, [game, botLevel]);
   const human = game.players[0];
   const humanTurn = game.currentPlayer === 0;
@@ -616,28 +587,6 @@ export default function Home() {
             Exact bid: +10. Miss your bid: -5. Each trick: +1. Take every trick:
             +5. Bonus/Mad Rage modifies the trick winner.
           </p>
-        </aside>
-        <aside className="match-history">
-          <div>
-            <span className="kicker">OPT-IN</span>
-            <h2>Recent matches</h2>
-          </div>
-          {matchHistory.length ? (
-            matchHistory.map((match) => (
-              <div className="match-row" key={match.id}>
-                <span>
-                  <b>{match.winnerName}</b> won
-                  <small>
-                    {match.playerName} {match.playerScore} · {match.playerCount}{" "}
-                    players
-                  </small>
-                </span>
-                <strong>{match.winnerScore}</strong>
-              </div>
-            ))
-          ) : (
-            <p>No shared matches yet.</p>
-          )}
         </aside>
         <section className="table">
           <div className="phase-tabs">
