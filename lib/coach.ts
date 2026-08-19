@@ -36,6 +36,15 @@ export type RoundReview = {
   notes: string[];
 };
 
+export type GameAnalysisEntry = {
+  round: number;
+  bid: number;
+  suggestedBid: number;
+  tricks: number;
+  score: number;
+  review: RoundReview;
+};
+
 const EXACT_BID = 10;
 const MISSED_BID = 5;
 
