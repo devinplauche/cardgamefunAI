@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { reviewRound, type RoundPerformance } from "../lib/coach";
+import { assessDecision, reviewRound, type RoundPerformance } from "../lib/coach";
 
 // A round where the player bid 3 and steered to it exactly.
 const clean: RoundPerformance = {
@@ -153,4 +153,170 @@ test("an empty trick trace still produces a usable review", () => {
   assert.equal(review.contract, "exact");
   assert.equal(review.overshotAt, null);
   assert.ok(review.headline.length > 0);
+});
+
+// --- play feedback ----------------------------------------------------------
+// Fixture: blue is trump, red is led, and the trick is decided by the red 9
+// unless the player beats it.
+const red = (rank: number) => ({ id: `red-${rank}`, suit: "red" as const, rank });
+const played = (player: number, rank: number) => ({ player, card: red(rank) });
+/** p1 leads the red 9; seats 2 and 3 follow low. Seat 0's card decides it. */
+const trickAround = (yours: number) => [
+  played(1, 9),
+  played(0, yours),
+  played(2, 4),
+  played(3, 6),
+];
+
+test("a single legal card is recorded as forced, not as a decision", () => {
+  const decision = assessDecision({
+    trick: 3,
+    needed: 1,
+    legal: [red(2)],
+    played: red(2),
+    resolved: trickAround(2),
+    trump: "blue",
+    playerId: 0,
+  });
+  assert.equal(decision.forced, true);
+  assert.equal(decision.kind, "forced");
+});
+
+test("ducking a trick you needed, while holding a winner, is a missed trick", () => {
+  const decision = assessDecision({
+    trick: 4,
+    needed: 1,
+    legal: [red(2), red(15)],
+    played: red(2),
+    resolved: trickAround(2),
+    trump: "blue",
+    playerId: 0,
+  });
+  assert.equal(decision.wonTrick, false);
+  assert.equal(decision.couldHaveWon, true);
+  assert.equal(decision.kind, "missed-trick");
+  assert.match(decision.betterCard ?? "", /15/);
+});
+
+test("taking a trick you did not need, with a safe card available, is a loose trick", () => {
+  const decision = assessDecision({
+    trick: 6,
+    needed: 0,
+    legal: [red(2), red(15)],
+    played: red(15),
+    resolved: trickAround(15),
+    trump: "blue",
+    playerId: 0,
+  });
+  assert.equal(decision.wonTrick, true);
+  assert.equal(decision.couldHaveDucked, true);
+  assert.equal(decision.kind, "loose-trick");
+  assert.match(decision.betterCard ?? "", /2/);
+});
+
+test("winning a trick you needed is on plan", () => {
+  const decision = assessDecision({
+    trick: 2,
+    needed: 2,
+    legal: [red(2), red(15)],
+    played: red(15),
+    resolved: trickAround(15),
+    trump: "blue",
+    playerId: 0,
+  });
+  assert.equal(decision.kind, "on-plan");
+});
+
+test("losing a trick you needed with no winner in hand is unavoidable", () => {
+  const decision = assessDecision({
+    trick: 5,
+    needed: 1,
+    legal: [red(2), red(3)],
+    played: red(3),
+    resolved: trickAround(3),
+    trump: "blue",
+    playerId: 0,
+  });
+  assert.equal(decision.couldHaveWon, false);
+  assert.equal(decision.kind, "unavoidable");
+});
+
+const decisionOf = (
+  kind: "loose-trick" | "missed-trick" | "on-plan" | "forced",
+  trick: number,
+) => ({
+  trick,
+  kind,
+  forced: kind === "forced",
+  needed: kind === "missed-trick" ? 1 : 0,
+  wonTrick: kind === "loose-trick",
+  couldHaveWon: kind === "missed-trick",
+  couldHaveDucked: kind === "loose-trick",
+  card: "2 red",
+  betterCard: kind === "on-plan" || kind === "forced" ? undefined : "15 red",
+});
+
+test("play feedback names the trick and the card that would have worked", () => {
+  const review = reviewRound({
+    ...clean,
+    bid: 2,
+    suggestedBid: 2,
+    tricks: 3,
+    trickTrace: [0, 1, 2, 3, 3],
+    decisions: [decisionOf("on-plan", 1), decisionOf("loose-trick", 4)],
+  });
+  assert.equal(review.playVerdict, "leaked");
+  assert.equal(review.leaks.length, 1);
+  assert.equal(review.leaks[0].trick, 4);
+  const text = review.notes.join(" ");
+  assert.match(text, /trick 4/i);
+  assert.match(text, /15 red/);
+});
+
+test("a round played to plan is reported as clean even when the bid was wrong", () => {
+  const review = reviewRound({
+    ...clean,
+    bid: 1,
+    suggestedBid: 4,
+    tricks: 4,
+    trickTrace: [1, 2, 3, 4],
+    decisions: [decisionOf("on-plan", 1), decisionOf("forced", 2)],
+  });
+  assert.equal(review.playVerdict, "clean");
+  assert.equal(review.leaks.length, 0);
+});
+
+// The audit found play advice was gated behind the search agreeing with the
+// bid, so two thirds of missed rounds got no play feedback at all.
+test("play feedback appears even when the bid itself was a misread", () => {
+  const review = reviewRound({
+    ...clean,
+    bid: 1,
+    suggestedBid: 5,
+    tricks: 3,
+    trickTrace: [1, 2, 3],
+    decisions: [decisionOf("loose-trick", 2), decisionOf("loose-trick", 5)],
+  });
+  assert.equal(review.bidRead, "low");
+  assert.equal(review.leaks.length, 2);
+  assert.match(review.notes.join(" "), /trick 2/i);
+});
+
+test("a round with nothing but forced cards says so instead of blaming the play", () => {
+  const review = reviewRound({
+    ...clean,
+    bid: 2,
+    suggestedBid: 2,
+    tricks: 3,
+    trickTrace: [1, 2, 3],
+    decisions: [decisionOf("forced", 1), decisionOf("forced", 2)],
+  });
+  assert.equal(review.playVerdict, "forced");
+  assert.equal(review.leaks.length, 0);
+});
+
+test("omitting decisions keeps the older bid-only review working", () => {
+  const review = reviewRound(clean);
+  assert.equal(review.playVerdict, "unknown");
+  assert.deepEqual(review.leaks, []);
 });

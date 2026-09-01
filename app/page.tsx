@@ -13,11 +13,17 @@ import {
   playCard,
   submitBid,
   type BotLevel,
+  type Card,
   type GameState,
   type PlayedCard,
   type Suit,
 } from "@/lib/rage";
-import { reviewRound, type RoundReview } from "@/lib/coach";
+import {
+  assessDecision,
+  reviewRound,
+  type PlayDecision,
+  type RoundReview,
+} from "@/lib/coach";
 import { BOT_LEVEL_OPTIONS, BOT_NAMES, botLevelFromSave } from "@/lib/bot-levels";
 
 const colors: Record<Suit, string> = {
@@ -91,6 +97,15 @@ export default function Home() {
   );
   /** The human's running trick total after each resolved trick this round. */
   const trickTrace = useRef<number[]>([]);
+  /** Every card the human chose this round, judged once its trick resolves. */
+  const decisions = useRef<PlayDecision[]>([]);
+  /** The card just played, held until its trick resolves and can be judged. */
+  const pendingPlay = useRef<{
+    trick: number;
+    needed: number;
+    legal: Card[];
+    played: Card;
+  } | null>(null);
   const [winnerNotice, setWinnerNotice] = useState<string | null>(null);
   const [storageReady, setStorageReady] = useState(false);
   const [saveStatus, setSaveStatus] = useState<
@@ -241,6 +256,7 @@ export default function Home() {
       tricksInRound: state.cardsPerPlayer,
       trickTrace: trickTrace.current,
       roundBonus: player.roundBonus,
+      decisions: decisions.current,
     });
     setBidReview({
       round: pending.round,
@@ -278,6 +294,18 @@ export default function Home() {
         if (current.phase === "resolving") {
           current = finishTrick(current);
           trickTrace.current.push(current.players[0].tricks);
+          // The trick is only judgeable now that every card is face up.
+          if (pendingPlay.current) {
+            decisions.current.push(
+              assessDecision({
+                ...pendingPlay.current,
+                resolved: current.lastTrick,
+                trump: current.trump,
+                playerId: 0,
+              }),
+            );
+            pendingPlay.current = null;
+          }
           setGame(current);
           if (current.lastWinner === null) {
             setWinnerNotice("No one takes the all-action trick");
@@ -341,6 +369,8 @@ export default function Home() {
     setAnalysisHistory([]);
     pendingBid.current = null;
     trickTrace.current = [];
+    decisions.current = [];
+    pendingPlay.current = null;
     const values = new Uint32Array(1);
     crypto.getRandomValues(values);
     const nextSeed = values[0] || 1;
@@ -365,6 +395,8 @@ export default function Home() {
       suggested: chooseMctsBid(game, 0, { simulations: COACH_SIMULATIONS }),
     };
     trickTrace.current = [];
+    decisions.current = [];
+    pendingPlay.current = null;
     setBidReview(null);
     runBots(submitBid(game, 0, bid));
   }
@@ -380,6 +412,12 @@ export default function Home() {
       },
       true,
     );
+    pendingPlay.current = {
+      trick: trickTrace.current.length + 1,
+      needed: (human.bid ?? 0) - human.tricks,
+      legal: legalPlays(game, 0),
+      played: selected,
+    };
     setSelectedId(null);
     runBots(next);
   }
@@ -388,6 +426,8 @@ export default function Home() {
     setSelectedId(null);
     setBidReview(null);
     trickTrace.current = [];
+    decisions.current = [];
+    pendingPlay.current = null;
     runBots(continueGame(game));
   }
 

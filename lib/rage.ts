@@ -294,6 +294,23 @@ function winsAgainst(
   );
 }
 
+/**
+ * Who takes this trick, given the trump in force when it resolves? Returns null
+ * for an all-action trick that nobody wins. Exported so the coach can replay a
+ * finished trick with a different card in the player's seat.
+ */
+export function trickWinner(
+  trick: PlayedCard[],
+  trump: Suit | null,
+): PlayedCard | null {
+  const lead = establishLead(trick);
+  if (!lead || !trick.length) return null;
+  let winner = trick[0];
+  for (const challenger of trick.slice(1))
+    if (winsAgainst(challenger, winner, lead, trump)) winner = challenger;
+  return winner;
+}
+
 function resolveTrick(state: GameState): GameState {
   const leadSuit = establishLead(state.trick);
   if (!leadSuit) {

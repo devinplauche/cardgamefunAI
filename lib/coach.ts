@@ -8,6 +8,109 @@
  * at the bid from one that was bid well and then misplayed.
  */
 
+import { cardName, trickWinner, type Card, type PlayedCard, type Suit } from "./rage";
+
+/** One card the player chose, judged against what the round needed at the time. */
+export type PlayDecision = {
+  /** 1-based trick number within the round. */
+  trick: number;
+  /** Tricks still owed on the contract when the card was chosen. */
+  needed: number;
+  /** True when only one card was legal, so nothing was actually decided. */
+  forced: boolean;
+  wonTrick: boolean;
+  /** In hindsight, a legal card existed that would have taken the trick. */
+  couldHaveWon: boolean;
+  /** In hindsight, a legal card existed that would have lost the trick. */
+  couldHaveDucked: boolean;
+  kind: "forced" | "on-plan" | "missed-trick" | "loose-trick" | "unavoidable";
+  /** The card that was played. */
+  card: string;
+  /** The card that would have served the contract, when one existed. */
+  betterCard?: string;
+};
+
+export type DecisionInput = {
+  trick: number;
+  needed: number;
+  /** Cards that were legal at the moment of choosing. */
+  legal: Card[];
+  played: Card;
+  /** The trick as it finished, including this player's card. */
+  resolved: PlayedCard[];
+  /** Trump in force when the trick resolved. */
+  trump: Suit | null;
+  playerId: number;
+};
+
+/**
+ * Replay a finished trick with each card the player could legally have played
+ * instead. This is hindsight -- later opponents might have answered a different
+ * card differently -- but it is the same read a person does when they look back
+ * at a hand, and it is the only way to say anything concrete about the play.
+ */
+export function assessDecision(input: DecisionInput): PlayDecision {
+  const { trick, needed, legal, played, resolved, trump, playerId } = input;
+  const seat = resolved.findIndex((entry) => entry.player === playerId);
+  const winner = trickWinner(resolved, trump);
+  const wonTrick = winner?.player === playerId;
+  const forced = legal.length <= 1;
+
+  const wouldWin = (card: Card) => {
+    if (seat < 0) return false;
+    const swapped = resolved.map((entry, index) =>
+      index === seat
+        ? {
+            ...entry,
+            card,
+            // A swapped-in Wild keeps the seat's declaration only if it is one.
+            declaredSuit: card.type === "wild" ? entry.declaredSuit : undefined,
+            declaredRank: card.type === "wild" ? entry.declaredRank : undefined,
+          }
+        : entry,
+    );
+    return trickWinner(swapped, trump)?.player === playerId;
+  };
+
+  const winners = forced ? [] : legal.filter(wouldWin);
+  const duckers = forced ? [] : legal.filter((card) => !wouldWin(card));
+  const couldHaveWon = winners.length > 0;
+  const couldHaveDucked = duckers.length > 0;
+  const wanted = needed > 0;
+
+  let kind: PlayDecision["kind"];
+  let betterCard: string | undefined;
+  if (forced) kind = "forced";
+  else if (wanted === wonTrick) kind = "on-plan";
+  else if (wanted && couldHaveWon) {
+    kind = "missed-trick";
+    // The cheapest card that would still have taken it.
+    betterCard = cardName(cheapest(winners));
+  } else if (!wanted && couldHaveDucked) {
+    kind = "loose-trick";
+    // The biggest card that could safely have been thrown away.
+    betterCard = cardName(dearest(duckers));
+  } else kind = "unavoidable";
+
+  return {
+    trick,
+    needed,
+    forced,
+    wonTrick,
+    couldHaveWon,
+    couldHaveDucked,
+    kind,
+    card: cardName(played),
+    betterCard,
+  };
+}
+
+const weight = (card: Card) => (card.type ? -1 : (card.rank ?? 0));
+const cheapest = (cards: Card[]) =>
+  cards.reduce((best, card) => (weight(card) < weight(best) ? card : best));
+const dearest = (cards: Card[]) =>
+  cards.reduce((best, card) => (weight(card) > weight(best) ? card : best));
+
 export type RoundPerformance = {
   round: number;
   /** What the player actually bid. */
@@ -21,6 +124,8 @@ export type RoundPerformance = {
   trickTrace: number[];
   /** Rage card modifiers collected this round (+5 Bonus, -5 Mad). */
   roundBonus: number;
+  /** Every card the player chose this round. Omit for a bid-only review. */
+  decisions?: PlayDecision[];
 };
 
 export type RoundReview = {
@@ -32,6 +137,13 @@ export type RoundReview = {
   overshotAt: number | null;
   /** How the bid compared with the search's read of the same hand. */
   bidRead: "sound" | "low" | "high";
+  /**
+   * How the cards were played, independent of whether the bid was right.
+   * "unknown" when no per-card data was captured for the round.
+   */
+  playVerdict: "clean" | "leaked" | "forced" | "unknown";
+  /** The specific tricks that cost the contract, worst first. */
+  leaks: PlayDecision[];
   headline: string;
   notes: string[];
 };
@@ -57,8 +169,15 @@ function gradeFor(deviation: number): RoundReview["grade"] {
 }
 
 export function reviewRound(performance: RoundPerformance): RoundReview {
-  const { bid, suggestedBid, tricks, tricksInRound, trickTrace, roundBonus } =
-    performance;
+  const {
+    bid,
+    suggestedBid,
+    tricks,
+    tricksInRound,
+    trickTrace,
+    roundBonus,
+    decisions,
+  } = performance;
   const deviation = Math.abs(tricks - bid);
   const contract = tricks === bid ? "exact" : tricks > bid ? "over" : "under";
   // Taking exactly the bid would have scored bid + EXACT_BID; the round instead
@@ -70,7 +189,24 @@ export function reviewRound(performance: RoundPerformance): RoundReview {
   const bidRead =
     suggestedBid === bid ? "sound" : bid < suggestedBid ? "low" : "high";
 
+  // Play is judged on its own terms. A hand can be bid badly and played well,
+  // or bid well and thrown away, and the player needs to be told which.
+  const leaks = (decisions ?? []).filter(
+    (decision) =>
+      decision.kind === "missed-trick" || decision.kind === "loose-trick",
+  );
+  const open = (decisions ?? []).filter((decision) => !decision.forced);
+  const playVerdict: RoundReview["playVerdict"] = !decisions?.length
+    ? "unknown"
+    : leaks.length
+      ? "leaked"
+      : open.length
+        ? "clean"
+        : "forced";
+
   const notes: string[] = [];
+
+  // --- the contract ---------------------------------------------------------
   if (contract === "exact") {
     notes.push(
       bidRead === "sound"
@@ -82,23 +218,42 @@ export function reviewRound(performance: RoundPerformance): RoundReview {
   } else {
     if (bidRead === "sound")
       notes.push(
-        contract === "over"
-          ? "The bid was sound — this one got away in the play. Once you are on your number, shed the highest card that cannot win rather than the lowest."
-          : "The bid was sound — this one got away in the play. While you are short, lead your strongest card instead of ducking with a low one.",
+        `The bid was sound — this one was lost in the play. Missing the contract cost ${cost} points; extra tricks are only worth 1 each.`,
       );
     else if (suggestedBid === tricks)
       notes.push(
-        `The search read the hand as exactly ${suggestedBid}, which is what you took. This was a bidding miss, not a playing one.`,
+        `The search read the hand as exactly ${suggestedBid}, which is what you took. This was a bidding miss, not a playing one — it cost ${cost} points.`,
       );
     else
       notes.push(
-        `The search read the hand as ${suggestedBid} against your ${bid}. Re-read your trump length and top cards before committing.`,
+        `The search read the hand as ${suggestedBid} against your ${bid}. Re-read your trump length and top cards before committing; this cost ${cost} points.`,
       );
-    notes.push(
-      `Missing the contract cost ${cost} points; extra tricks are only worth 1 each.`,
-    );
   }
 
+  // --- the play, reported whether or not the bid was right ------------------
+  for (const leak of leaks.slice(0, 3))
+    notes.push(
+      leak.kind === "loose-trick"
+        ? `Trick ${leak.trick}: you were already on your number but took it with the ${leak.card}. The ${leak.betterCard} would have gone under safely.`
+        : `Trick ${leak.trick}: you still needed ${leak.needed}, and the ${leak.betterCard} would have taken it. You played the ${leak.card}.`,
+    );
+  if (leaks.length > 3)
+    notes.push(`${leaks.length - 3} more trick(s) went the same way.`);
+
+  if (playVerdict === "clean" && contract !== "exact")
+    notes.push(
+      "The card play was sound — every trick went the way the contract needed. This one was decided at the bid.",
+    );
+  else if (playVerdict === "forced" && contract !== "exact")
+    notes.push(
+      "You never had a real choice this round; every card was forced. Nothing to fix in the play.",
+    );
+  else if (playVerdict === "clean" && contract === "exact" && open.length)
+    notes.push(
+      `Every one of your ${open.length} real decision(s) served the contract.`,
+    );
+
+  // --- Rage cards -----------------------------------------------------------
   if (roundBonus <= -5)
     notes.push(
       `Mad Rage landed on you for ${roundBonus}. Take your tricks before it appears, or let someone else win that one.`,
@@ -120,6 +275,8 @@ export function reviewRound(performance: RoundPerformance): RoundReview {
     cost,
     overshotAt,
     bidRead,
+    playVerdict,
+    leaks,
     headline,
     notes,
   };
