@@ -92,5 +92,58 @@ class TestSetupRules(unittest.TestCase):
         self.assertEqual(env.opponent.hp, 50)
 
 
+class TestTurnBoundaryCleanup(unittest.TestCase):
+    """The v1 env's turn boundary used to delete played cards (clearing
+    played_this_turn without discarding) and leak pending_ally state into
+    later turns. Every owned card must survive the turn; all pending lists
+    must reset."""
+
+    def _owned_total(self, player):
+        zones = [player.deck, player.hand, player.discard,
+                 player.played_this_turn]
+        total = sum(len(z) for z in zones)
+        total += sum(1 for bc in player.board if bc.alive)
+        return total
+
+    def test_played_cards_are_discarded_not_deleted(self):
+        env = HeroRealmsEnv(CARDS)
+        env.reset(seed=7)
+        p = env.agent
+        self.assertEqual(self._owned_total(p), 10)
+        # reset() already ran the agent's opening main phase; note how many
+        # cards are already in played_this_turn before adding more.
+        already_played = len(p.played_this_turn)
+        # Force three Golds into hand and play them, then run the turn.
+        golds = [c for c in p.deck if c.name == "Gold"][:3]
+        self.assertEqual(len(golds), 3)
+        for c in golds:
+            p.deck.remove(c)
+        p.hand.extend(golds)
+        from hero_engine import play_card
+        for card in list(golds):
+            play_card(p, card, env.market)
+        self.assertEqual(len(p.played_this_turn), already_played + 3)
+        env._resolve_turn()
+        self.assertEqual(self._owned_total(p), 10,
+                         "played cards must reach the discard pile, not vanish")
+
+    def test_pending_ally_cleared_at_turn_boundary(self):
+        env = HeroRealmsEnv(CARDS)
+        env.reset(seed=11)
+        o = env.opponent
+        taxation = next(c for c in CARDS if c.name == "Taxation")
+        o.hand = [taxation]
+        from hero_ai import play_all_playable
+        play_all_playable(o, env.agent, env.market)
+        self.assertEqual(len(o.pending_ally), 1)
+        env._resolve_turn()
+        self.assertEqual(o.pending_ally, [],
+                         "pending_ally must not leak into the next turn")
+        self.assertEqual(o.pending_stun_targets, [])
+        self.assertEqual(o.pending_prepares, 0)
+        self.assertFalse(o.next_buy_to_hand)
+        self.assertFalse(o.next_buy_to_top)
+
+
 if __name__ == "__main__":
     unittest.main()

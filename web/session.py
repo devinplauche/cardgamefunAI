@@ -106,6 +106,10 @@ def _copy_player(player: HRPlayer, rng: random.Random) -> HRPlayer:
     clone.board = [_copy_champion(champion) for champion in player.board]
     clone.played_this_turn = player.played_this_turn[:]
     clone.pending_ally = player.pending_ally[:]
+    # Ally usage is tracked by id(HRCard), and clones share the HRCard
+    # references (never mutated), so the ids stay valid in the simulation.
+    # Copied, not shared: a simulated firing must not leak into the real game.
+    clone.ally_used_this_turn = player.ally_used_this_turn.copy()
     clone.pending_per_champion = [dict(e) for e in player.pending_per_champion]
     clone.pending_stun_targets = player.pending_stun_targets[:]
     clone.pending_prepares = player.pending_prepares
@@ -440,6 +444,7 @@ class GameSession:
         player.actions_played = 0
         player.discard_played_cards()
         player.pending_ally.clear()
+        player.ally_used_this_turn.clear()
         player.pending_per_champion.clear()
         player.pending_stun_targets.clear()
         player.pending_prepares = 0

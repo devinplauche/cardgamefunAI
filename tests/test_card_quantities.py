@@ -59,12 +59,15 @@ class TestMarketDeckSize(unittest.TestCase):
         for name, expected in EXPECTED_QUANTITIES.items():
             self.assertEqual(counts[name], expected, f"{name} quantity wrong")
 
-    def test_duplicate_copies_are_the_same_object(self):
-        """Matches the existing convention for GOLD/SHORTSWORD/DAGGER/RUBY -
-        safe because HRCard is never mutated anywhere in the engine."""
+    def test_duplicate_copies_are_distinct_objects(self):
+        """Each physical copy gets its own HRCard instance. Sharing one
+        instance across copies broke ally abilities for duplicates: has_ally()
+        excludes a card from being its own ally via object identity, so two
+        copies of the same card never counted as allies of each other."""
         taxations = [c for c in CARDS if c.name == "Taxation"]
         self.assertEqual(len(taxations), 3)
-        self.assertTrue(all(c is taxations[0] for c in taxations))
+        self.assertTrue(all(c == taxations[0] for c in taxations))
+        self.assertEqual(len({id(c) for c in taxations}), 3)
 
 
 class TestDuplicateChampionIdentity(unittest.TestCase):
