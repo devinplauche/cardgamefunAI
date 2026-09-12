@@ -12,7 +12,7 @@ import numpy as np
 from hero_engine import (
     HRPlayer, HRMarket, BoardChampion,
     play_card, buy_card, has_ally, load_hero_cards,
-    auto_expend_all,
+    auto_expend_all, _resolve_board_allies,
 )
 from hero_ai import (
     play_all_playable,
@@ -150,7 +150,9 @@ class HeroRealmsEnv(gym.Env):
         opp.cards_bought = 0
         for bc in opp.board:
             bc.exhausted = False
+            bc.ally_paid_this_turn = False
             bc.current_health = bc.card.health  # damage does not carry over between turns
+        _resolve_board_allies(opp, ag)
 
         self._opponent_profile["play"](opp, ag, self.market)
         self._opponent_profile["expend"](opp, ag)
@@ -204,7 +206,9 @@ class HeroRealmsEnv(gym.Env):
         p.cards_bought = 0
         for bc in p.board:
             bc.exhausted = False
+            bc.ally_paid_this_turn = False
             bc.current_health = bc.card.health  # damage does not carry over between turns
+        _resolve_board_allies(p, o)
 
         play_all_playable(p, o, self.market)
         auto_expend_all(p, o)

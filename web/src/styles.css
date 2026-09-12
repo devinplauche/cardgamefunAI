@@ -524,6 +524,21 @@ button:disabled {
   opacity: 0.86;
 }
 
+/* A champion offering several options - "expend: gold or combat", or one
+   sacrifice button per candidate victim - keeps a single row and stacks its
+   buttons on the right, rather than repeating the whole champion per option. */
+.champ-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.champ-actions .ghost-button.subtle {
+  white-space: nowrap;
+}
+
 .champ-name {
   font-weight: 700;
 }
@@ -712,12 +727,40 @@ button:disabled {
   color: var(--muted);
 }
 
+.subtle-note {
+  margin-top: 8px;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+}
+
+/* Renders above the board (see App.tsx), so it must read as the headline of
+   the page rather than a footnote. */
 .winner-banner {
-  margin-top: 6px;
-  padding: 18px;
-  font-size: 1rem;
-  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  font-size: 1.15rem;
+  font-weight: 800;
+  box-shadow: var(--shadow);
   background: rgba(255, 255, 255, 0.9);
+}
+
+.winner-banner.won {
+  border-color: rgba(47, 122, 85, 0.45);
+  background: rgba(47, 122, 85, 0.12);
+  color: var(--success);
+}
+
+.winner-banner.lost {
+  border-color: rgba(166, 74, 59, 0.45);
+  background: rgba(166, 74, 59, 0.12);
+  color: var(--danger);
+}
+
+.winner-banner .secondary-button {
+  flex-shrink: 0;
 }
 
 @media (max-width: 1220px) {

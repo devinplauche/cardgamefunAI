@@ -117,6 +117,8 @@ export interface LegalAction {
   stunTargetIndex?: number | null;
   sacrificeIndex?: number | null;
   sacrificeZone?: string | null;
+  /** On `attack_target`: 'player' for the face, 'champion' for a board target. */
+  target?: string;
   [key: string]: unknown;
 }
 

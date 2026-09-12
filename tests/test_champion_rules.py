@@ -72,6 +72,44 @@ class TestStunnedChampionsGoToDiscard(unittest.TestCase):
         self.assertEqual(defender.board, [])
         self.assertIn(GUARD, defender.discard)
 
+    def test_a_stun_is_written_to_the_victims_effect_log(self):
+        """A stun removes a champion with no combat assigned to it, so
+        web/session.py has no action to record and the board change was
+        completely silent - playing the UI by hand, a 7-health guard left play
+        with the log jumping straight to the attacker's face damage. Noted on
+        the victim, which is the player whose board changed and the name
+        `_drain_effect_log` prefixes the message with."""
+        fire_bomb = next(c for c in CARDS if c.name == "Fire Bomb")
+        attacker = HRPlayer("A")
+        defender = HRPlayer("D")
+        defender.board.append(BoardChampion(GUARD))
+        attacker.hand = [fire_bomb]
+
+        play_card(attacker, fire_bomb, HRMarket(CARDS), opponent=defender)
+
+        self.assertTrue(
+            any(GUARD.name in message and "stunned" in message.lower()
+                for message in defender.effect_log),
+            f"stun not narrated; defender.effect_log={defender.effect_log}",
+        )
+        self.assertEqual(attacker.effect_log, [],
+                         "the stun belongs to the player who lost the champion")
+
+    def test_stun_narration_is_off_for_simulation_clones(self):
+        """`log_effects` is False on clones because play_card runs ~25k times
+        per MCTS decision; the new note must respect it like every other."""
+        fire_bomb = next(c for c in CARDS if c.name == "Fire Bomb")
+        attacker = HRPlayer("A")
+        defender = HRPlayer("D")
+        defender.log_effects = False
+        defender.board.append(BoardChampion(GUARD))
+        attacker.hand = [fire_bomb]
+
+        play_card(attacker, fire_bomb, HRMarket(CARDS), opponent=defender)
+
+        self.assertEqual(defender.board, [], "the stun itself must still apply")
+        self.assertEqual(defender.effect_log, [])
+
     def test_stunned_champion_lands_in_its_owners_discard(self):
         player = HRPlayer("P")
         champion = BoardChampion(GUARD)
@@ -216,9 +254,32 @@ class TestRetroactivePerChampionBonus(unittest.TestCase):
     """
 
     @staticmethod
-    def _non_imperial_champion():
-        # Avoid accidentally triggering Close Ranks' own Imperial ally line.
-        return next(c for c in CARDS if c.card_type == "champion" and c.faction != "Imperial")
+    def _inert_champions(count=1):
+        """Champions that add nothing but their presence on the board.
+
+        Non-Imperial, so Close Ranks' own Imperial ally line stays quiet, and
+        carrying no ally payload of their own - two champions of one faction
+        are a faction pair, so an ally-bearing pick would fire its own ally the
+        moment the second one lands and swamp the +2 this class measures. The
+        original fixture picked Borg and Myros, both Guild, which is exactly
+        that collision.
+        """
+        picked = [c for c in CARDS
+                  if c.card_type == "champion"
+                  and c.faction != "Imperial"
+                  and not c.effects.get("ally_faction")]
+        out, seen = [], set()
+        for card in picked:
+            if card.name not in seen:
+                seen.add(card.name)
+                out.append(card)
+            if len(out) == count:
+                return out
+        raise AssertionError(f"need {count} inert champions, found {len(out)}")
+
+    @classmethod
+    def _non_imperial_champion(cls):
+        return cls._inert_champions(1)[0]
 
     def test_close_ranks_combat_grows_when_a_champion_is_played_after(self):
         from hero_engine import HRMarket, play_card
@@ -269,9 +330,7 @@ class TestRetroactivePerChampionBonus(unittest.TestCase):
         from hero_engine import HRMarket, play_card
 
         close_ranks = next(c for c in CARDS if c.name == "Close Ranks")
-        champ = self._non_imperial_champion()
-        champ2 = next(c for c in CARDS if c.card_type == "champion" and c.faction != "Imperial"
-                     and c.name != champ.name)
+        champ, champ2 = self._inert_champions(2)
         player = HRPlayer("P")
         player.hand = [close_ranks, champ, champ2]
         market = HRMarket(CARDS)

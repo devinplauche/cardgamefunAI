@@ -453,12 +453,13 @@ serves both combat and stun, so a stun offers only guards while any are alive.
 That looked like the Guard keyword leaking into a non-attack ability; confirmed
 against the printed cards that it is correct. Do not "fix" it.
 
-**Still open: ally payload on expend** (`hero_engine.py`, "Ally effects on
-expend"). `play_card` already pays a card's ally, immediately or retroactively
-via `pending_ally`, so a champion played with a faction partner in play may be
-paid there *and* again on every expend. Observed: Cult Priest paid +4 combat at
-expend with no payout at play. Same shape as the `or_choice` double-count.
-Needs the printed card before anything changes.
+**RESOLVED: ally payload on expend.** This was recorded as a suspected
+double-count. Measured, it was the opposite — the ally fired *only* on expend
+and never at play, so a champion you chose not to expend paid nothing at all.
+Fixed: a champion's ally now fires from `_resolve_board_allies` the moment a
+faction partner is in play, once per turn (`BoardChampion.ally_paid_this_turn`),
+independent of expending, and `expend_champion` no longer pays it. See the ally
+section below.
 
 **Testing any card on demand:** start the backend with `HR_DEBUG_SETUP=1` and
 `POST /api/sessions/{id}/debug-setup` with `hand`/`deck`/`discard`/`board`/
@@ -469,11 +470,52 @@ Match actions on `type` + `cardId`, never on `label`: stun cards label
 themselves `"Fire Bomb → Wolf Shaman"`, which made them invisible to the first
 sweep.
 
+## Ally abilities: two rules bugs, both fixed
+
+Found by playing the UI by hand, not by any benchmark — the same route as the
+phase ratchet. Both are rules-fidelity bugs affecting **both seats equally**,
+so neither was an asymmetric edge; both change the game every prior number was
+measured on.
+
+**1. Two copies of one card never counted as allies.** `load_hero_cards` shares
+a single immutable `HRCard` across all printed copies (`[card] * quantity`),
+and `has_ally` excluded "the card itself" with `is not` — which also excluded
+every other copy. Two Cult Priests in play, or a second Profit played in the
+same turn, read as *zero* faction partners. This hit **12 of the 36 ally
+cards**, and specifically the common ones printed in 2-3 copies (3x Bribe,
+Death Touch, Elven Gift, Profit, Recruit, Spark, Taxation; 2x Cult Priest,
+Elven Curse, Intimidation, Orc Grunt, The Rot). `has_ally` now counts physical
+cards and takes explicit `self_champion` / `self_played` arguments naming where
+the card itself sits.
+
+**2. A champion's ally fired only on expend.** It is a separate ability from
+the expend ability, but it was paid inside `expend_champion`: a champion you
+left ready paid nothing, and it never fired on the turn it was played unless
+you also expended it. Now fired by `_resolve_board_allies` whenever a card
+enters play, at most once per turn per champion.
+
+Measured on the position that exposed it (Cult Priest already in play, then a
+second Cult Priest and two Profits): **0 combat before, 16 after.**
+
+**The trigger is the condition holding, not a card being played.** Confirmed
+against the printed rules: a board that already holds two same-faction
+champions re-triggers every turn, including turns where you play nothing of
+that faction. `_resolve_board_allies` is therefore called at the start of the
+owner's turn *and* whenever a card enters play. Two Cult Priests left standing
+open every turn at **+8 combat** before a card is played, which is the single
+largest behaviour change here — champion faction-stacking is now worth far more
+than any measurement in this file or `BASELINE.md` was taken under.
+
+An intermediate version fired only when a card entered play. That was wrong and
+is gone; if you see a number produced between those two states, discard it.
+
 ## Stale information warning
 
-**There have now been two of these.** `BASELINE.md` predating the Ruby fix
+**There have now been three of these.** `BASELINE.md` predating the Ruby fix
 describes a different game; everything in *either* file predating `d046b9e`
-(the Main-phase fix) describes another one again.
+(the Main-phase fix) describes another one again; and everything predating the
+ally fixes above describes a third, in which 12 common cards' ally abilities
+silently did nothing and champions' allies were priced off expending.
 
 The MCTS-minus-heuristic delta has read +11pp (pre-Ruby), ~5pp (post-Ruby),
 then briefly +1.3pp from one unpaired block after the Main-phase fix — which
@@ -514,4 +556,4 @@ a champion is killable, so the snipe rate is 100% across all six champions where
 - `web/bot.py` — MCTS. `hero_mcts_bench.py` — the benchmark (bot seat = second player).
 - `hero_rl_env_v2/v3/v4.py` — RL envs (v4 has the repaired observation).
 - `hero_*_ab.py` — A/B harnesses; all use paired McNemar and take `--iterations`.
-- Tests: `python -m pytest -q` (355 passing, 69 subtests).
+- Tests: `python -m pytest -q` (389 passing, 81 subtests).

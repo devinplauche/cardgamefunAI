@@ -16,7 +16,7 @@ from hero_ai import (attack_strongest, attack_weakest, buy_aggressive,
                      buy_balanced, buy_champion, buy_economic, expend_all,
                      play_all_playable)
 from hero_archetypes import ARCHETYPES
-from hero_engine import HRMarket, HRPlayer, load_hero_cards
+from hero_engine import HRMarket, HRPlayer, load_hero_cards, _resolve_board_allies
 import random
 
 CARDS = load_hero_cards("data/hero_realms_cards.json")
@@ -36,7 +36,9 @@ def _take_turn(p, o, mkt, strat):
     p.pending_per_champion.clear()
     for bc in p.board:
         bc.exhausted = False
+        bc.ally_paid_this_turn = False
         bc.current_health = bc.card.health
+    _resolve_board_allies(p, o)
     strat["play"](p, o, mkt)
     strat["expend"](p, o)
     strat["buy"](p, o, mkt)

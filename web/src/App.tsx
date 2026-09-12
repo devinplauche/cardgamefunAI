@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   advancePhase,
   attackTarget,
@@ -48,14 +48,28 @@ function formatCardTags(card: CardView): string[] {
   return tags;
 }
 
+/**
+ * Card text in data/hero_realms_cards.json carries three kinds of markup:
+ * `{...}` around game terms, `<hr>` between the base ability and the ally
+ * ability, and inline emphasis such as `<i>or</i>`. Only the first two were
+ * handled, so Cult Priest read literally as
+ * "Expend: Gain 1 gold <i>or</i> Gain 1 combat" on its face. `<hr>` stays the
+ * section split; every other tag is dropped and the words around it kept.
+ */
 function formatCardRules(text: string): string[] {
   return text
     .split(/<hr\s*\/?>/i)
     .map((section) =>
       section
         .trim()
-        .split(/\n+/)
-        .map((line) => line.replace(/[{}]/g, '').trim())
+        .split(/(?:\n|<br\s*\/?>)+/i)
+        .map((line) =>
+          line
+            .replace(/<[^>]*>/g, '')
+            .replace(/[{}]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim(),
+        )
         .filter(Boolean)
         .join(' ')
     )
@@ -164,17 +178,31 @@ function CardTile({
   );
 }
 
+type ChampionAction = {
+  key: string;
+  label: string;
+  onAction: () => void;
+  disabled?: boolean;
+};
+
+/**
+ * One row per champion on the board, however many things it can do.
+ *
+ * This used to take a single label/handler, so a champion offering more than
+ * one option was rendered by repeating the whole row - an "Expend: gain 1 gold
+ * *or* 1 combat" card such as Cult Priest appeared as two champions, each with
+ * its own name, Ready badge and HP readout, which reads as 8 health of
+ * blockers where there are 4. Lys had the same problem once its per-victim
+ * sacrifice actions appeared. The identity of the champion is now rendered
+ * once and every action hangs off it.
+ */
 function ChampionRow({
   champion,
-  onAction,
-  actionLabel,
-  disabled,
+  actions,
   quiet = false,
 }: {
   champion: ChampionView;
-  onAction: () => void;
-  actionLabel: string;
-  disabled?: boolean;
+  actions: ChampionAction[];
   quiet?: boolean;
 }) {
   return (
@@ -189,9 +217,18 @@ function ChampionRow({
           HP {champion.currentHealth}/{champion.health}
         </div>
       </div>
-      <button className="ghost-button subtle" onClick={onAction} disabled={disabled}>
-        {actionLabel}
-      </button>
+      <div className="champ-actions">
+        {actions.map((action) => (
+          <button
+            key={action.key}
+            className="ghost-button subtle"
+            onClick={action.onAction}
+            disabled={action.disabled}
+          >
+            {action.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -404,12 +441,15 @@ function BoardColumn({
   role,
   attackingCombat,
   legalActions = [],
+  live,
 }: {
   title: string;
   player: PlayerView;
   phase: Phase;
   activePlayer: 'player' | 'bot';
   legalActions?: LegalAction[];
+  /** False while inspecting a history frame, which must never mutate the game. */
+  live: boolean;
   onPlay?: (cardId: string, stunTargetIndex?: number) => Promise<void>;
   onExpend?: (
     championId: string,
@@ -426,7 +466,7 @@ function BoardColumn({
   attackingCombat?: number;
 }) {
   const isHumanTurn = activePlayer === 'player';
-  const canInteract = isHumanTurn;
+  const canInteract = isHumanTurn && live;
   const combatAvailable = role === 'bot' ? attackingCombat ?? 0 : player.combat;
   const legalAttackTargets = role === 'bot'
     ? (() => {
@@ -436,6 +476,14 @@ function BoardColumn({
       })()
     : [];
   const legalAttackIds = new Set(legalAttackTargets.map((champion) => champion.instanceId));
+  // Whether the face is a legal target, taken from the server's own list
+  // rather than re-derived here. Guards must be destroyed before the player
+  // can be hit, and this button used to be gated on nothing but "do I have
+  // combat", so it happily offered a move the engine answered with a 400.
+  const faceAttackLegal = legalActions.some(
+    (action) => action.type === 'attack_target' && action.target === 'player',
+  );
+  const guardsBlocking = !faceAttackLegal && combatAvailable > 0;
   const chooseStunTarget = (card: CardView): number | null | undefined => {
     if (!card.effects.stun || stunTargets.length === 0) return undefined;
     const guards = stunTargets.filter((champion) => champion.guard > 0);
@@ -460,86 +508,91 @@ function BoardColumn({
         </div>
         <div className="stack">
           {player.board.length === 0 ? <div className="empty-note">No champions in play.</div> : null}
-          {player.board.flatMap((champion, index) => {
-            // Sacrifice-on-expend ("you may sacrifice a card... gain 2 more
-            // combat") is rendered straight from the server's legal actions
-            // rather than re-derived from the card here. Every affordance this
-            // panel builds from its own card model is one the engine can add
-            // without the UI ever showing it - which is how Lys came to eat a
-            // card from hand with no prompt and no log line.
-            const sacrificeOptions =
-              role === 'player' && canInteract && onExpend
-                ? legalActions.filter(
-                    (action) =>
-                      action.type === 'expend_champion' &&
-                      action.championId === champion.instanceId &&
-                      action.sacrificeIndex !== undefined &&
-                      action.sacrificeIndex !== null,
-                  )
-                : [];
-            const sacrificeRows = sacrificeOptions.map((action) => (
-              <ChampionRow
-                key={`${champion.instanceId}-sac-${action.sacrificeZone}-${action.sacrificeIndex}`}
-                champion={champion}
-                actionLabel={action.label}
-                disabled={champion.exhausted}
-                onAction={() =>
-                  void onExpend?.(
-                    champion.instanceId,
-                    undefined,
-                    undefined,
-                    action.sacrificeIndex ?? undefined,
-                    action.sacrificeZone ?? 'hand',
-                  )
+          {player.board.map((champion, index) => {
+            const actions: ChampionAction[] = [];
+
+            if (role === 'player') {
+              const canExpend = phaseAllows(phase, 'champion') && canInteract && !!onExpend;
+              // An "expend: X *or* Y" card gets one button per branch, on this
+              // same row - the rules make the branch the player's call.
+              const branches = orChoiceBranches(champion);
+              if (branches.length > 1 && canExpend) {
+                for (const kind of branches) {
+                  actions.push({
+                    key: `${champion.instanceId}-${kind}`,
+                    label: `Expend: ${OR_CHOICE_LABEL[kind] ?? kind}`,
+                    disabled: champion.exhausted,
+                    onAction: () => void onExpend?.(champion.instanceId, undefined, kind),
+                  });
                 }
+              } else {
+                actions.push({
+                  key: `${champion.instanceId}-expend`,
+                  label: canExpend ? 'Expend' : 'Locked',
+                  disabled: !canExpend || champion.exhausted,
+                  onAction: () => {
+                    // instanceId, not id: the engine matches board champions on
+                    // instance_id, and two copies of one card can share an id.
+                    const targetIndex = chooseStunTarget(champion);
+                    if (targetIndex !== null && onExpend) void onExpend(champion.instanceId, targetIndex);
+                  },
+                });
+              }
+
+              // Sacrifice-on-expend ("you may sacrifice a card... gain 2 more
+              // combat") is rendered straight from the server's legal actions
+              // rather than re-derived from the card here. Every affordance this
+              // panel builds from its own card model is one the engine can add
+              // without the UI ever showing it - which is how Lys came to eat a
+              // card from hand with no prompt and no log line.
+              if (canExpend) {
+                for (const action of legalActions) {
+                  if (
+                    action.type !== 'expend_champion' ||
+                    action.championId !== champion.instanceId ||
+                    action.sacrificeIndex === undefined ||
+                    action.sacrificeIndex === null
+                  ) {
+                    continue;
+                  }
+                  actions.push({
+                    key: `${champion.instanceId}-sac-${action.sacrificeZone}-${action.sacrificeIndex}`,
+                    label: action.label,
+                    disabled: champion.exhausted,
+                    onAction: () =>
+                      void onExpend?.(
+                        champion.instanceId,
+                        undefined,
+                        undefined,
+                        action.sacrificeIndex ?? undefined,
+                        action.sacrificeZone ?? 'hand',
+                      ),
+                  });
+                }
+              }
+            } else {
+              const canAttack =
+                phaseAllows(phase, 'combat') &&
+                canInteract &&
+                !!onAttack &&
+                combatAvailable > 0 &&
+                legalAttackIds.has(champion.instanceId);
+              actions.push({
+                key: `${champion.instanceId}-attack`,
+                label: canAttack ? 'Attack' : 'Locked',
+                disabled: !canAttack,
+                onAction: () => void onAttack?.('champion', champion.instanceId),
+              });
+            }
+
+            return (
+              <ChampionRow
+                key={`${champion.instanceId}-${index}`}
+                champion={champion}
+                actions={actions}
                 quiet={hiddenHand}
               />
-            ));
-
-            const branches = role === 'player' ? orChoiceBranches(champion) : [];
-            if (branches.length > 1 && phaseAllows(phase, 'champion') && canInteract && onExpend) {
-              return branches.map((kind) => (
-                <ChampionRow
-                  key={`${champion.instanceId}-${kind}`}
-                  champion={champion}
-                  actionLabel={`Expend: ${OR_CHOICE_LABEL[kind] ?? kind}`}
-                  disabled={champion.exhausted}
-                  onAction={() => void onExpend(champion.instanceId, undefined, kind)}
-                  quiet={hiddenHand}
-                />
-              )).concat(sacrificeRows);
-            }
-            return [(
-            <ChampionRow
-              key={`${champion.id}-${index}`}
-              champion={champion}
-              actionLabel={
-                role === 'player'
-                  ? phaseAllows(phase, 'champion') && canInteract && onExpend
-                    ? 'Expend'
-                    : 'Locked'
-                  : phaseAllows(phase, 'combat') && canInteract && onAttack && combatAvailable > 0 && legalAttackIds.has(champion.instanceId)
-                    ? 'Attack'
-                    : 'Locked'
-              }
-              disabled={
-                role === 'player'
-                  ? !phaseAllows(phase, 'champion') || !canInteract || champion.exhausted || !onExpend
-                  : !phaseAllows(phase, 'combat') || !canInteract || !onAttack || combatAvailable <= 0 || !legalAttackIds.has(champion.instanceId)
-              }
-              onAction={() => {
-                // instanceId, not id: the engine matches board champions on
-                // instance_id, and two copies of one card can share an id.
-                if (role === 'player') {
-                  const targetIndex = chooseStunTarget(champion);
-                  if (targetIndex !== null && onExpend) void onExpend(champion.instanceId, targetIndex);
-                } else if (onAttack) {
-                  void onAttack('champion', champion.instanceId);
-                }
-              }}
-              quiet={hiddenHand}
-            />
-            ), ...sacrificeRows];
+            );
           })}
         </div>
       </div>
@@ -609,10 +662,16 @@ function BoardColumn({
           <button
             className="primary-button"
             onClick={() => void onAttack('player')}
-            disabled={player.combat <= 0}
+            disabled={player.combat <= 0 || !faceAttackLegal}
+            title={guardsBlocking ? 'Guards must be destroyed before the opponent can be attacked.' : undefined}
           >
             Attack Face
           </button>
+          {guardsBlocking ? (
+            <div className="empty-note subtle-note">
+              A guard is blocking - attack it first.
+            </div>
+          ) : null}
         </div>
       ) : null}
     </Panel>
@@ -630,6 +689,7 @@ function App() {
     message: 'Ready to start a match.',
   });
   const [busy, setBusy] = useState(false);
+  const winnerBannerRef = useRef<HTMLElement | null>(null);
 
   const displayState = replayFrame?.state ?? session;
   const phase = displayState?.phase ?? 'play';
@@ -638,12 +698,33 @@ function App() {
   const isReplayMode = replayFrame !== null;
   const canMutate = !!session && !isReplayMode;
 
+  // The live game's outcome, which is what "the match is over" means even
+  // while a history frame from the middle of the game is on screen.
+  const winner = session?.winner ?? null;
+  const winnerCopy = winner
+    ? winner === 'draw'
+      ? 'The game ended in a draw.'
+      : `${winner === 'player' ? 'You' : 'Bot'} won the match.`
+    : null;
+
   const phaseLabel = useMemo(() => {
     if (!displayState) return 'Waiting for match';
+    if (winner && !isReplayMode) return 'Match over';
     return `${displayState.activePlayer === 'player' ? 'Your' : 'Bot'} turn - ${displayState.phase}`;
-  }, [displayState]);
+  }, [displayState, winner, isReplayMode]);
 
-  async function refreshFrom<T>(work: Promise<T>) {
+  /**
+   * Runs a mutation and folds the result into state, returning null if the
+   * server refused it.
+   *
+   * It used to re-throw after setting the error status. Every caller is
+   * invoked as `void handler(...)` with no `.catch`, so a refusal the UI had
+   * already handled and displayed - "Guards must be attacked before the
+   * player", say - still surfaced as an `Uncaught (in promise)` and tripped
+   * any error reporter or break-on-exception watching the page. The status
+   * chip is the report; there is no second consumer to re-throw for.
+   */
+  async function refreshFrom<T>(work: Promise<T>): Promise<GameState | null> {
     setBusy(true);
     try {
       const next = await work;
@@ -653,7 +734,7 @@ function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       setStatus({ tone: 'error', message });
-      throw error;
+      return null;
     } finally {
       setBusy(false);
     }
@@ -664,7 +745,7 @@ function App() {
     const seed = Number.isFinite(parsedSeed) ? parsedSeed : 7;
     setReplayFrame(null);
     const next = await refreshFrom(createSession({ seed, algorithm, budgetMs }));
-    setStatus({ tone: 'good', message: `Match started with seed ${seed}.` });
+    if (next) setStatus({ tone: 'good', message: `Match started with seed ${seed}.` });
     return next;
   }
 
@@ -692,7 +773,10 @@ function App() {
   }
 
   async function handleSacrifice(cardId: string) {
-    if (!session) return;
+    // isReplayMode, like every other mutating handler: without it, clicking
+    // Sacrifice while inspecting a history frame banished a card in the *live*
+    // game, since the button is enabled off the replayed frame's active player.
+    if (!session || isReplayMode) return;
     await refreshFrom(sacrificePlayed(session.sessionId, cardId));
   }
 
@@ -709,7 +793,7 @@ function App() {
   async function handleBotTurn() {
     if (!session || isReplayMode) return;
     const next = await refreshFrom(runBotTurn(session.sessionId, algorithm, budgetMs));
-    setStatus({ tone: 'good', message: `Bot turn complete in ${next.botInsight?.elapsedMs ?? 0} ms.` });
+    if (next) setStatus({ tone: 'good', message: `Bot turn complete in ${next.botInsight?.elapsedMs ?? 0} ms.` });
   }
 
   async function handleRefresh() {
@@ -717,6 +801,18 @@ function App() {
     setReplayFrame(null);
     await refreshFrom(loadSession(session.sessionId));
   }
+
+  // The banner sits at the top of the board, but a player reading the move
+  // history is scrolled well past it when the killing blow lands - which is
+  // the whole failure this replaced. Bring it into view once, on the
+  // transition into a finished game.
+  useEffect(() => {
+    if (!winner) return;
+    // Instant, not smooth: `behavior: 'smooth'` is silently ignored in some
+    // engines (verified here - the page did not move), and the result needs to
+    // land on screen, not animate there.
+    winnerBannerRef.current?.scrollIntoView({ block: 'center' });
+  }, [winner]);
 
   useEffect(() => {
     if (session || busy) return;
@@ -770,11 +866,34 @@ function App() {
       </header>
 
       <main className="layout">
+        {/*
+          Above the board, not below it. This banner used to render as the last
+          child of <main>, ~2800px below the fold on a 720px viewport with no
+          scroll-into-view - so the game simply stopped responding and the only
+          on-screen sign it had ended was a small "Winner" stat three panels
+          down. It is the single most important thing on the page once it
+          exists.
+        */}
+        {winnerCopy ? (
+          <section ref={winnerBannerRef} className={`winner-banner ${winner === 'player' ? 'won' : 'lost'}`}>
+            <strong>{winnerCopy}</strong>
+            <button className="secondary-button" onClick={() => void startNewMatch()} disabled={busy}>
+              New Game
+            </button>
+          </section>
+        ) : null}
+
         <section className="hero-strip">
           <div className={`status-chip ${status.tone}`}>{isReplayMode ? 'Replay mode' : status.message}</div>
           <div className="phase-block">
             <span className="phase-label">{phaseLabel}</span>
-            <span className="phase-copy">{displayState ? PHASE_COPY[phase] : 'Create a match to begin.'}</span>
+            <span className="phase-copy">
+              {!displayState
+                ? 'Create a match to begin.'
+                : winner && !isReplayMode
+                  ? 'The match is over - start a new game to keep playing.'
+                  : PHASE_COPY[phase]}
+            </span>
           </div>
           <div className="insight">
             <span>Bot insight</span>
@@ -802,6 +921,7 @@ function App() {
                 stunTargets={displayState.bot.board}
                 legalActions={displayState.legalActions}
                 role="player"
+                live={canMutate && !winner}
               />
             ) : null}
           </div>
@@ -812,7 +932,7 @@ function App() {
                 <MarketColumn
                   market={displayState.market}
                   phase={phase}
-                  canInteract={canMutate && activePlayer === 'player'}
+                  canInteract={canMutate && activePlayer === 'player' && !winner}
                   playerGold={displayState.player.gold}
                   onBuy={handleBuy}
                 />
@@ -847,6 +967,8 @@ function App() {
                 stunTargets={[]}
                 role="bot"
                 attackingCombat={displayState.player.combat}
+                legalActions={displayState.legalActions}
+                live={canMutate && !winner}
               />
             ) : null}
 
@@ -866,12 +988,6 @@ function App() {
             ) : null}
           </div>
         </div>
-
-        {displayState?.winner ? (
-          <section className="winner-banner">
-            {displayState.winner === 'draw' ? 'The game ended in a draw.' : `${displayState.winner === 'player' ? 'You' : 'Bot'} won the match.`}
-          </section>
-        ) : null}
       </main>
     </div>
   );

@@ -24,6 +24,7 @@ from hero_engine import (
     HRPlayer,
     RUBY,
     SHORTSWORD,
+    _resolve_board_allies,
     apply_choice,
     auto_expend_all,
     buy_card,
@@ -164,6 +165,10 @@ def _copy_champion(champion: BoardChampion) -> BoardChampion:
     clone.card = champion.card  # HRCard is never mutated; share the reference
     clone.current_health = champion.current_health
     clone.exhausted = champion.exhausted
+    # Not copying this let every simulated branch re-trigger an ally the real
+    # game had already paid, which is exactly the kind of divergence MCTS
+    # cannot see and would silently mis-value.
+    clone.ally_paid_this_turn = champion.ally_paid_this_turn
     clone.guard = champion.guard
     # Preserved, not regenerated: this clone represents the same logical
     # champion instance across a simulation, and the counter that assigns
@@ -553,8 +558,17 @@ class GameSession:
         player.next_buy_to_top_action_only = False
         for champion in player.board:
             champion.exhausted = False
+            # Ally abilities are once per turn, so a champion that already has
+            # a faction partner can trigger again next turn.
+            champion.ally_paid_this_turn = False
             # Damage to champions does not carry over between turns.
             champion.current_health = champion.card.health
+        # Must come after the next_buy_* resets above, since Rasmus' ally sets
+        # one: a board already holding two same-faction champions meets the
+        # ally condition before this turn's first card is played.
+        opponent = self.bot if player is self.player else self.player
+        _resolve_board_allies(player, opponent)
+        self._drain_effect_log(player, opponent)
 
     def _current(self) -> HRPlayer:
         return self.player if self.active_player == "player" else self.bot

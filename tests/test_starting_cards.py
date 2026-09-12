@@ -56,6 +56,17 @@ class TestStartingCardFaces(unittest.TestCase):
         self.assertEqual(FIRE_GEM.get("gold", 0), 2)
         self.assertEqual(FIRE_GEM.get("sacrifice_combat", 0), 3)
 
+    def test_fire_gem_carries_its_printed_text(self):
+        """The UI renders a card's rules from `text`, and this was the one card
+        in hand with none - so a Fire Gem showed only its "+2 Gold" chip and a
+        player could not learn from the card that it could be sacrificed.
+
+        The other four hardcoded cards are vanilla (their whole face is the one
+        effect the chip already shows); Fire Gem is not."""
+        self.assertIn("sacrifice", FIRE_GEM.text.lower())
+        self.assertIn("3 combat", FIRE_GEM.text.lower())
+        self.assertIn("2 gold", FIRE_GEM.text.lower())
+
 
 class TestStartingDeckEconomy(unittest.TestCase):
     """The aggregate the bug actually distorted."""

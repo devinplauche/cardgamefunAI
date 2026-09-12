@@ -296,5 +296,201 @@ class TestEnablerValue(unittest.TestCase):
         )
 
 
+class TestDuplicateCopiesArePartners(unittest.TestCase):
+    """A second *copy* of a card is another card of that faction.
+
+    `load_hero_cards` shares one immutable HRCard across all printed copies
+    (`[card] * quantity`), and `has_ally` used to exclude "the card itself"
+    with `is not`, which also excluded every other copy. Found by playing the
+    UI: a second Cult Priest joined the board next to the first and its
+    "Necros Ally: gain 4 combat" did nothing. 12 of the 36 ally cards are
+    printed in 2-3 copies, so this was the common case, not an edge one.
+    """
+
+    def test_two_copies_of_one_champion_are_allies(self):
+        cult = _card("Cult Priest")  # 2x Necros champion, ally_combat 4
+        player = HRPlayer("P")
+        player.board.append(BoardChampion(cult))
+        self.assertTrue(has_ally(cult, player))
+
+    def test_two_copies_of_one_action_are_allies(self):
+        profit = _card("Profit")  # 3x Guild action, ally_combat 4
+        player = HRPlayer("P")
+        player.played_this_turn.append(profit)
+        self.assertTrue(has_ally(profit, player))
+
+    def test_a_card_is_still_not_its_own_ally(self):
+        """The self-exclusion the `is not` guard was there for must survive."""
+        profit = _card("Profit")
+        player = HRPlayer("P")
+        player.played_this_turn.append(profit)
+        self.assertFalse(has_ally(profit, player, self_played=True),
+                         "only this very card is in play - no partner")
+
+        cult = _card("Cult Priest")
+        player = HRPlayer("P")
+        champion = BoardChampion(cult)
+        player.board.append(champion)
+        self.assertFalse(has_ally(cult, player, self_champion=champion),
+                         "only this very champion is in play - no partner")
+
+    def test_every_multi_copy_ally_card_pairs_with_itself(self):
+        multi = {}
+        for card in CARDS:
+            if card.effects.get("ally_faction"):
+                multi.setdefault(card.name, []).append(card)
+        pairs = [cards[0] for cards in multi.values() if len(cards) > 1]
+        self.assertTrue(pairs, "expected multi-copy ally cards in the set")
+        for card in pairs:
+            with self.subTest(card=card.name):
+                player = HRPlayer("P")
+                if card.card_type == "champion":
+                    player.board.append(BoardChampion(card))
+                else:
+                    player.played_this_turn.append(card)
+                self.assertTrue(has_ally(card, player))
+
+
+class TestChampionAllyTiming(unittest.TestCase):
+    """A champion's ally is a separate ability from its expend ability.
+
+    It used to be paid inside expend_champion, which meant it fired only if you
+    expended the champion, never on the turn it was played unless you also
+    expended it, and again on every later expend. The rule is state-based and
+    once per turn (RULES_COMPLIANCE.md: "Trigger when 2+ cards of same faction
+    in play", "Each ally ability triggers only ONCE per turn").
+    """
+
+    def setUp(self):
+        self.opponent = HRPlayer("O")
+        self.opponent.hp = 50
+
+    def _player(self, board=(), hand=()):
+        player = HRPlayer("P")
+        player.hp = 50
+        player.board = [BoardChampion(c) for c in board]
+        player.hand = list(hand)
+        return player
+
+    def test_ally_fires_when_the_champion_is_played(self):
+        cult, lys = _card("Cult Priest"), _card("Lys, the Unseen")  # both Necros
+        player = self._player(board=[lys], hand=[cult])
+        play_card(player, cult, _fresh_market(),
+                  ally_bonus=has_ally(cult, player), opponent=self.opponent)
+        self.assertEqual(player.combat, 4, "Necros ally should pay on play")
+
+    def test_ally_does_not_require_expending(self):
+        cult, lys = _card("Cult Priest"), _card("Lys, the Unseen")
+        player = self._player(board=[lys], hand=[cult])
+        play_card(player, cult, _fresh_market(),
+                  ally_bonus=has_ally(cult, player), opponent=self.opponent)
+        self.assertEqual(player.combat, 4)
+        self.assertFalse(player.board[-1].exhausted,
+                         "no expend was needed to collect the ally")
+
+    def test_ally_is_not_re_paid_on_expend(self):
+        from hero_engine import expend_champion
+
+        cult, lys = _card("Cult Priest"), _card("Lys, the Unseen")
+        player = self._player(board=[lys], hand=[cult])
+        play_card(player, cult, _fresh_market(),
+                  ally_bonus=has_ally(cult, player), opponent=self.opponent)
+        champion = player.board[-1]
+        expend_champion(player, champion, self.opponent, choice="combat")
+        self.assertEqual(player.combat, 5,
+                         "expend adds only its own +1 combat, not the ally again")
+
+    def test_ally_fires_at_most_once_per_turn(self):
+        cult = _card("Cult Priest")
+        player = self._player(board=[cult, cult])
+        from hero_engine import _resolve_board_allies
+
+        _resolve_board_allies(player, self.opponent)
+        first = player.combat
+        _resolve_board_allies(player, self.opponent)
+        self.assertEqual(player.combat, first, "must not re-trigger within a turn")
+
+    def test_an_action_played_later_completes_the_pair_for_a_board_champion(self):
+        myros, profit = _card("Myros, Guild Mage"), _card("Profit")  # both Guild
+        player = self._player(board=[myros], hand=[profit])
+        play_card(player, profit, _fresh_market(),
+                  ally_bonus=has_ally(profit, player), opponent=self.opponent)
+        self.assertEqual(player.combat, 8,
+                         "Myros ally 4 (partner arrived) + Profit ally 4")
+
+    def test_ally_re_fires_at_the_start_of_a_later_turn(self):
+        """The trigger is the condition holding, not a card being played.
+
+        Two Necros champions left on the board satisfy the ally condition
+        before the next turn's first card, so the payout repeats every turn -
+        confirmed against the printed rules. The engine briefly fired only when
+        a card entered play, which dropped it on any turn you played nothing of
+        that faction.
+        """
+        from web.session import create_session
+
+        cult, lys = _card("Cult Priest"), _card("Lys, the Unseen")
+        session = create_session(seed=3)
+        session.player.board = [BoardChampion(lys)]
+        session.player.hand = [cult]
+        session.active_player = "player"
+        session.play_card(cult.id)
+        self.assertEqual(session.player.combat, 4, "ally on the turn it is played")
+
+        # A new turn: combat resets to 0, then the standing pair pays again
+        # without a single card being played.
+        session._start_turn(session.player)
+        self.assertEqual(session.player.combat, 4,
+                         "the standing Necros pair re-triggers on the new turn")
+
+    def test_ally_still_fires_only_once_within_that_later_turn(self):
+        from web.session import create_session
+
+        cult, lys = _card("Cult Priest"), _card("Lys, the Unseen")
+        session = create_session(seed=3)
+        session.player.board = [BoardChampion(lys), BoardChampion(cult)]
+        session.active_player = "player"
+        session._start_turn(session.player)
+        opened_with = session.player.combat
+        self.assertEqual(opened_with, 4)
+
+        # Playing another Necros card must not pay the same ally a second time.
+        death_touch = _card("Death Touch")  # Necros action
+        session.player.hand = [death_touch]
+        session.play_card(death_touch.id)
+        self.assertEqual(
+            session.player.combat,
+            opened_with + death_touch.get("combat", 0) + death_touch.get("ally_combat", 0),
+            "Cult Priest's ally already paid this turn and must not repeat",
+        )
+
+    def test_kraka_ally_survives_the_move_off_expend(self):
+        """ally_per_champion_health lived only in expend_champion's ally block;
+        removing that block would have silently dropped Kraka's ally."""
+        kraka, arkus = _card("Kraka, High Priest"), _card("Arkus, Imperial Dragon")
+        player = self._player(board=[kraka], hand=[arkus])
+        player.hp = 20
+        play_card(player, arkus, _fresh_market(),
+                  ally_bonus=has_ally(arkus, player), opponent=self.opponent)
+        # Kraka: +2 health per champion (2 in play) = 4; Arkus: +6 health.
+        self.assertEqual(player.hp, 30)
+
+    def test_a_clone_does_not_re_trigger_an_ally_the_real_game_paid(self):
+        from web.session import create_session
+
+        cult, lys = _card("Cult Priest"), _card("Lys, the Unseen")
+        session = create_session(seed=3)
+        session.player.board = [BoardChampion(lys)]
+        session.player.hand = [cult]
+        session.active_player = "player"
+        session.play_card(cult.id)
+
+        clone = session.clone()
+        self.assertTrue(all(c.ally_paid_this_turn for c in clone.player.board
+                            if c.card is cult),
+                        "ally_paid_this_turn must survive cloning or MCTS "
+                        "re-collects allies the real game already paid")
+
+
 if __name__ == "__main__":
     unittest.main()
