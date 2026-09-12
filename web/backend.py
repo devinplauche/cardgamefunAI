@@ -204,9 +204,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    port = int(os.environ.get("HR_BACKEND_PORT", "8000"))
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"Hero Realms backend listening on http://127.0.0.1:{port}")
+    # PORT is what Render/Railway/Fly inject; HR_BACKEND_PORT stays the local
+    # override so .claude/launch.json and the dev proxy are unaffected.
+    port = int(os.environ.get("HR_BACKEND_PORT") or os.environ.get("PORT") or "8000")
+    # Bind every interface when hosted - 127.0.0.1 is unreachable from outside
+    # the container - but keep loopback as the default so running it on a dev
+    # machine does not silently expose a game server on the LAN.
+    host = os.environ.get("HR_BACKEND_HOST", "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1")
+    server = ThreadingHTTPServer((host, port), Handler)
+    print(f"Hero Realms backend listening on http://{host}:{port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
