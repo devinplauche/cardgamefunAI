@@ -329,8 +329,16 @@ class TestRetroactivePerChampionBonus(unittest.TestCase):
     def test_top_up_only_applies_once_per_new_champion(self):
         from hero_engine import HRMarket, play_card
 
+        def _ally_free_champion(exclude=()):
+            # Champions without ally abilities, so the per-champion top-up is
+            # measured without ally triggers interfering (champion allies now
+            # correctly fire on entering play when a partner is present).
+            return next(c for c in CARDS if c.card_type == "champion"
+                        and "ally_faction" not in c.effects and c.name not in exclude)
+
         close_ranks = next(c for c in CARDS if c.name == "Close Ranks")
-        champ, champ2 = self._inert_champions(2)
+        champ = _ally_free_champion()
+        champ2 = _ally_free_champion(exclude=(champ.name,))
         player = HRPlayer("P")
         player.hand = [close_ranks, champ, champ2]
         market = HRMarket(CARDS)

@@ -1,6 +1,7 @@
 """Hero Realms game engine — deck-building card game simulation."""
 
 from __future__ import annotations
+import copy
 import itertools
 import json
 import random
@@ -36,9 +37,14 @@ def load_hero_cards(path: str) -> list[HRCard]:
     toward treating every card as equally rare, when the physical game does
     not: a 3x common should show up roughly 3x as often as a 1x rare.
 
-    Duplicate copies share the same HRCard instance (matching the existing
-    convention for GOLD/SHORTSWORD/DAGGER/RUBY, which are already `[GOLD] *
-    7` etc.), safe because HRCard is never mutated anywhere in the engine.
+    Each physical copy gets its own HRCard instance. Earlier revisions shared
+    one instance across all copies of a card (matching the old `[GOLD] * 7`
+    convention for starting cards), which broke ally abilities for duplicate
+    cards: has_ally() excludes a card from counting as its own ally via object
+    identity, so two copies of the same card (one shared object) never counted
+    as allies of each other. Distinct instances make every identity check in
+    the engine physically correct; HRCard is never mutated, so copies stay
+    interchangeable by value.
     """
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -48,8 +54,7 @@ def load_hero_cards(path: str) -> list[HRCard]:
         c.pop("location", None)
         c.pop("subtypes", None)
         quantity = c.pop("quantity", 1)
-        card = HRCard(**c)
-        cards.extend([card] * quantity)
+        cards.extend(HRCard(**copy.deepcopy(c)) for _ in range(quantity))
     return cards
 
 
@@ -128,10 +133,6 @@ class BoardChampion:
         self.card = card
         self.current_health = card.health
         self.exhausted = False  # true if expended this turn
-        # A champion's ally ability is separate from its expend ability and
-        # fires at most once per turn (see _resolve_board_allies). Reset
-        # alongside `exhausted` at the start of the owner's turn.
-        self.ally_paid_this_turn = False
         self.guard = card.guard
         # Some cards are printed in 2-3 copies (see load_hero_cards), so two
         # champions on the same board can share card.id. web/session.py used
@@ -175,6 +176,12 @@ class HRPlayer:
         # are retroactive, so these are re-checked whenever a faction card
         # enters play.
         self.pending_ally: list[HRCard] = []
+        # Card ids whose ally ability already fired this turn. Ally abilities
+        # are usable "as soon as you have another card of that faction in
+        # play" but each only once per turn - so a champion played with a
+        # partner fires its ally on entering play, and a later expend (or a
+        # prepare + re-expend) must not fire it again. Cleared at turn start.
+        self.ally_used_this_turn: set[int] = set()
         # Played actions with a per_champion_* bonus, topped up when a
         # champion enters play later the same turn - see
         # _apply_per_champion_bonus / _resolve_pending_per_champion.
@@ -210,6 +217,10 @@ class HRPlayer:
         self.next_buy_to_hand: bool = False  # Deception ally: next bought card goes to hand
         self.next_buy_to_top: bool = False   # Rasmus ally: next bought card goes on top of deck
         self.next_buy_to_top_action_only: bool = False  # Bribe ally: next ACTION on top
+        # Back-reference to the game market, set by HRGame and the RL envs.
+        # Lets sacrifice routing send Fire Gems back to the Fire Gem pile
+        # (official rule) without threading the market through every call.
+        self.market: Optional["HRMarket"] = None
 
     def note(self, message: str) -> None:
         """Record an engine-resolved effect, if this player is being watched.
@@ -222,7 +233,10 @@ class HRPlayer:
             self.effect_log.append(message)
 
     def setup_starting_deck(self):
-        self.deck = [GOLD] * 7 + [SHORTSWORD] + [DAGGER] + [RUBY]
+        # Distinct instances per physical card (see load_hero_cards).
+        self.deck = ([copy.deepcopy(GOLD) for _ in range(7)]
+                     + [copy.deepcopy(SHORTSWORD), copy.deepcopy(DAGGER),
+                        copy.deepcopy(RUBY)])
         self._rng.shuffle(self.deck)
 
     def draw(self, n: int = 1):
@@ -588,6 +602,23 @@ def choice_candidates(player: HRPlayer, choice: dict) -> list[HRCard]:
     return list(player.discard)
 
 
+def _sacrifice_to_pile(player: HRPlayer, card: HRCard, market: Optional[HRMarket] = None):
+    """Route a sacrificed card to its rules-correct destination.
+
+    The engine's `banish` zone IS the official Sacrifice Pile (removed from
+    the game), so ordinary sacrificed cards go there. Fire Gems are the one
+    exception in the official rules: a Fire Gem that would enter the
+    Sacrifice Pile instead returns face-up to the Fire Gem pile. `market`
+    defaults to the player's back-reference; with no market available the
+    card is banished as before.
+    """
+    m = market if market is not None else player.market
+    if card.id == "fire_gem" and m is not None:
+        m.fire_gems_remaining += 1
+    else:
+        player.banish.append(card)
+
+
 def apply_choice(player: HRPlayer, choice: dict, index: int) -> Optional[HRCard]:
     """Resolve one unit of a pending choice by selecting candidate `index`."""
     candidates = choice_candidates(player, choice)
@@ -600,7 +631,7 @@ def apply_choice(player: HRPlayer, choice: dict, index: int) -> Optional[HRCard]
     else:
         source = player.hand if choice["zone"] == "hand" else player.discard
         source.remove(card)
-        player.banish.append(card)
+        _sacrifice_to_pile(player, card)
     choice["count"] -= 1
     if choice["count"] <= 0 and choice in player.pending_choices:
         player.pending_choices.remove(choice)
@@ -674,7 +705,26 @@ class HRMarket:
         if self.fire_gems_remaining <= 0:
             return None
         self.fire_gems_remaining -= 1
-        return FIRE_GEM
+        return copy.deepcopy(FIRE_GEM)
+
+
+def run_main_phase(player: HRPlayer, opponent: HRPlayer, market: HRMarket,
+                   ai_play, ai_expend=None, max_rounds: int = 10):
+    """Run the Main Phase: play cards and expend champions until quiescent.
+
+    Official rules let Main Phase actions happen in any order, repeatedly -
+    so a card drawn by a champion expend ability (e.g. Arkus) must be
+    playable the same turn. Each champion can only expend once per turn, so
+    the loop always terminates; max_rounds is a safety cap.
+    """
+    for _ in range(max_rounds):
+        ai_play(player, opponent, market)
+        if ai_expend is None:
+            break
+        hand_before = len(player.hand)
+        ai_expend(player, opponent)
+        if len(player.hand) <= hand_before:
+            break
 
 
 class HRGame:
@@ -684,6 +734,9 @@ class HRGame:
         self.p1 = player1
         self.p2 = player2
         self.market = HRMarket(market_cards)
+        # Back-reference so sacrifice routing can return Fire Gems to the pile.
+        player1.market = self.market
+        player2.market = self.market
         self.turn_number = 0
         self.active_player: HRPlayer = self.p1
         self.opponent: HRPlayer = self.p2
@@ -718,16 +771,19 @@ class HRGame:
         player.actions_played = 0
         player.discard_played_cards()
         player.pending_ally.clear()
+        player.ally_used_this_turn.clear()
         player.pending_per_champion.clear()
         player.pending_stun_targets.clear()
         player.pending_prepares = 0
+        # Deferred choices reference cards/zones from last turn; like the web
+        # session's _start_turn, drop them at the boundary rather than leaking.
+        player.pending_choices.clear()
         player.cards_bought = 0
         player.next_buy_to_hand = False
         player.next_buy_to_top = False
         player.next_buy_to_top_action_only = False
         for bc in player.board:
             bc.exhausted = False
-            bc.ally_paid_this_turn = False  # ally abilities are once *per turn*
             bc.current_health = bc.card.health  # damage does not carry over between turns
         # A board that already holds two same-faction champions satisfies the
         # ally condition before a single card is played this turn.
@@ -736,11 +792,9 @@ class HRGame:
         phase = "play"
         while phase:
             if phase == "play":
-                ai_play(player, opponent, self.market)
-                phase = "champion"
-            elif phase == "champion":
-                if ai_expend:
-                    ai_expend(player, opponent)
+                # Main Phase: play and expend interleave (official rules allow
+                # actions in any order), so cards drawn by expends get played.
+                run_main_phase(player, opponent, self.market, ai_play, ai_expend)
                 phase = "buy"
             elif phase == "buy":
                 ai_buy(player, opponent, self.market)
@@ -808,23 +862,33 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
               stun_target: Optional[BoardChampion] = None):
     """Play a card from hand, applying all its effects.
 
-    Champions: effects are from their {Expend} ability, NOT on-play.
-    They just go to the board; expend them later via expend_champion().
+    Champions: base effects are from their {Expend} ability, NOT on-play -
+    they just go to the board; expend them later via expend_champion().
+    Ally abilities are different: per the official rules they are usable "as
+    soon as you have another card of that faction in play", so a champion's
+    ally fires (or queues for a later partner) on entering play, independent
+    of expending.
     """
     if card not in player.hand:
         return False
     player.hand.remove(card)
 
-    # Champions go to board without applying effects (those are expend-only)
+    # Champions go to board without applying base effects (those are
+    # expend-only) - but their ally ability fires on entering play if a
+    # faction partner is already in play, else queues retroactively, exactly
+    # like an action's ally.
     if card.card_type == "champion":
         bc = BoardChampion(card)
         player.board.append(bc)
+        if has_ally(card, player):
+            _apply_ally_effects(player, card, opponent, stun_target=stun_target)
+        elif _has_ally_payload(card):
+            player.pending_ally.append(card)
+            if card.get("stun", False):
+                player.pending_stun_targets.append((card, stun_target))
         # A champion entering play can complete a faction pair for an action
         # played earlier this turn, and tops up any queued per-champion bonus.
         _resolve_pending_allies(player, opponent)
-        # ...and it completes the pair for every champion already on the board,
-        # including its own ally if a partner was already out.
-        _resolve_board_allies(player, opponent)
         _resolve_pending_per_champion(player)
         return True
 
@@ -834,9 +898,6 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
     player.played_this_turn.append(card)
     if card.faction:
         _resolve_pending_allies(player, opponent)
-        # An action entering play can also complete the pair for a champion
-        # that has been sitting on the board since an earlier turn.
-        _resolve_board_allies(player, opponent)
 
     # ---- Base effects (non-champion cards only) ----
     player.gold += card.get("gold", 0)
@@ -844,17 +905,15 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
 
     heal = card.get("health", 0)
     if heal:
-        player.hp = min(player.hp + heal, HRGame.STARTING_HP)
+        player.hp += heal
 
     draws = card.get("draw", 0)
-    if draws:
-        player.draw(draws)
+    actual_draws = len(player.draw(draws)) if draws else 0
 
     draw_up_to = card.get("draw_up_to", 0)
-    actual_draw_up_to = 0
-    if draw_up_to:
-        actual_draw_up_to = draw_up_to  # AI draws max
-        player.draw(actual_draw_up_to)
+    # AI draws max ("up to"); count what actually arrived - a short deck
+    # (even after reshuffling discards) can yield fewer cards.
+    actual_draw_up_to = len(player.draw(draw_up_to)) if draw_up_to else 0
 
     # ---- Per-champion effects for actions ----
     # Priced at the current champion count and queued: per the table
@@ -875,18 +934,27 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
         if card.get("stun", False):
             player.pending_stun_targets.append((card, stun_target))
 
-    total_base_draws = draws + actual_draw_up_to + (card.get("ally_draw", 0) if ally_bonus else 0)
+    # actual_base_draws: what this card's own draw effects really produced.
+    # "Discard that many cards" (Rampage) and "if you do, discard a card"
+    # (Elven Gift) only discard cards that actually arrived - the rulebook's
+    # partial-effects rule ("just do as much as you can") covers short decks.
+    actual_base_draws = actual_draws + actual_draw_up_to
+    total_base_draws = draws + draw_up_to + (card.get("ally_draw", 0) if ally_bonus else 0)
 
     # ---- Self-discard (draw then discard) ----
     discard_n = card.get("discard", 0)
     if discard_n > 0:
         if total_base_draws == 0:
-            player.draw(discard_n)
-        _discard_from_hand(player, discard_n, opponent)
+            # "You may draw a card. If you do, discard a card." (Elven Gift):
+            # no discard when the draw produced nothing.
+            drawn_now = player.draw(discard_n)
+            _discard_from_hand(player, len(drawn_now), opponent)
+        else:
+            _discard_from_hand(player, min(discard_n, actual_base_draws), opponent)
 
     # ---- Filter-draw (discard_drawn: draw X then discard X) ----
-    if card.get("discard_drawn", False) and total_base_draws > 0:
-        _discard_from_hand(player, total_base_draws, opponent)
+    if card.get("discard_drawn", False) and actual_base_draws > 0:
+        _discard_from_hand(player, actual_base_draws, opponent)
 
     # ---- Self-sacrifice (sacrifice THIS card for bonus effects) ----
     # Optional per the printed text ("{Sacrifice}:" / "you may sacrifice") -
@@ -939,7 +1007,7 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
                 idx = _find_worst_idx(source, player, opponent)
                 if _worth_sacrificing(source[idx], player, opponent):
                     victim = source.pop(idx)
-                    player.banish.append(victim)
+                    _sacrifice_to_pile(player, victim, market)
                     player.note(
                         f"Sacrificed {victim.name} from {zone}")
 
@@ -963,7 +1031,7 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
     # non-champion remains in played_this_turn until the Discard Phase. ----
     if sacrificed:
         player.played_this_turn.remove(card)
-        player.banish.append(card)
+        _sacrifice_to_pile(player, card, market)
 
     return True
 
@@ -1033,11 +1101,12 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
         if "health" in or_choice:
             val = card.get("health", 0)
             if val:
-                # A flat hp>=45 threshold didn't reflect how much of the heal
-                # actually lands once close to the cap. Score the real amount
-                # gained instead, so a heal already mostly wasted competes on
-                # its true value rather than an arbitrary cutoff.
-                actual_heal = min(val, HRGame.STARTING_HP - player.hp)
+                # A flat hp>=45 threshold didn't reflect the heal's value.
+                # There is no health cap (physical health cards are
+                # double-sided to track above 50), so the full amount
+                # always lands - score it directly rather than using an
+                # arbitrary cutoff.
+                actual_heal = val
                 score = actual_heal + (3 if player.hp <= 25 else 0)
                 options.append(("health", val, score))
         if "per_champion_health" in or_choice:
@@ -1045,7 +1114,7 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
             if val:
                 count = len([c for c in player.board if c.alive])
                 total = val * count
-                actual_heal = min(total, HRGame.STARTING_HP - player.hp)
+                actual_heal = total
                 score = actual_heal + (3 if player.hp <= 25 else 0)
                 # Labelled by its own or_choice key, not "health". `choice` is
                 # matched against these labels, and the UI sends the key it was
@@ -1068,14 +1137,14 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
             elif best[0] == "gold":
                 player.gold += best[1]
             elif best[0] in ("health", "per_champion_health"):
-                player.hp = min(player.hp + best[1], HRGame.STARTING_HP)
+                player.hp += best[1]
     else:
         # ---- Base expend effects ----
         player.combat += card.get("combat", 0)
         player.gold += card.get("gold", 0)
         heal = card.get("health", 0)
         if heal:
-            player.hp = min(player.hp + heal, HRGame.STARTING_HP)
+            player.hp += heal
 
     # ---- Per-other-X effects on expend ----
     other_champions = len([c for c in player.board if c.alive and c != bc])
@@ -1096,17 +1165,18 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
         other_wild += sum(1 for c in player.played_this_turn if c.faction == "Wild")
         player.combat += per_other_wild_combat * other_wild
     draws = card.get("draw", 0)
-    if draws:
-        player.draw(draws)
+    actual_draws = len(player.draw(draws)) if draws else 0
 
+    # "You may draw a card. If you do, discard a card." (Grak, Storm Giant):
+    # the discard only happens for cards actually drawn.
     discard_n = card.get("discard", 0)
     if discard_n > 0:
         if draws == 0:
-            player.draw(discard_n)
-        _discard_from_hand(player, discard_n, opponent)
+            actual_draws = len(player.draw(discard_n))
+        _discard_from_hand(player, min(discard_n, actual_draws), opponent)
 
-    if card.get("discard_drawn", False) and draws > 0:
-        _discard_from_hand(player, draws, opponent)
+    if card.get("discard_drawn", False) and actual_draws > 0:
+        _discard_from_hand(player, actual_draws, opponent)
 
     # ---- Sacrifice a card from hand/discard for bonus combat (Krythos, Lys) ----
     # "You may sacrifice a card... If you do, gain an additional combat" - the
@@ -1134,7 +1204,7 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
             if _worth_sacrificing(source[idx], player, opponent):
                 zone = "hand" if source is player.hand else "discard"
                 victim = source.pop(idx)
-                player.banish.append(victim)
+                _sacrifice_to_pile(player, victim)
                 player.combat += sac_for_combat
                 player.note(
                     f"Sacrificed {victim.name} from {zone} "
@@ -1165,7 +1235,7 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
                 break
             zone = "hand" if source is player.hand else "discard"
             victim = source.pop(idx)
-            player.banish.append(victim)
+            _sacrifice_to_pile(player, victim)
             player.note(f"Sacrificed {victim.name} from {zone}")
 
     # ---- Stun on expend (Rake, Master Assassin) ----
@@ -1195,11 +1265,41 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
             player.deck.insert(0, best)
             player.note(f"Reanimated {best.name} to top of deck")
 
-    # ---- No ally payout here ----
-    # A champion's ally ability is not part of its expend ability; paying it
-    # here made the ally conditional on expending and skipped it entirely on
-    # the turn the champion was played. It now fires from _resolve_board_allies
-    # the moment a faction partner is in play, once per turn.
+    # ---- Ally effects on expend ----
+    # Once per turn: if the ally already fired on entering play (or via an
+    # earlier expend before a prepare), the expend still works - only the
+    # ally does not fire again.
+    if has_ally(card, player) and id(card) not in player.ally_used_this_turn:
+        player.combat += card.get("ally_combat", 0)
+        player.gold += card.get("ally_gold", 0)
+        ally_heal = card.get("ally_health", 0)
+        if ally_heal:
+            player.hp += ally_heal
+        ally_per_champion_health = card.get("ally_per_champion_health", 0)
+        if ally_per_champion_health:
+            champion_count = len([c for c in player.board if c.alive])
+            heal = ally_per_champion_health * champion_count
+            if heal:
+                player.hp += heal
+        ally_draw = card.get("ally_draw", 0)
+        if ally_draw:
+            # Grak ally: "Draw a card, then discard a card." - discard only
+            # what the draw actually produced.
+            actual_ally_draw = len(player.draw(ally_draw))
+            if card.get("ally_discard_drawn", False):
+                _discard_from_hand(player, actual_ally_draw, opponent)
+
+        # Champion ally top_of_deck (Rasmus: next bought card goes on top; Bribe: action only)
+        if card.get("top_of_deck", False):
+            player.next_buy_to_top = True
+            if card.get("top_of_deck_action_only", False):
+                player.next_buy_to_top_action_only = True
+
+        # Champion ally opponent discard (Broelyn)
+        ally_od = card.get("ally_opponent_discard", 0)
+        if ally_od > 0 and opponent:
+            _force_opponent_discard(opponent, ally_od, player)
+        player.ally_used_this_turn.add(id(card))
 
     if player.pending_prepares > 0 and bc.alive and bc.exhausted:
         bc.exhausted = False
@@ -1294,21 +1394,20 @@ def _apply_ally_effects(player: HRPlayer, card: HRCard, opponent: Optional[HRPla
     player.gold += card.get("ally_gold", 0)
     ally_heal = card.get("ally_health", 0)
     if ally_heal:
-        player.hp = min(player.hp + ally_heal, HRGame.STARTING_HP)
+        player.hp += ally_heal
+    ally_pch = card.get("ally_per_champion_health", 0)
+    if ally_pch:
+        # Kraka, High Priest: heal per champion in play (self included - the
+        # card is already on the board / in played_this_turn when this runs).
+        heal = ally_pch * len([c for c in player.board if c.alive])
+        if heal:
+            player.hp += heal
     ally_draw = card.get("ally_draw", 0)
     if ally_draw:
-        player.draw(ally_draw)
+        # Discard only what the draw actually produced (partial-effects rule).
+        actual_ally_draw = len(player.draw(ally_draw))
         if card.get("ally_discard_drawn", False):
-            _discard_from_hand(player, ally_draw, opponent)
-    # Kraka, High Priest - the only card with this key, and it used to be
-    # reachable only through expend_champion's own ally block. That block is
-    # gone (see _resolve_board_allies), so it has to be handled here or Kraka's
-    # ally is silently lost.
-    ally_per_champion_health = card.get("ally_per_champion_health", 0)
-    if ally_per_champion_health:
-        heal = ally_per_champion_health * len([c for c in player.board if c.alive])
-        if heal:
-            player.hp = min(player.hp + heal, HRGame.STARTING_HP)
+            _discard_from_hand(player, actual_ally_draw, opponent)
 
     if card.get("prepare", False):
         prepared = False
@@ -1331,6 +1430,9 @@ def _apply_ally_effects(player: HRPlayer, card: HRCard, opponent: Optional[HRPla
         _force_opponent_discard(opponent, ally_od, player)
     if card.get("stun", False) and opponent:
         _stun_champion(opponent, stun_target)
+    # Once per turn: a later expend (or prepare + re-expend) of this card must
+    # not fire the ally again this turn.
+    player.ally_used_this_turn.add(id(card))
 
     if player.log_effects:
         gained = []
@@ -1371,7 +1473,7 @@ def _grant_resource(player: HRPlayer, resource: str, amount: int):
     if resource == "combat":
         player.combat += amount
     elif resource == "health":
-        player.hp = min(player.hp + amount, HRGame.STARTING_HP)
+        player.hp += amount
 
 
 def _resolve_pending_per_champion(player: HRPlayer):
@@ -1401,9 +1503,7 @@ def _resolve_pending_allies(player: HRPlayer, opponent: Optional[HRPlayer] = Non
         return
     still_pending = []
     for pending in player.pending_ally:
-        # self_played: `pending` is itself one of the played_this_turn entries,
-        # so it must not be counted as its own partner.
-        if has_ally(pending, player, self_played=True):
+        if has_ally(pending, player):
             stun_target = next((target for card, target in player.pending_stun_targets
                                 if card is pending), None)
             _apply_ally_effects(player, pending, opponent, stun_target=stun_target)
@@ -1416,46 +1516,36 @@ def _resolve_pending_allies(player: HRPlayer, opponent: Optional[HRPlayer] = Non
 
 
 def _resolve_board_allies(player: HRPlayer, opponent: Optional[HRPlayer] = None) -> None:
-    """Fire the ally abilities of champions already in play.
+    """Fire or queue standing champions' ally abilities at the start of a turn.
 
-    A champion's ally payload is not part of its expend ability. Cult Priest
-    reads "{Expend}: gain 1 gold *or* 1 combat" and, separately, "{Necros
-    Ally}: gain 4 combat" - two abilities on one card. The engine used to pay
-    the ally inside expend_champion, which got both halves of the timing wrong:
-    the ally required expending the champion (a Cult Priest you left ready, or
-    one already exhausted, paid nothing), and it never fired on the turn the
-    champion was played unless you also expended it.
+    A champion's ally is usable "as soon as you have another card of that
+    faction in play", and that condition can already hold before the turn's
+    first card is played: two same-faction champions left standing re-trigger
+    every turn, including turns where you play nothing of that faction.
+    Confirmed against the printed rules. play_card only fires the ally of a
+    card *entering* play, so without this a standing pair paid nothing on any
+    such turn.
 
-    The rule is state-based and once per turn - RULES_COMPLIANCE.md: "Ally
-    Abilities: Trigger when 2+ cards of same faction in play" and "Each ally
-    ability triggers only ONCE per turn" - so it fires as soon as a faction
-    partner is in play, independent of expending, and `ally_paid_this_turn`
-    stops it repeating within the turn.
-
-    Called at the start of the owner's turn *and* whenever a card enters play.
-    The trigger is the condition holding, not a card being played: a board that
-    already holds two same-faction champions satisfies it before the turn's
-    first card, and re-satisfies it every turn, which is why the reset above
-    sits next to `exhausted`. Confirmed against the printed rules; the engine
-    briefly fired only on a card entering play, which silently dropped the
-    payout on any turn you played nothing of that faction.
+    Champions whose partner is already out fire now; the rest queue into
+    pending_ally and fire retroactively the moment a partner arrives - the same
+    path an action's ally takes. ally_used_this_turn keeps it to once a turn.
     """
-    for bc in player.board:
-        if not bc.alive or bc.ally_paid_this_turn:
+    for bc in list(player.board):
+        card = bc.card
+        if not bc.alive or not _has_ally_payload(card):
             continue
-        if not _has_ally_payload(bc.card):
+        if id(card) in player.ally_used_this_turn:
             continue
-        if has_ally(bc.card, player, self_champion=bc):
-            bc.ally_paid_this_turn = True
-            _apply_ally_effects(player, bc.card, opponent)
+        if has_ally(card, player):
+            _apply_ally_effects(player, card, opponent)
+        elif not any(pending is card for pending in player.pending_ally):
+            player.pending_ally.append(card)
 
 
-def has_ally(card: HRCard, player: HRPlayer,
-             self_champion: Optional[BoardChampion] = None,
-             self_played: bool = False) -> bool:
+def has_ally(card: HRCard, player: HRPlayer) -> bool:
     """Check if player gets ally bonus for this card.
 
-    The card itself does NOT count — you need ANOTHER card of the same faction
+    The card itself does NOT count â€” you need ANOTHER card of the same faction
     in play (per official rules: 'as soon as you have another card of that faction').
 
     "In play" covers champions on the board *and* Actions/Items played earlier
@@ -1463,30 +1553,12 @@ def has_ally(card: HRCard, player: HRPlayer,
     board meant 21 of the 36 ally cards - every non-champion one - could never
     trigger each other, so faction-stacking with actions (playing two Guild
     actions in a turn) silently did nothing.
-
-    **"Another card" means another *physical* card, not another HRCard object.**
-    `load_hero_cards` deliberately shares one immutable HRCard across all
-    printed copies of a card (`[card] * quantity`), so excluding "the card
-    itself" with `is not` also excluded every other copy of it. Two Cult
-    Priests in play, or a second Profit played in the same turn, therefore
-    counted as zero partners and the ally silently did nothing - for 12 of the
-    36 ally cards, and specifically the common ones printed in 2-3 copies
-    (3x Bribe/Death Touch/Elven Gift/Profit/Recruit/Spark/Taxation, 2x Cult
-    Priest/Elven Curse/Intimidation/Orc Grunt/The Rot).
-
-    Self-exclusion is therefore named explicitly by the caller instead:
-    `self_champion` is the board slot this card occupies (board slots are
-    distinct BoardChampion objects even when they share an HRCard), and
-    `self_played` says this card is one of the `played_this_turn` entries.
-    Both default off, which is the pre-play case - the card is still in hand
-    and cannot be its own partner.
     """
     ally_faction = card.effects.get("ally_faction", "")
     if not ally_faction:
         return False
-    partners = sum(1 for bc in player.board
-                   if bc.card.faction == ally_faction and bc is not self_champion)
-    partners += sum(1 for c in player.played_this_turn if c.faction == ally_faction)
-    if self_played:
-        partners -= 1
-    return partners > 0
+    if any(bc.card.faction == ally_faction and bc.card is not card
+           for bc in player.board):
+        return True
+    return any(c.faction == ally_faction and c is not card
+               for c in player.played_this_turn)

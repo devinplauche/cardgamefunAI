@@ -26,6 +26,19 @@ def _card(name):
     return next(c for c in CARDS if c.name == name)
 
 
+def _copies(name, count=2):
+    """Distinct physical instances of one printed card.
+
+    load_hero_cards gives every printed copy its own HRCard, which is what
+    makes two copies count as allies of each other. A test that reuses a single
+    instance is asserting the opposite thing, so the copies are taken apart
+    here rather than by calling _card twice.
+    """
+    found = [card for card in CARDS if card.name == name]
+    assert len(found) >= count, f"{name} has only {len(found)} printed copies"
+    return found[:count]
+
+
 def _fresh_market():
     return HRMarket(CARDS)
 
@@ -299,39 +312,40 @@ class TestEnablerValue(unittest.TestCase):
 class TestDuplicateCopiesArePartners(unittest.TestCase):
     """A second *copy* of a card is another card of that faction.
 
-    `load_hero_cards` shares one immutable HRCard across all printed copies
-    (`[card] * quantity`), and `has_ally` used to exclude "the card itself"
-    with `is not`, which also excluded every other copy. Found by playing the
-    UI: a second Cult Priest joined the board next to the first and its
-    "Necros Ally: gain 4 combat" did nothing. 12 of the 36 ally cards are
-    printed in 2-3 copies, so this was the common case, not an edge one.
+    load_hero_cards used to share one immutable HRCard across all printed
+    copies (`[card] * quantity`), and has_ally excludes "the card itself" by
+    object identity - which therefore excluded every other copy too. Found by
+    playing the UI: a second Cult Priest joined the board next to the first and
+    its "Necros Ally: gain 4 combat" did nothing. 12 of the 36 ally cards are
+    printed in 2-3 copies, so this was the common case, not an edge one. Each
+    physical copy now gets its own instance, which makes the identity check
+    physically correct.
     """
 
     def test_two_copies_of_one_champion_are_allies(self):
-        cult = _card("Cult Priest")  # 2x Necros champion, ally_combat 4
+        first, second = _copies("Cult Priest")  # 2x Necros champion
         player = HRPlayer("P")
-        player.board.append(BoardChampion(cult))
-        self.assertTrue(has_ally(cult, player))
+        player.board.append(BoardChampion(first))
+        self.assertTrue(has_ally(second, player))
 
     def test_two_copies_of_one_action_are_allies(self):
-        profit = _card("Profit")  # 3x Guild action, ally_combat 4
+        first, second = _copies("Profit")  # 3x Guild action
         player = HRPlayer("P")
-        player.played_this_turn.append(profit)
-        self.assertTrue(has_ally(profit, player))
+        player.played_this_turn.append(first)
+        self.assertTrue(has_ally(second, player))
 
     def test_a_card_is_still_not_its_own_ally(self):
-        """The self-exclusion the `is not` guard was there for must survive."""
+        """The self-exclusion the identity check is there for must survive."""
         profit = _card("Profit")
         player = HRPlayer("P")
         player.played_this_turn.append(profit)
-        self.assertFalse(has_ally(profit, player, self_played=True),
+        self.assertFalse(has_ally(profit, player),
                          "only this very card is in play - no partner")
 
         cult = _card("Cult Priest")
         player = HRPlayer("P")
-        champion = BoardChampion(cult)
-        player.board.append(champion)
-        self.assertFalse(has_ally(cult, player, self_champion=champion),
+        player.board.append(BoardChampion(cult))
+        self.assertFalse(has_ally(cult, player),
                          "only this very champion is in play - no partner")
 
     def test_every_multi_copy_ally_card_pairs_with_itself(self):
@@ -339,16 +353,17 @@ class TestDuplicateCopiesArePartners(unittest.TestCase):
         for card in CARDS:
             if card.effects.get("ally_faction"):
                 multi.setdefault(card.name, []).append(card)
-        pairs = [cards[0] for cards in multi.values() if len(cards) > 1]
-        self.assertTrue(pairs, "expected multi-copy ally cards in the set")
-        for card in pairs:
-            with self.subTest(card=card.name):
+        names = [name for name, cards in multi.items() if len(cards) > 1]
+        self.assertTrue(names, "expected multi-copy ally cards in the set")
+        for name in names:
+            with self.subTest(card=name):
+                first, second = _copies(name)
                 player = HRPlayer("P")
-                if card.card_type == "champion":
-                    player.board.append(BoardChampion(card))
+                if first.card_type == "champion":
+                    player.board.append(BoardChampion(first))
                 else:
-                    player.played_this_turn.append(card)
-                self.assertTrue(has_ally(card, player))
+                    player.played_this_turn.append(first)
+                self.assertTrue(has_ally(second, player))
 
 
 class TestChampionAllyTiming(unittest.TestCase):
@@ -411,8 +426,13 @@ class TestChampionAllyTiming(unittest.TestCase):
         self.assertEqual(player.combat, first, "must not re-trigger within a turn")
 
     def test_an_action_played_later_completes_the_pair_for_a_board_champion(self):
+        from hero_engine import _resolve_board_allies
+
         myros, profit = _card("Myros, Guild Mage"), _card("Profit")  # both Guild
         player = self._player(board=[myros], hand=[profit])
+        # Myros has been standing since an earlier turn: turn start queues its
+        # ally, and the Guild action arriving completes the pair for both.
+        _resolve_board_allies(player, self.opponent)
         play_card(player, profit, _fresh_market(),
                   ally_bonus=has_ally(profit, player), opponent=self.opponent)
         self.assertEqual(player.combat, 8,
@@ -467,9 +487,12 @@ class TestChampionAllyTiming(unittest.TestCase):
     def test_kraka_ally_survives_the_move_off_expend(self):
         """ally_per_champion_health lived only in expend_champion's ally block;
         removing that block would have silently dropped Kraka's ally."""
+        from hero_engine import _resolve_board_allies
+
         kraka, arkus = _card("Kraka, High Priest"), _card("Arkus, Imperial Dragon")
         player = self._player(board=[kraka], hand=[arkus])
         player.hp = 20
+        _resolve_board_allies(player, self.opponent)   # Kraka queues, no partner yet
         play_card(player, arkus, _fresh_market(),
                   ally_bonus=has_ally(arkus, player), opponent=self.opponent)
         # Kraka: +2 health per champion (2 in play) = 4; Arkus: +6 health.
@@ -486,10 +509,12 @@ class TestChampionAllyTiming(unittest.TestCase):
         session.play_card(cult.id)
 
         clone = session.clone()
-        self.assertTrue(all(c.ally_paid_this_turn for c in clone.player.board
-                            if c.card is cult),
-                        "ally_paid_this_turn must survive cloning or MCTS "
-                        "re-collects allies the real game already paid")
+        self.assertTrue(
+            any(id(c.card) in clone.player.ally_used_this_turn
+                for c in clone.player.board),
+            "ally_used_this_turn must survive cloning or MCTS re-collects "
+            "allies the real game already paid",
+        )
 
 
 if __name__ == "__main__":

@@ -165,10 +165,6 @@ def _copy_champion(champion: BoardChampion) -> BoardChampion:
     clone.card = champion.card  # HRCard is never mutated; share the reference
     clone.current_health = champion.current_health
     clone.exhausted = champion.exhausted
-    # Not copying this let every simulated branch re-trigger an ally the real
-    # game had already paid, which is exactly the kind of divergence MCTS
-    # cannot see and would silently mis-value.
-    clone.ally_paid_this_turn = champion.ally_paid_this_turn
     clone.guard = champion.guard
     # Preserved, not regenerated: this clone represents the same logical
     # champion instance across a simulation, and the counter that assigns
@@ -195,6 +191,10 @@ def _copy_player(player: HRPlayer, rng: random.Random) -> HRPlayer:
     clone.board = [_copy_champion(champion) for champion in player.board]
     clone.played_this_turn = player.played_this_turn[:]
     clone.pending_ally = player.pending_ally[:]
+    # Ally usage is tracked by id(HRCard), and clones share the HRCard
+    # references (never mutated), so the ids stay valid in the simulation.
+    # Copied, not shared: a simulated firing must not leak into the real game.
+    clone.ally_used_this_turn = player.ally_used_this_turn.copy()
     clone.pending_per_champion = [dict(e) for e in player.pending_per_champion]
     clone.pending_stun_targets = player.pending_stun_targets[:]
     clone.pending_prepares = player.pending_prepares
@@ -213,6 +213,11 @@ def _copy_player(player: HRPlayer, rng: random.Random) -> HRPlayer:
     clone.next_buy_to_hand = player.next_buy_to_hand
     clone.next_buy_to_top = player.next_buy_to_top
     clone.next_buy_to_top_action_only = player.next_buy_to_top_action_only
+    # Back-reference added with _sacrifice_to_pile (Fire Gems return to the
+    # pile rather than the sacrifice zone). _copy_player builds players with
+    # __new__, so a new HRPlayer attribute has to be copied here explicitly or
+    # every simulated sacrifice raises.
+    clone.market = getattr(player, "market", None)
     return clone
 
 
@@ -548,6 +553,7 @@ class GameSession:
         player.actions_played = 0
         player.discard_played_cards()
         player.pending_ally.clear()
+        player.ally_used_this_turn.clear()
         player.pending_per_champion.clear()
         player.pending_stun_targets.clear()
         player.pending_prepares = 0
@@ -558,9 +564,6 @@ class GameSession:
         player.next_buy_to_top_action_only = False
         for champion in player.board:
             champion.exhausted = False
-            # Ally abilities are once per turn, so a champion that already has
-            # a faction partner can trigger again next turn.
-            champion.ally_paid_this_turn = False
             # Damage to champions does not carry over between turns.
             champion.current_health = champion.card.health
         # Must come after the next_buy_* resets above, since Rasmus' ally sets

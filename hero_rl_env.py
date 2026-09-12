@@ -12,7 +12,7 @@ import numpy as np
 from hero_engine import (
     HRPlayer, HRMarket, BoardChampion,
     play_card, buy_card, has_ally, load_hero_cards,
-    auto_expend_all, _resolve_board_allies,
+    auto_expend_all, run_main_phase, _resolve_board_allies,
 )
 from hero_ai import (
     play_all_playable,
@@ -145,17 +145,27 @@ class HeroRealmsEnv(gym.Env):
         opp.gold = 0
         opp.combat = 0
         opp.actions_played = 0
-        opp.played_this_turn.clear()
+        opp.discard_played_cards()
+        opp.pending_ally.clear()
+        opp.ally_used_this_turn.clear()
         opp.pending_per_champion.clear()
+        opp.pending_stun_targets.clear()
+        opp.pending_prepares = 0
+        opp.pending_choices.clear()
+        opp.next_buy_to_hand = False
+        opp.next_buy_to_top = False
+        opp.next_buy_to_top_action_only = False
         opp.cards_bought = 0
         for bc in opp.board:
             bc.exhausted = False
-            bc.ally_paid_this_turn = False
             bc.current_health = bc.card.health  # damage does not carry over between turns
         _resolve_board_allies(opp, ag)
 
-        self._opponent_profile["play"](opp, ag, self.market)
-        self._opponent_profile["expend"](opp, ag)
+        # Main Phase interleaves play/expend (official rules allow any order),
+        # so cards drawn by expends are played the same turn.
+        run_main_phase(opp, ag, self.market,
+                       self._opponent_profile["play"],
+                       self._opponent_profile["expend"])
         self._opponent_profile["buy"](opp, ag, self.market)
 
         if opp.combat > 0:
@@ -170,6 +180,7 @@ class HeroRealmsEnv(gym.Env):
             self.winner = opp.name
 
     def _cleanup(self, player):
+        player.discard_played_cards()
         for c in player.hand:
             player.discard.append(c)
         player.hand.clear()
@@ -201,17 +212,23 @@ class HeroRealmsEnv(gym.Env):
         p.gold = 0
         p.combat = 0
         p.actions_played = 0
-        p.played_this_turn.clear()
+        p.discard_played_cards()
+        p.pending_ally.clear()
+        p.ally_used_this_turn.clear()
         p.pending_per_champion.clear()
+        p.pending_stun_targets.clear()
+        p.pending_prepares = 0
+        p.pending_choices.clear()
+        p.next_buy_to_hand = False
+        p.next_buy_to_top = False
+        p.next_buy_to_top_action_only = False
         p.cards_bought = 0
         for bc in p.board:
             bc.exhausted = False
-            bc.ally_paid_this_turn = False
             bc.current_health = bc.card.health  # damage does not carry over between turns
         _resolve_board_allies(p, o)
 
-        play_all_playable(p, o, self.market)
-        auto_expend_all(p, o)
+        run_main_phase(p, o, self.market, play_all_playable, auto_expend_all)
 
     def set_opponent_profile(self, profile: str):
         profile_key = profile.lower()
@@ -239,8 +256,12 @@ class HeroRealmsEnv(gym.Env):
         self.agent.draw(3)
         self.opponent.draw(5)
 
-        play_all_playable(self.agent, self.opponent, self.market)
-        auto_expend_all(self.agent, self.opponent)
+        # Back-reference so sacrifice routing can return Fire Gems to the pile.
+        self.agent.market = self.market
+        self.opponent.market = self.market
+
+        run_main_phase(self.agent, self.opponent, self.market,
+                       play_all_playable, auto_expend_all)
 
         return self._get_obs(), {}
 

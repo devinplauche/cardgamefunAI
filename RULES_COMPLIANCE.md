@@ -18,7 +18,7 @@
 ### Resources
 - ✅ Gold: Used to buy cards from market
 - ✅ Combat: Used to attack opponents and their champions
-- ✅ Health: Gain/lose immediately, capped at 50 HP
+- ✅ Health: Gain/lose immediately, no maximum (health cards are double-sided to track above 50 HP)
 
 ### Turn Structure
 - ✅ Main Phase: Play cards, use abilities, buy cards, attack
@@ -122,7 +122,11 @@
 ### Not Implemented (Advanced Rules)
 
 - **Fire Gems**: Special cards in market, free from Fire Gem pile
-  - Status: Not critical for basic gameplay
+  - Status: Implemented (`HRMarket.buy_fire_gem`, 16-card side pile, cost 2,
+    sacrifice for 3 combat). Sacrificed Fire Gems return to the Fire Gem pile
+    per the official rule ("instead put it faceup in the Fire Gem pile") —
+    routed via `_sacrifice_to_pile`, which sends every other sacrificed card
+    to the banish zone (the engine's Sacrifice Pile).
   
 - **Advanced Ability Interactions**: 
   - Triggered abilities (e.g., "when a card is sacrificed")

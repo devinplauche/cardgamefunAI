@@ -1041,10 +1041,7 @@ def _champion_threat_value(champion, owner) -> float:
     """
     card = champion.card
     value = float(card.cost) + _champ_recurring_value(champion)
-    # self_champion: this champion is already on `owner.board`, so its own slot
-    # must not be counted as its faction partner. The old identity-based
-    # exclusion did this implicitly; it is explicit now (see has_ally).
-    if has_ally(card, owner, self_champion=champion):
+    if has_ally(card, owner):
         value += (
             card.get("ally_combat", 0)
             + card.get("ally_gold", 0)

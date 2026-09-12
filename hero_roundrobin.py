@@ -36,7 +36,6 @@ def _take_turn(p, o, mkt, strat):
     p.pending_per_champion.clear()
     for bc in p.board:
         bc.exhausted = False
-        bc.ally_paid_this_turn = False
         bc.current_health = bc.card.health
     _resolve_board_allies(p, o)
     strat["play"](p, o, mkt)

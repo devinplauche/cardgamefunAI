@@ -86,10 +86,73 @@ class TestSetupRules(unittest.TestCase):
         self.assertEqual(ids, sorted(["gold"] * 7 + ["shortsword", "dagger", "ruby"]))
 
     def test_starting_health_is_fifty(self):
+        # A fresh player starts at 50 HP. The v1 env auto-plays the opening
+        # hand on reset, and the starting Ruby heals 1 - with no health cap
+        # (physical health cards are double-sided to track above 50) the
+        # agent legitimately opens above 50 when the Ruby is in hand.
+        # (The deck shuffle uses the global RNG, so seed it for determinism.)
+        import random
+        from hero_engine import HRPlayer
+        self.assertEqual(HRPlayer("P").hp, 50)
+        random.seed(5)
         env = HeroRealmsEnv(CARDS)
-        env.reset(seed=5)
-        self.assertEqual(env.agent.hp, 50)
+        env.reset()
+        ruby_played = any(c.id == "ruby" for c in env.agent.played_this_turn)
+        self.assertEqual(env.agent.hp, 51 if ruby_played else 50)
         self.assertEqual(env.opponent.hp, 50)
+
+
+class TestTurnBoundaryCleanup(unittest.TestCase):
+    """The v1 env's turn boundary used to delete played cards (clearing
+    played_this_turn without discarding) and leak pending_ally state into
+    later turns. Every owned card must survive the turn; all pending lists
+    must reset."""
+
+    def _owned_total(self, player):
+        zones = [player.deck, player.hand, player.discard,
+                 player.played_this_turn]
+        total = sum(len(z) for z in zones)
+        total += sum(1 for bc in player.board if bc.alive)
+        return total
+
+    def test_played_cards_are_discarded_not_deleted(self):
+        env = HeroRealmsEnv(CARDS)
+        env.reset(seed=7)
+        p = env.agent
+        self.assertEqual(self._owned_total(p), 10)
+        # reset() already ran the agent's opening main phase; note how many
+        # cards are already in played_this_turn before adding more.
+        already_played = len(p.played_this_turn)
+        # Force three Golds into hand and play them, then run the turn.
+        golds = [c for c in p.deck if c.name == "Gold"][:3]
+        self.assertEqual(len(golds), 3)
+        for c in golds:
+            p.deck.remove(c)
+        p.hand.extend(golds)
+        from hero_engine import play_card
+        for card in list(golds):
+            play_card(p, card, env.market)
+        self.assertEqual(len(p.played_this_turn), already_played + 3)
+        env._resolve_turn()
+        self.assertEqual(self._owned_total(p), 10,
+                         "played cards must reach the discard pile, not vanish")
+
+    def test_pending_ally_cleared_at_turn_boundary(self):
+        env = HeroRealmsEnv(CARDS)
+        env.reset(seed=11)
+        o = env.opponent
+        taxation = next(c for c in CARDS if c.name == "Taxation")
+        o.hand = [taxation]
+        from hero_ai import play_all_playable
+        play_all_playable(o, env.agent, env.market)
+        self.assertEqual(len(o.pending_ally), 1)
+        env._resolve_turn()
+        self.assertEqual(o.pending_ally, [],
+                         "pending_ally must not leak into the next turn")
+        self.assertEqual(o.pending_stun_targets, [])
+        self.assertEqual(o.pending_prepares, 0)
+        self.assertFalse(o.next_buy_to_hand)
+        self.assertFalse(o.next_buy_to_top)
 
 
 if __name__ == "__main__":

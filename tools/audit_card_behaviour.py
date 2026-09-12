@@ -265,7 +265,21 @@ def delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
     return {k: after[k] - before[k] for k in MEASURED if after[k] != before[k]}
 
 
-def partner_for(faction: str) -> HRCard | None:
+def second_copy(card: HRCard) -> HRCard | None:
+    """Another printed copy of the same card, as a distinct HRCard instance.
+
+    load_hero_cards gives every physical copy its own instance, which is what
+    makes two copies count as allies of each other. Reusing the same instance
+    as its own partner asserts the opposite and would pass while the engine
+    could not pair duplicates at all.
+    """
+    for other in CARDS:
+        if other.name == card.name and other is not card:
+            return other
+    return None
+
+
+def partner_for(faction: str, exclude: HRCard | None = None) -> HRCard | None:
     """A card of `faction` to sit in play as an ally partner.
 
     Placed straight into `played_this_turn` rather than played, so it applies
@@ -273,11 +287,12 @@ def partner_for(faction: str) -> HRCard | None:
     champion count that "for each champion" clauses scale on. Both matter:
     the partner must be inert or it contaminates the very delta being measured.
     """
+    banned = exclude.name if exclude is not None else None
     for card in CARDS:
-        if card.faction == faction and card.card_type != "champion":
+        if card.faction == faction and card.card_type != "champion" and card.name != banned:
             return card
     for card in CARDS:
-        if card.faction == faction:
+        if card.faction == faction and card.name != banned:
             return card
     return None
 
@@ -500,7 +515,7 @@ def audit_card(card: HRCard) -> list[Finding]:
     sections = parse_sections(card)
     by_kind = {s.kind: s for s in sections}
     is_champion = card.card_type == "champion"
-    partner = partner_for(card.faction) if card.faction else None
+    partner = partner_for(card.faction, exclude=card) if card.faction else None
     has_ally_text = "ally" in by_kind
 
     for section in sections:
@@ -589,13 +604,16 @@ def audit_card(card: HRCard) -> list[Finding]:
             ))
 
         # I6: a second *copy* of this same card is just as good a partner.
-        dup_only = {k: v for k, v in ally_contribution(card).items() if v}
-        if dup_only != ally_only:
-            findings.append(Finding(
-                card.name, "second copy of the card is not an ally partner",
-                f"a different-card partner paid {ally_only}, a second copy of "
-                f"this card paid {dup_only}",
-            ))
+        # Only meaningful for cards actually printed in more than one copy.
+        duplicate = second_copy(card)
+        if duplicate is not None:
+            dup_only = {k: v for k, v in ally_contribution(duplicate).items() if v}
+            if dup_only != ally_only:
+                findings.append(Finding(
+                    card.name, "second copy of the card is not an ally partner",
+                    f"a different-card partner paid {ally_only}, a second copy of "
+                    f"this card paid {dup_only}",
+                ))
 
         # I3: a champion's ally must not be re-paid by expending it.
         if is_champion and "expend" in by_kind:
@@ -609,7 +627,7 @@ def audit_card(card: HRCard) -> list[Finding]:
             # lands in the delta and reads as a false positive (Tyrannor and
             # Life Drain both did exactly that).
             withp = fresh(board=[card], played=[partner])
-            withp.player.board[0].ally_paid_this_turn = True
+            withp.player.ally_used_this_turn.add(id(card))
             paired_expend = expend(withp, withp.player.board[0])
             if paired_expend != lone_expend:
                 findings.append(Finding(

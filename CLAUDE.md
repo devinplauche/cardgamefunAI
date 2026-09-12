@@ -501,22 +501,29 @@ phase ratchet. Both are rules-fidelity bugs affecting **both seats equally**,
 so neither was an asymmetric edge; both change the game every prior number was
 measured on.
 
-**1. Two copies of one card never counted as allies.** `load_hero_cards` shares
-a single immutable `HRCard` across all printed copies (`[card] * quantity`),
-and `has_ally` excluded "the card itself" with `is not` — which also excluded
-every other copy. Two Cult Priests in play, or a second Profit played in the
-same turn, read as *zero* faction partners. This hit **12 of the 36 ally
-cards**, and specifically the common ones printed in 2-3 copies (3x Bribe,
-Death Touch, Elven Gift, Profit, Recruit, Spark, Taxation; 2x Cult Priest,
-Elven Curse, Intimidation, Orc Grunt, The Rot). `has_ally` now counts physical
-cards and takes explicit `self_champion` / `self_played` arguments naming where
-the card itself sits.
+**1. Two copies of one card never counted as allies.** `load_hero_cards` used
+to share a single immutable `HRCard` across all printed copies
+(`[card] * quantity`), and `has_ally` excludes "the card itself" by object
+identity — which therefore excluded every other copy too. Two Cult Priests in
+play, or a second Profit played in the same turn, read as *zero* faction
+partners. This hit **12 of the 36 ally cards**, and specifically the common
+ones printed in 2-3 copies (3x Bribe, Death Touch, Elven Gift, Profit, Recruit,
+Spark, Taxation; 2x Cult Priest, Elven Curse, Intimidation, Orc Grunt, The Rot).
+
+**Fixed by giving every physical copy its own `HRCard` instance**, which makes
+every identity check in the engine physically correct rather than patching
+`has_ally` alone. Note the consequence for tests and tools: `load_hero_cards`
+returns N distinct instances for an Nx card, so a duplicate-partner test must
+take *two* of them — reusing one instance asserts the opposite thing and will
+pass against a broken engine.
 
 **2. A champion's ally fired only on expend.** It is a separate ability from
 the expend ability, but it was paid inside `expend_champion`: a champion you
 left ready paid nothing, and it never fired on the turn it was played unless
-you also expended it. Now fired by `_resolve_board_allies` whenever a card
-enters play, at most once per turn per champion.
+you also expended it. A champion's ally now fires on entering play (or queues
+into `pending_ally` and fires retroactively when a partner arrives), the expend
+payout is guarded so it cannot double-fire, and `HRPlayer.ally_used_this_turn`
+keeps it to once a turn.
 
 Measured on the position that exposed it (Cult Priest already in play, then a
 second Cult Priest and two Profits): **0 combat before, 16 after.**
@@ -524,8 +531,9 @@ second Cult Priest and two Profits): **0 combat before, 16 after.**
 **The trigger is the condition holding, not a card being played.** Confirmed
 against the printed rules: a board that already holds two same-faction
 champions re-triggers every turn, including turns where you play nothing of
-that faction. `_resolve_board_allies` is therefore called at the start of the
-owner's turn *and* whenever a card enters play. Two Cult Priests left standing
+that faction. `_resolve_board_allies` runs at the start of the owner's turn and
+fires or queues every standing champion's ally; `play_card` covers cards
+entering play. Two Cult Priests left standing
 open every turn at **+8 combat** before a card is played, which is the single
 largest behaviour change here — champion faction-stacking is now worth far more
 than any measurement in this file or `BASELINE.md` was taken under.
@@ -580,4 +588,6 @@ a champion is killable, so the snipe rate is 100% across all six champions where
 - `web/bot.py` — MCTS. `hero_mcts_bench.py` — the benchmark (bot seat = second player).
 - `hero_rl_env_v2/v3/v4.py` — RL envs (v4 has the repaired observation).
 - `hero_*_ab.py` — A/B harnesses; all use paired McNemar and take `--iterations`.
-- Tests: `python -m pytest -q` (392 passing, 81 subtests).
+- Tests: `python -m pytest -q` (403 passing, 1 skipped). `pytest.ini` keeps
+  `archive/` out of collection - it carries a second `tests` package that
+  otherwise collides with this one and breaks every import.
