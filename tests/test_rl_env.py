@@ -86,9 +86,19 @@ class TestSetupRules(unittest.TestCase):
         self.assertEqual(ids, sorted(["gold"] * 7 + ["shortsword", "dagger", "ruby"]))
 
     def test_starting_health_is_fifty(self):
+        # A fresh player starts at 50 HP. The v1 env auto-plays the opening
+        # hand on reset, and the starting Ruby heals 1 - with no health cap
+        # (physical health cards are double-sided to track above 50) the
+        # agent legitimately opens above 50 when the Ruby is in hand.
+        # (The deck shuffle uses the global RNG, so seed it for determinism.)
+        import random
+        from hero_engine import HRPlayer
+        self.assertEqual(HRPlayer("P").hp, 50)
+        random.seed(5)
         env = HeroRealmsEnv(CARDS)
-        env.reset(seed=5)
-        self.assertEqual(env.agent.hp, 50)
+        env.reset()
+        ruby_played = any(c.id == "ruby" for c in env.agent.played_this_turn)
+        self.assertEqual(env.agent.hp, 51 if ruby_played else 50)
         self.assertEqual(env.opponent.hp, 50)
 
 

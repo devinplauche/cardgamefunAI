@@ -18,7 +18,7 @@
 ### Resources
 - ✅ Gold: Used to buy cards from market
 - ✅ Combat: Used to attack opponents and their champions
-- ✅ Health: Gain/lose immediately, capped at 50 HP
+- ✅ Health: Gain/lose immediately, no maximum (health cards are double-sided to track above 50 HP)
 
 ### Turn Structure
 - ✅ Main Phase: Play cards, use abilities, buy cards, attack

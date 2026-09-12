@@ -61,24 +61,24 @@ class TestCombatBranchAgainstGuards(unittest.TestCase):
         self.assertEqual(player.hp, 24)
 
 
-class TestHealthBranchOverflow(unittest.TestCase):
-    """Healing near the HP cap used a flat hp>=45 threshold instead of the
-    actual amount that would land, so a heal mostly wasted at 49 HP could
-    still beat a smaller-but-fully-effective alternative."""
+class TestHealthBranchScoring(unittest.TestCase):
+    """There is no health cap (physical health cards are double-sided to
+    track above 50), so a heal always lands in full and the bot scores it
+    at face value instead of discounting a would-be overflow."""
 
-    def test_prefers_gold_over_a_heal_that_would_mostly_overflow(self):
+    def test_takes_full_heal_over_smaller_gold(self):
         from hero_engine import expend_champion
 
         bc = _champion_with_or_choice(gold=2, health=6, or_choice=["gold", "health"])
         player = HRPlayer("P")
-        player.hp = 49  # only 1 point of a 6-point heal would actually land
+        player.hp = 49  # the full 6-point heal lands: 49 -> 55
         player.gold = 5  # >= 3, so gold gets no low-gold urgency bonus either
         player.board.append(bc)
 
         expend_champion(player, bc, opponent=None)
 
-        self.assertEqual(player.gold, 5 + 2, "gold should win once the heal is mostly wasted")
-        self.assertEqual(player.hp, 49, "health was not the chosen branch, so it must not change")
+        self.assertEqual(player.hp, 55, "uncapped heal should beat the smaller gold branch")
+        self.assertEqual(player.gold, 5, "gold was not the chosen branch, so it must not change")
 
     def test_still_takes_a_heal_that_is_not_overflowing(self):
         from hero_engine import expend_champion
@@ -94,19 +94,19 @@ class TestHealthBranchOverflow(unittest.TestCase):
         self.assertEqual(player.hp, 36)
         self.assertEqual(player.gold, 5, "gold should not have been taken instead")
 
-    def test_per_champion_health_also_accounts_for_overflow(self):
+    def test_per_champion_health_scores_full_value(self):
         from hero_engine import expend_champion
 
         bc = _champion_with_or_choice(gold=1, per_champion_health=3, or_choice=["gold", "per_champion_health"])
         player = HRPlayer("P")
-        player.hp = 49
+        player.hp = 49  # 1 champion x 3 = 3 heal -> 52
         player.gold = 5
         player.board.append(bc)
 
         expend_champion(player, bc, opponent=None)
 
-        self.assertEqual(player.gold, 5 + 1, "gold should win once per-champion healing is mostly wasted")
-        self.assertEqual(player.hp, 49, "health was not the chosen branch, so it must not change")
+        self.assertEqual(player.hp, 52, "uncapped per-champion heal should beat the gold branch")
+        self.assertEqual(player.gold, 5, "gold was not the chosen branch, so it must not change")
 
 
 class TestGuaranteedLethalBranch(unittest.TestCase):

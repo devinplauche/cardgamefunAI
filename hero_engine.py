@@ -731,7 +731,7 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
 
     heal = card.get("health", 0)
     if heal:
-        player.hp = min(player.hp + heal, HRGame.STARTING_HP)
+        player.hp += heal
 
     draws = card.get("draw", 0)
     actual_draws = len(player.draw(draws)) if draws else 0
@@ -899,11 +899,12 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
         if "health" in or_choice:
             val = card.get("health", 0)
             if val:
-                # A flat hp>=45 threshold didn't reflect how much of the heal
-                # actually lands once close to the cap. Score the real amount
-                # gained instead, so a heal already mostly wasted competes on
-                # its true value rather than an arbitrary cutoff.
-                actual_heal = min(val, HRGame.STARTING_HP - player.hp)
+                # A flat hp>=45 threshold didn't reflect the heal's value.
+                # There is no health cap (physical health cards are
+                # double-sided to track above 50), so the full amount
+                # always lands - score it directly rather than using an
+                # arbitrary cutoff.
+                actual_heal = val
                 score = actual_heal + (3 if player.hp <= 25 else 0)
                 options.append(("health", val, score))
         if "per_champion_health" in or_choice:
@@ -911,7 +912,7 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
             if val:
                 count = len([c for c in player.board if c.alive])
                 total = val * count
-                actual_heal = min(total, HRGame.STARTING_HP - player.hp)
+                actual_heal = total
                 score = actual_heal + (3 if player.hp <= 25 else 0)
                 options.append(("health", total, score))
         if options:
@@ -925,14 +926,14 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
             elif best[0] == "gold":
                 player.gold += best[1]
             elif best[0] == "health":
-                player.hp = min(player.hp + best[1], HRGame.STARTING_HP)
+                player.hp += best[1]
     else:
         # ---- Base expend effects ----
         player.combat += card.get("combat", 0)
         player.gold += card.get("gold", 0)
         heal = card.get("health", 0)
         if heal:
-            player.hp = min(player.hp + heal, HRGame.STARTING_HP)
+            player.hp += heal
 
     # ---- Per-other-X effects on expend ----
     other_champions = len([c for c in player.board if c.alive and c != bc])
@@ -1036,13 +1037,13 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
         player.gold += card.get("ally_gold", 0)
         ally_heal = card.get("ally_health", 0)
         if ally_heal:
-            player.hp = min(player.hp + ally_heal, HRGame.STARTING_HP)
+            player.hp += ally_heal
         ally_per_champion_health = card.get("ally_per_champion_health", 0)
         if ally_per_champion_health:
             champion_count = len([c for c in player.board if c.alive])
             heal = ally_per_champion_health * champion_count
             if heal:
-                player.hp = min(player.hp + heal, HRGame.STARTING_HP)
+                player.hp += heal
         ally_draw = card.get("ally_draw", 0)
         if ally_draw:
             # Grak ally: "Draw a card, then discard a card." - discard only
@@ -1147,14 +1148,14 @@ def _apply_ally_effects(player: HRPlayer, card: HRCard, opponent: Optional[HRPla
     player.gold += card.get("ally_gold", 0)
     ally_heal = card.get("ally_health", 0)
     if ally_heal:
-        player.hp = min(player.hp + ally_heal, HRGame.STARTING_HP)
+        player.hp += ally_heal
     ally_pch = card.get("ally_per_champion_health", 0)
     if ally_pch:
         # Kraka, High Priest: heal per champion in play (self included - the
         # card is already on the board / in played_this_turn when this runs).
         heal = ally_pch * len([c for c in player.board if c.alive])
         if heal:
-            player.hp = min(player.hp + heal, HRGame.STARTING_HP)
+            player.hp += heal
     ally_draw = card.get("ally_draw", 0)
     if ally_draw:
         # Discard only what the draw actually produced (partial-effects rule).
@@ -1215,7 +1216,7 @@ def _grant_resource(player: HRPlayer, resource: str, amount: int):
     if resource == "combat":
         player.combat += amount
     elif resource == "health":
-        player.hp = min(player.hp + amount, HRGame.STARTING_HP)
+        player.hp += amount
 
 
 def _resolve_pending_per_champion(player: HRPlayer):

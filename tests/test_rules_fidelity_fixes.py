@@ -18,6 +18,7 @@ from hero_engine import (
     HRPlayer,
     RUBY,
     BoardChampion,
+    _apply_ally_effects,
     _sacrifice_to_pile,
     expend_champion,
     load_hero_cards,
@@ -328,6 +329,33 @@ class TestChampionAllyTiming(unittest.TestCase):
         play_card(player, player.hand[0], market, opponent=opponent)
         self.assertEqual(len(player.hand), 2,
                          f"ally drew nothing, so no discard; hand={len(player.hand)}")
+
+
+class TestUncappedHealing(unittest.TestCase):
+    def test_base_heal_above_50(self):
+        # No health cap: the physical health cards are double-sided to track
+        # above 50. Domination heals 6 at 50 HP -> 56.
+        player, opponent = HRPlayer("P"), HRPlayer("O")
+        market = _market_with(player)
+        player.hp = 50
+        player.hand = [_card("Domination")]
+        play_card(player, player.hand[0], market, opponent=opponent)
+        self.assertEqual(player.hp, 56, f"hp={player.hp}")
+
+    def test_ally_heal_above_50(self):
+        # Close Ranks ally heals 6; at 50 HP it must reach 56.
+        player, opponent = HRPlayer("P"), HRPlayer("O")
+        player.hp = 50
+        _apply_ally_effects(player, _card("Close Ranks"), opponent)
+        self.assertEqual(player.hp, 56, f"hp={player.hp}")
+
+    def test_grant_resource_heal_uncapped(self):
+        # The shared _grant_resource path (per-champion heals) is uncapped too.
+        from hero_engine import _grant_resource
+        player = HRPlayer("P")
+        player.hp = 49
+        _grant_resource(player, "health", 5)
+        self.assertEqual(player.hp, 54, f"hp={player.hp}")
 
 
 if __name__ == "__main__":
