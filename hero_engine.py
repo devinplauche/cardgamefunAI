@@ -1047,7 +1047,14 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
                 total = val * count
                 actual_heal = min(total, HRGame.STARTING_HP - player.hp)
                 score = actual_heal + (3 if player.hp <= 25 else 0)
-                options.append(("health", total, score))
+                # Labelled by its own or_choice key, not "health". `choice` is
+                # matched against these labels, and the UI sends the key it was
+                # given in `or_choice` - so labelling this branch "health" made
+                # choice="per_champion_health" match nothing and fall through to
+                # the heuristic. Clicking Tithe Priest's "heal/champ" button
+                # silently took the gold branch instead. Found by
+                # tools/audit_card_behaviour.py.
+                options.append(("per_champion_health", total, score))
         if options:
             chosen = next((option for option in options if option[0] == choice), None)
             best = (
@@ -1060,7 +1067,7 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
                 player.combat += best[1]
             elif best[0] == "gold":
                 player.gold += best[1]
-            elif best[0] == "health":
+            elif best[0] in ("health", "per_champion_health"):
                 player.hp = min(player.hp + best[1], HRGame.STARTING_HP)
     else:
         # ---- Base expend effects ----

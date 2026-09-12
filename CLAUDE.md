@@ -107,6 +107,30 @@ already indicates the global threshold is at or near its optimum, and the curve
 is flat across 9-21% override rate (57.0 / 55.0 / 55.0), so the headroom for a
 *learned* per-decision gate is real but unquantified and probably small.
 
+## Check card behaviour with the behavioural audit, not the data lint
+
+`tools/audit_cards.py` compares printed text to the `effects` dict. It is a
+data lint and is **structurally blind to timing** - both ally bugs had entirely
+correct card data and were purely about when and how often effects fired.
+
+`tools/audit_card_behaviour.py` closes that gap: it drives all 55 cards through
+the real `GameSession` and compares *measured state deltas* against the printed
+text, per trigger point (on play / on expend / on ally), plus card-agnostic
+timing invariants (ally needs a partner, fires at most once per turn, is not
+re-paid on expend, a second copy of a card counts as a partner). Runs in under
+a second; wired in as `tests/test_card_behaviour_audit.py`.
+
+It found the Tithe Priest `or_choice` label bug on its first full run: the
+engine labelled the per-champion-heal branch `"health"` while `or_choice`
+advertises `"per_champion_health"`, so the UI's "heal/champ" button matched
+nothing and silently fell through to the heuristic, which took gold.
+
+**Coverage is 41/55 cards fully machine-checked**, and the tool prints the
+other 14 rather than skipping them - mostly "you may sacrifice ..." and
+discard-pile manipulation, where the engine makes an optional choice that has
+no single correct answer to assert. Those 14 are the remaining unaudited
+surface; treat them as the place the next rules bug lives.
+
 **Do not tune buy valuation again without first checking the ceiling.**
 `hero_regret.py` and `hero_buy_fit.py` both answer "how much is even available
 here" in about a minute. Four separate attempts have now died against a
@@ -556,4 +580,4 @@ a champion is killable, so the snipe rate is 100% across all six champions where
 - `web/bot.py` — MCTS. `hero_mcts_bench.py` — the benchmark (bot seat = second player).
 - `hero_rl_env_v2/v3/v4.py` — RL envs (v4 has the repaired observation).
 - `hero_*_ab.py` — A/B harnesses; all use paired McNemar and take `--iterations`.
-- Tests: `python -m pytest -q` (389 passing, 81 subtests).
+- Tests: `python -m pytest -q` (392 passing, 81 subtests).
