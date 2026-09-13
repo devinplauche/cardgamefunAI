@@ -34,15 +34,18 @@ def _take_turn(p, o, mkt, strat):
     p.gold = p.combat = p.actions_played = p.cards_bought = 0
     p.played_this_turn.clear()
     p.pending_per_champion.clear()
+    p.pending_ally.clear()
+    p.ally_used_this_turn.clear()
     for bc in p.board:
-        bc.exhausted = False
+        # Damage resets at the owner's turn start; preparing happens in the
+        # owner's Discard Phase below.
         bc.current_health = bc.card.health
     _resolve_board_allies(p, o)
     strat["play"](p, o, mkt)
     strat["expend"](p, o)
     strat["buy"](p, o, mkt)
     if p.combat > 0:
-        guards = [bc for bc in o.board if bc.guard and bc.alive]
+        guards = [bc for bc in o.board if bc.guard and bc.alive and not bc.exhausted]
         strat["attack"](p, o, guards)
         o.hp -= p.combat
         p.combat = 0
@@ -54,6 +57,9 @@ def _take_turn(p, o, mkt, strat):
     for c in p.hand:
         p.discard.append(c)
     p.hand.clear()
+    # Discard Phase: "Prepare all of your Champions."
+    for bc in p.board:
+        bc.exhausted = False
     p.draw(5)
 
 

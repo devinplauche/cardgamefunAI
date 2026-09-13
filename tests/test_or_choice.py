@@ -142,7 +142,10 @@ class TestGuaranteedLethalBranch(unittest.TestCase):
         self.assertEqual(player.combat, 3)
         self.assertEqual(player.hp, 10)
 
-    def test_exhausted_living_guard_still_blocks_face_lethal(self):
+    def test_exhausted_guard_does_not_block_face_lethal(self):
+        # Rulebook: "Guards that are prepared protect you." A sideways
+        # (expended) guard does not protect, so 2 combat into 2 HP is lethal
+        # and the or_choice takes combat, not gold.
         from hero_engine import expend_champion
 
         bc = _champion_with_or_choice(combat=2, gold=1,
@@ -158,8 +161,8 @@ class TestGuaranteedLethalBranch(unittest.TestCase):
 
         expend_champion(player, bc, opponent=opponent)
 
-        self.assertEqual(player.combat, 0)
-        self.assertEqual(player.gold, 1)
+        self.assertEqual(player.combat, 2)
+        self.assertEqual(player.gold, 0)
 
 
 if __name__ == "__main__":

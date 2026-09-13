@@ -558,9 +558,10 @@ def _should_self_sacrifice(player: HRPlayer, opponent: Optional[HRPlayer] = None
     guaranteed bonus now.
     """
     if requires_open_combat and opponent:
-        # Exhausting a guard uses its ability; it remains in play and continues
-        # to block combat until stunned.
-        guards = [bc for bc in opponent.board if bc.guard and bc.alive]
+        # Only prepared guards block combat (rulebook: "Guards that are
+        # prepared protect you"). An expended guard is sideways and does not
+        # protect until it prepares in its owner's Discard Phase.
+        guards = [bc for bc in opponent.board if bc.guard and bc.alive and not bc.exhausted]
         if guards:
             return False
     owned_economy = sum(
@@ -783,8 +784,11 @@ class HRGame:
         player.next_buy_to_top = False
         player.next_buy_to_top_action_only = False
         for bc in player.board:
-            bc.exhausted = False
-            bc.current_health = bc.card.health  # damage does not carry over between turns
+            # Damage does not carry over between turns; it resets when the
+            # owner's next turn starts. Preparing is different: champions
+            # prepare in their owner's Discard Phase (see _cleanup), so a
+            # guard expended on your turn still protects you afterwards.
+            bc.current_health = bc.card.health
         # A board that already holds two same-faction champions satisfies the
         # ally condition before a single card is played this turn.
         _resolve_board_allies(player, opponent)
@@ -815,7 +819,9 @@ class HRGame:
         # non-guard champion with any leftover combat instead of it all going
         # to face. Called unconditionally: gating this behind `if guards`
         # meant a board with zero guards never got a chance to snipe at all.
-        guards = [bc for bc in opponent.board if bc.guard and bc.alive]
+        # Only prepared guards protect (rulebook: "Guards that are prepared
+        # protect you and your other Champions").
+        guards = [bc for bc in opponent.board if bc.guard and bc.alive and not bc.exhausted]
         ai_attack(player, opponent, guards)
 
         dmg = player.combat
@@ -830,11 +836,15 @@ class HRGame:
         for c in player.hand:
             player.discard.append(c)
         player.hand.clear()
+        # Discard Phase: "Prepare all of your Champions." A guard expended
+        # during your Main Phase is vertical again before the opponent's turn.
+        for bc in player.board:
+            bc.exhausted = False
         player.draw(5)
 
 
 def _stun_champion(opponent: HRPlayer, target: Optional[BoardChampion] = None) -> bool:
-    """Stun a selected opposing champion, prioritising guards when present.
+    """Stun a selected opposing champion, prioritising prepared guards when present.
 
     Noted on the victim: a stun removes a champion from the board without any
     combat being assigned to it, so nothing in web/session.py knows to log it.
@@ -844,7 +854,7 @@ def _stun_champion(opponent: HRPlayer, target: Optional[BoardChampion] = None) -
     for sacrifices and forced discards.
     """
     living = [champion for champion in opponent.board if champion.alive]
-    guards = [champion for champion in living if champion.guard]
+    guards = [champion for champion in living if champion.guard and not champion.exhausted]
     candidates = guards or living
     if not candidates:
         return False
@@ -887,8 +897,10 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
             if card.get("stun", False):
                 player.pending_stun_targets.append((card, stun_target))
         # A champion entering play can complete a faction pair for an action
-        # played earlier this turn, and tops up any queued per-champion bonus.
+        # played earlier this turn (or a surviving champion's ally), and tops
+        # up any queued per-champion bonus.
         _resolve_pending_allies(player, opponent)
+        _resolve_board_allies(player, opponent)
         _resolve_pending_per_champion(player)
         return True
 
@@ -898,6 +910,8 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
     player.played_this_turn.append(card)
     if card.faction:
         _resolve_pending_allies(player, opponent)
+        # A faction action can complete a pair for a surviving champion.
+        _resolve_board_allies(player, opponent)
 
     # ---- Base effects (non-champion cards only) ----
     player.gold += card.get("gold", 0)
@@ -1076,7 +1090,7 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
                 # lethal, no economic/healing score can rationally beat it.
                 guards = [
                     champion for champion in opponent.board
-                    if champion.guard and champion.alive
+                    if champion.guard and champion.alive and not champion.exhausted
                 ] if opponent else []
                 force_lethal_combat = bool(
                     opponent

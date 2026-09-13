@@ -246,7 +246,7 @@ class HeroRealmsMaskedEnv(gym.Env):
         prof["expend"](opp, ag)
         prof["buy"](opp, ag, self.market)
         if opp.combat > 0:
-            guards = [bc for bc in ag.board if bc.guard and bc.alive]
+            guards = [bc for bc in ag.board if bc.guard and bc.alive and not bc.exhausted]
             prof["attack"](opp, ag, guards)
             ag.hp -= opp.combat
             opp.combat = 0

@@ -157,8 +157,9 @@ class HeroRealmsEnv(gym.Env):
         opp.next_buy_to_top_action_only = False
         opp.cards_bought = 0
         for bc in opp.board:
-            bc.exhausted = False
-            bc.current_health = bc.card.health  # damage does not carry over between turns
+            # Damage resets at the owner's turn start; preparing happens in
+            # the owner's Discard Phase (see _cleanup).
+            bc.current_health = bc.card.health
         _resolve_board_allies(opp, ag)
 
         # Main Phase interleaves play/expend (official rules allow any order),
@@ -171,7 +172,7 @@ class HeroRealmsEnv(gym.Env):
         if opp.combat > 0:
             # Called unconditionally, even with zero guards, so a snipe of a
             # non-guard champion can happen on a fully undefended board too.
-            guards = [bc for bc in ag.board if bc.guard and bc.alive]
+            guards = [bc for bc in ag.board if bc.guard and bc.alive and not bc.exhausted]
             self._opponent_profile["attack"](opp, ag, guards)
             ag.hp -= opp.combat
             opp.combat = 0
@@ -184,6 +185,9 @@ class HeroRealmsEnv(gym.Env):
         for c in player.hand:
             player.discard.append(c)
         player.hand.clear()
+        # Discard Phase: "Prepare all of your Champions."
+        for bc in player.board:
+            bc.exhausted = False
         player.draw(5)
 
     def _resolve_turn(self):
@@ -191,7 +195,7 @@ class HeroRealmsEnv(gym.Env):
         o = self.opponent
 
         if p.combat > 0:
-            guards = [bc for bc in o.board if bc.guard and bc.alive]
+            guards = [bc for bc in o.board if bc.guard and bc.alive and not bc.exhausted]
             attack_weakest(p, o, guards)
             o.hp -= p.combat
             p.combat = 0
@@ -224,8 +228,9 @@ class HeroRealmsEnv(gym.Env):
         p.next_buy_to_top_action_only = False
         p.cards_bought = 0
         for bc in p.board:
-            bc.exhausted = False
-            bc.current_health = bc.card.health  # damage does not carry over between turns
+            # Damage resets at the owner's turn start; preparing happens in
+            # the owner's Discard Phase (see _cleanup).
+            bc.current_health = bc.card.health
         _resolve_board_allies(p, o)
 
         run_main_phase(p, o, self.market, play_all_playable, auto_expend_all)

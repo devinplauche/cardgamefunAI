@@ -207,7 +207,7 @@ def attack_weakest(player: HRPlayer, opponent: HRPlayer, guards: list):
         player.combat -= dmg
     # Stunned champions go to their owner's discard pile, not out of the game.
     remove_stunned_champions(opponent)
-    if not any(bc.guard and bc.alive for bc in opponent.board):
+    if not any(bc.guard and bc.alive and not bc.exhausted for bc in opponent.board):
         _snipe_champions(player, opponent, key=lambda bc: bc.current_health)
 
 
@@ -222,7 +222,7 @@ def attack_strongest(player: HRPlayer, opponent: HRPlayer, guards: list):
         bc.current_health -= dmg
         player.combat -= dmg
     remove_stunned_champions(opponent)
-    if not any(bc.guard and bc.alive for bc in opponent.board):
+    if not any(bc.guard and bc.alive and not bc.exhausted for bc in opponent.board):
         _snipe_champions(player, opponent, key=lambda bc: -bc.current_health)
 
 

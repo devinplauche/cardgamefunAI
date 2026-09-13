@@ -358,5 +358,152 @@ class TestUncappedHealing(unittest.TestCase):
         self.assertEqual(player.hp, 54, f"hp={player.hp}")
 
 
+class TestGuardPrepareTiming(unittest.TestCase):
+    # Rulebook: "Prepare all of your Champions" happens in YOUR Discard Phase,
+    # and "Guards that are prepared protect you and your other Champions" -
+    # a sideways (expended) guard does not protect.
+
+    def test_champions_prepare_at_end_of_own_turn(self):
+        from hero_engine import HRGame
+        player, opponent = HRPlayer("P"), HRPlayer("O")
+        game = HRGame(player, opponent, CARDS)
+        guard = BoardChampion(_card("Lys, the Unseen"))
+        player.board.append(guard)
+        expend_champion(player, guard, opponent)
+        self.assertTrue(guard.exhausted)
+        game._cleanup(player)
+        self.assertFalse(guard.exhausted,
+                         "Discard Phase prepares champions (rulebook)")
+
+    def test_damage_still_resets_at_turn_start(self):
+        from hero_engine import HRGame
+        player, opponent = HRPlayer("P"), HRPlayer("O")
+        game = HRGame(player, opponent, CARDS)
+        guard = BoardChampion(_card("Lys, the Unseen"))
+        guard.current_health = 1  # damaged on the opponent's turn
+        player.board.append(guard)
+        game._cleanup(opponent)
+        self.assertEqual(guard.current_health, 1,
+                         "cleanup must not reset damage early")
+        for bc in player.board:
+            bc.current_health = bc.card.health
+        self.assertEqual(guard.current_health, guard.card.health)
+
+    def test_exhausted_guard_does_not_block_combat(self):
+        from hero_engine import HRGame
+        player, opponent = HRPlayer("P"), HRPlayer("O")
+        game = HRGame(player, opponent, CARDS)
+        tired = BoardChampion(_card("Lys, the Unseen"))
+        tired.exhausted = True
+        opponent.board.append(tired)
+        seen = []
+        player.combat = 5
+        game._resolve_combat(player, opponent, lambda p, o, g: seen.extend(g))
+        self.assertEqual(seen, [],
+                         "an expended guard must not be offered as blocking")
+
+    def test_prepared_guard_still_blocks(self):
+        from hero_engine import HRGame
+        player, opponent = HRPlayer("P"), HRPlayer("O")
+        game = HRGame(player, opponent, CARDS)
+        guard = BoardChampion(_card("Lys, the Unseen"))
+        opponent.board.append(guard)
+        seen = []
+        player.combat = 5
+        game._resolve_combat(player, opponent, lambda p, o, g: seen.extend(g))
+        self.assertEqual(seen, [guard])
+
+    def test_web_session_prepares_on_end_turn(self):
+        from web.session import create_session
+        session = create_session(seed=11)
+        champ = BoardChampion(_card("Lys, the Unseen"))
+        session.player.board.append(champ)
+        expend_champion(session.player, champ, session.bot)
+        self.assertTrue(champ.exhausted)
+        session.end_turn()
+        self.assertFalse(champ.exhausted,
+                         "web Discard Phase must prepare champions")
+
+
+class TestSurvivingChampionAllies(unittest.TestCase):
+    # Rulebook: "As soon as you have two or more cards of that faction in
+    # play, you may trigger all relevant Ally Abilities... each may only be
+    # used once per turn." A champion that survived from a previous turn is
+    # still in play.
+
+    def _wild_pair(self):
+        player, opponent = HRPlayer("P"), HRPlayer("O")
+        player.board.append(BoardChampion(_card("Dire Wolf")))  # Wild ally +4
+        player.ally_used_this_turn.clear()
+        player.pending_ally.clear()
+        return player, opponent
+
+    def test_partner_arrival_fires_survivor_ally(self):
+        from hero_engine import _resolve_board_allies
+        player, opponent = self._wild_pair()
+        market = _market_with(player)
+        player.hand.append(_card("Wolf Shaman"))  # Wild partner
+        player.deck += [_card("Spark") for _ in range(5)]
+        play_card(player, player.hand[0], market, opponent=opponent)
+        # Dire Wolf's ally (+4 combat) must fire on partner arrival, no expend.
+        self.assertGreaterEqual(player.combat, 4,
+                                 f"combat={player.combat}")
+
+    def test_turn_start_fires_ready_board_allies(self):
+        from hero_engine import _resolve_board_allies
+        player, opponent = self._wild_pair()
+        player.board.append(BoardChampion(_card("Wolf Shaman")))
+        _resolve_board_allies(player, opponent)
+        self.assertEqual(player.combat, 4, f"combat={player.combat}")
+
+    def test_ally_still_once_per_turn(self):
+        from hero_engine import _resolve_board_allies
+        player, opponent = self._wild_pair()
+        player.board.append(BoardChampion(_card("Wolf Shaman")))
+        _resolve_board_allies(player, opponent)
+        self.assertEqual(player.combat, 4)
+        # A later expend must not fire the ally again...
+        wolf = next(bc for bc in player.board
+                    if bc.card.name == "Dire Wolf")
+        expend_champion(player, wolf, opponent)
+        # ...but the expend's own base effect (+3) still applies once.
+        self.assertEqual(player.combat, 7, f"combat={player.combat}")
+        # ...and a second sweep the same turn changes nothing.
+        _resolve_board_allies(player, opponent)
+        self.assertEqual(player.combat, 7, f"combat={player.combat}")
+
+
+class TestSessionMarketBackreference(unittest.TestCase):
+    # Round-1's Fire Gem sacrifice routing only covered HRGame: the web
+    # session's players had no market back-reference, so a Fire Gem sacrificed
+    # via champion expend in a live web game was banished instead of returning
+    # to the pile.
+
+    def test_live_session_routes_fire_gem_to_pile(self):
+        import copy
+        from web.session import create_session
+        from hero_engine import _sacrifice_to_pile, FIRE_GEM
+        session = create_session(seed=7)
+        before = session.market.fire_gems_remaining
+        _sacrifice_to_pile(session.player, copy.deepcopy(FIRE_GEM))
+        self.assertEqual(session.market.fire_gems_remaining, before + 1)
+        self.assertEqual(session.player.banish, [])
+
+    def test_clone_players_point_at_cloned_market(self):
+        import copy
+        from web.session import create_session
+        from hero_engine import _sacrifice_to_pile, FIRE_GEM
+        session = create_session(seed=3)
+        before_live = session.market.fire_gems_remaining
+        before_clone = session.clone().market.fire_gems_remaining
+        clone = session.clone()
+        self.assertIs(clone.player.market, clone.market)
+        self.assertIs(clone.bot.market, clone.market)
+        _sacrifice_to_pile(clone.player, copy.deepcopy(FIRE_GEM))
+        self.assertEqual(clone.market.fire_gems_remaining, before_clone + 1)
+        self.assertEqual(session.market.fire_gems_remaining, before_live,
+                         "simulation must not touch the live pile")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -375,6 +375,11 @@ class GameSession:
         self.player.draw(3)
         self.bot.draw(5)
         self.market = HRMarket(self.cards, self.rng)
+        # Back-reference so sacrifice routing can return Fire Gems to the
+        # pile (mirrors HRGame); expend_champion's sacrifice paths call
+        # _sacrifice_to_pile without an explicit market.
+        self.player.market = self.market
+        self.bot.market = self.market
         # Sacrifice/discard targeting becomes a real decision rather than
         # something _find_worst_idx settles inline. Read at construction so an
         # A/B arm that sets the flag applies to sessions it creates afterwards.
@@ -413,6 +418,10 @@ class GameSession:
         _remap_pending_stun_targets(clone.player, clone.bot)
         _remap_pending_stun_targets(clone.bot, clone.player)
         clone.market = _copy_market(self.market, clone.rng)
+        # Cloned players must sacrifice into the cloned Fire Gem pile, not the
+        # live one - _copy_player ran before clone.market existed.
+        clone.player.market = clone.market
+        clone.bot.market = clone.market
         clone.turn_number = self.turn_number
         clone.active_player = self.active_player
         clone.phase = self.phase
@@ -563,8 +572,10 @@ class GameSession:
         player.next_buy_to_top = False
         player.next_buy_to_top_action_only = False
         for champion in player.board:
-            champion.exhausted = False
-            # Damage to champions does not carry over between turns.
+            # Damage to champions does not carry over between turns; it resets
+            # when the owner's next turn starts. Preparing happens in the
+            # owner's Discard Phase instead (see end_turn), so expended guards
+            # are vertical again before the opponent's turn.
             champion.current_health = champion.card.health
         # Must come after the next_buy_* resets above, since Rasmus' ally sets
         # one: a board already holding two same-faction champions meets the
@@ -580,12 +591,14 @@ class GameSession:
         return self.bot if self.active_player == "player" else self.player
 
     def _attack_targets(self, opponent: HRPlayer) -> list[BoardChampion]:
-        """Legal combat/stun targets: guards while any are alive (they block
-        both the player and other champions), otherwise every living champion
-        - a champion is a legal target once nothing protects it (rulebook:
-        "You may use Combat to attack your opponent and/or their Champions")."""
+        """Legal combat/stun targets: prepared guards while any are alive (they
+        block both the player and other champions - rulebook: "Guards that are
+        prepared protect you and your other Champions"), otherwise every living
+        champion - a champion is a legal target once nothing protects it
+        (rulebook: "You may use Combat to attack your opponent and/or their
+        Champions")."""
         living = [champion for champion in opponent.board if champion.alive]
-        guards = [champion for champion in living if champion.guard]
+        guards = [champion for champion in living if champion.guard and not champion.exhausted]
         return guards or living
 
     def _stun_target(self, opponent: HRPlayer, target_index: int | None) -> BoardChampion | None:
@@ -1133,6 +1146,9 @@ class GameSession:
         for card in list(current.hand):
             current.discard.append(card)
         current.hand.clear()
+        # Discard Phase: "Prepare all of your Champions."
+        for champion in current.board:
+            champion.exhausted = False
         current.draw(5)
 
         self.active_player = "bot" if self.active_player == "player" else "player"
