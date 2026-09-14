@@ -825,3 +825,152 @@ button:not(:disabled):active {
 .app-footer a:hover {
   color: var(--accent);
 }
+
+.bot-action-banner {
+  position: fixed;
+  z-index: 50;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  width: min(680px, calc(100% - 28px));
+  padding: 16px 18px;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: #15221c;
+  box-shadow:
+    0 14px 65px #000b,
+    0 0 28px #e4bc7214;
+}
+.bot-action-copy {
+  flex: 1;
+  min-width: 0;
+}
+.bot-action-heading {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+.bot-action-copy strong {
+  display: block;
+  font-size: 16px;
+  line-height: 1.4;
+  margin-top: 7px;
+}
+.bot-action-deltas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  color: var(--accent-2);
+  font-size: 12px;
+  margin-top: 7px;
+  animation: action-rise 0.4s ease-out;
+}
+.bot-action-visual {
+  flex: 0 0 64px;
+  animation: action-rise 0.4s ease-out;
+}
+.bot-action-visual .card-artwork.compact {
+  width: 64px;
+}
+.bot-action-symbol {
+  display: grid;
+  place-items: center;
+  height: 64px;
+  font-size: 36px;
+  color: var(--accent);
+}
+.bot-action-banner.action-combat {
+  border-color: var(--danger);
+}
+.bot-action-banner.action-combat .bot-action-heading {
+  color: var(--danger);
+}
+.bot-is-acting {
+  padding-bottom: 160px;
+  --action-pulse: board-pulse-a;
+}
+.bot-is-acting[data-action-beat="1"] {
+  --action-pulse: board-pulse-b;
+}
+.bot-is-acting .player-panel.bot,
+.bot-is-acting[data-bot-action="buy"] .center-stack > .panel:first-child {
+  border-color: var(--accent);
+  animation: var(--action-pulse) 0.8s ease-out;
+}
+.bot-is-acting[data-bot-action="combat"] .player-panel.player {
+  border-color: var(--danger);
+  animation: board-hit 0.4s ease-out;
+}
+@keyframes action-rise {
+  from {
+    opacity: 0.35;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes board-pulse-a {
+  from {
+    box-shadow: 0 0 0 4px #e4bc7255;
+  }
+  to {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+@keyframes board-pulse-b {
+  from {
+    box-shadow: 0 0 0 4px #e4bc7255;
+  }
+  to {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+@keyframes board-hit {
+  25% {
+    transform: translateX(-3px);
+  }
+  75% {
+    transform: translateX(3px);
+  }
+}
+@media (max-width: 650px) {
+  .bot-action-banner {
+    bottom: 12px;
+    gap: 12px;
+    padding: 12px;
+    flex-wrap: wrap;
+  }
+  .bot-action-copy strong {
+    font-size: 14px;
+  }
+  .bot-action-banner > button {
+    width: 100%;
+  }
+  .bot-action-heading {
+    font-size: 9px;
+  }
+  .bot-is-acting {
+    padding-bottom: 210px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bot-action-banner *,
+  .bot-is-acting .panel {
+    animation: none !important;
+  }
+}
+.bot-is-acting .stat-value {
+  animation: action-rise 0.4s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .bot-is-acting .stat-value {
+    animation: none !important;
+  }
+}
