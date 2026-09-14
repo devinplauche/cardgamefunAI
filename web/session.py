@@ -341,10 +341,6 @@ class GameSession:
     last_bot_insight: dict[str, Any] | None = field(default=None)
     opponent_purchase_observations: tuple[PublicOpponentPurchase, ...] = ()
     record_history: bool = field(default=True)
-    # True when the "bot" seat is actually a second human (multiplayer).
-    # The engine still keys the guest off the "bot" seat internally, but
-    # human-only affordances (Play all, starting hand size) apply to them.
-    bot_is_human: bool = False
     _event_listener: Callable[[dict[str, Any]], None] | None = field(default=None, repr=False)
     rng: random.Random = field(init=False, repr=False)
     _normal_market_cards: tuple[HRCard, ...] = field(init=False, repr=False)
@@ -378,9 +374,7 @@ class GameSession:
         self.player.setup_starting_deck()
         self.bot.setup_starting_deck()
         self.player.draw(3)
-        # A human guest starts exactly like the host; the AI seat keeps its
-        # deeper opening hand.
-        self.bot.draw(3 if self.bot_is_human else 5)
+        self.bot.draw(5)
         self.market = HRMarket(self.cards, self.rng)
         # Back-reference so sacrifice routing can return Fire Gems to the
         # pile (mirrors HRGame); expend_champion's sacrifice paths call
@@ -433,7 +427,6 @@ class GameSession:
         clone.active_player = self.active_player
         clone.phase = self.phase
         clone.winner = self.winner
-        clone.bot_is_human = self.bot_is_human
         clone.log = []
         clone.history = []
         clone.history_sequence = self.history_sequence
@@ -642,41 +635,21 @@ class GameSession:
         )
         self.log = self.log[-50:]
 
-    def _core_state(self, for_side: str | None = None) -> dict[str, Any]:
-        """State snapshot, optionally from one human's seat.
-
-        ``for_side="bot"`` swaps the player/bot views so the guest in a
-        human-vs-human game sees their own hand under the ``"player"`` key
-        (the key the UI treats as "you") and the host's hand stays hidden.
-        Opponent legal actions and auto-play counts are suppressed: they
-        would leak the other side's hand contents.
-        """
+    def _core_state(self) -> dict[str, Any]:
         self._check_winner()
-        mine = for_side == "bot"
-        state = {
+        return {
             "sessionId": self.session_id,
             "turnNumber": self.turn_number,
             "phase": self.phase,
             "activePlayer": self.active_player,
             "winner": self.winner,
-            "player": _player_view(self.bot if mine else self.player, reveal_hand=True),
-            "bot": _player_view(self.player if mine else self.bot, reveal_hand=False),
+            "player": _player_view(self.player, reveal_hand=True),
+            "bot": _player_view(self.bot, reveal_hand=False),
             "market": _market_view(self.market),
-            "legalActions": self.legal_actions()
-            if (for_side is None or self.active_player == for_side)
-            else [],
-            "autoPlayCount": len(self._auto_play_cards())
-            if (for_side is None or self.active_player == for_side)
-            else 0,
+            "legalActions": self.legal_actions(),
             "log": self.log[-20:],
             "botInsight": self.last_bot_insight,
         }
-        if mine:
-            # The UI keys "you" off state["player"]; keep the seat consistent.
-            state["yourSide"] = "bot"
-        else:
-            state["yourSide"] = for_side or "player"
-        return state
 
     def record_event(self, kind: str, label: str, bot_insight: dict[str, Any] | None = None) -> None:
         # Simulation clones skip this entirely: every call serialises a full
@@ -984,47 +957,7 @@ class GameSession:
         actions.append({"type": "advance_phase", "label": "Next Phase", "priority": -10})
         return sorted(actions, key=lambda item: item.get("priority", 0), reverse=True)
 
-    def _auto_play_cards(self) -> list[HRCard]:
-        """No draws, targets, or immediate choices; purchase flags resolve later.
-
-        Self-sacrifice combat is deferred by the human play path. Unknown
-        effects are excluded, including choice-triggering ally abilities.
-        """
-        current = self._current()
-        if (self.winner or self.phase not in ("play", MAIN_PHASE)
-                or current.pending_choices
-                or (self.active_player == "bot" and not self.bot_is_human)):
-            return []
-        safe = {"gold", "combat", "health", "ally_faction", "ally_gold", "ally_combat",
-                "ally_health", "ally_per_champion_health", "per_champion_combat",
-                "per_champion_health", "per_other_champion_combat", "per_other_guard_combat",
-                "per_other_wild_combat", "top_of_deck", "top_of_deck_action_only",
-                "to_hand", "sacrifice_combat"}
-        in_play = current.played_this_turn + [c.card for c in current.board if c.alive]
-        result = []
-        for card in current.hand:
-            if card.card_type == "champion" or any(k not in safe and v for k, v in card.effects.items()):
-                continue
-            if card.faction and any(
-                other.faction == card.faction and any(
-                    k.startswith("ally_") and k not in safe and v
-                    for k, v in other.effects.items()
-                ) for other in in_play
-            ):
-                continue
-            result.append(card)
-        return result
-
-    def play_all_action(self) -> dict[str, Any]:
-        if ((self.active_player == "bot" and not self.bot_is_human)
-                or self.winner or self.phase not in ("play", MAIN_PHASE)):
-            raise ValueError("Play all is only available during your play phase")
-        while cards := self._auto_play_cards():
-            self.play_card(cards[0].id, manual_self_sacrifice=True)
-        return self.get_state()
-
-    def play_card(self, card_id: str, stun_target_index: int | None = None,
-                  manual_self_sacrifice: bool = False) -> dict[str, Any]:
+    def play_card(self, card_id: str, stun_target_index: int | None = None) -> dict[str, Any]:
         player = self._current()
         opponent = self._opponent()
         if self.phase not in ("play", MAIN_PHASE):
@@ -1037,7 +970,7 @@ class GameSession:
         needs_stun_target = card.get("stun", False)
         stun_target = self._stun_target(opponent, stun_target_index) if needs_stun_target else None
         play_card(player, card, self.market, ally_bonus=ally_bonus, opponent=opponent,
-                  stun_target=stun_target, auto_self_sacrifice=not manual_self_sacrifice)
+                  stun_target=stun_target)
         self.record_event("play", f"Played {card.name}")
         self._drain_effect_log(player, opponent)
         self._check_winner()
@@ -1075,8 +1008,8 @@ class GameSession:
 
         Separate from the card's on-play effect, and optional - Fire Gem gives
         2 gold when played and *may then* be sacrificed for 3 combat. The card
-        leaves play; Fire Gems return to their supply pile, while other cards
-        enter the sacrifice pile, matching the engine sacrifice routing.
+        is banished (removed from the game), matching how the engine already
+        resolves a self-sacrifice it decides to take.
         """
         player = self._current()
         if self.phase not in ("champion", MAIN_PHASE):
@@ -1090,7 +1023,7 @@ class GameSession:
 
         player.combat += amount
         player.played_this_turn.remove(card)
-        hero_engine._sacrifice_to_pile(player, card, self.market)
+        player.banish.append(card)
         self.record_event("sacrifice", f"Sacrificed {card.name} for {amount} combat")
         self._check_winner()
         return self.get_state()
@@ -1217,11 +1150,6 @@ class GameSession:
         for card in list(current.hand):
             current.discard.append(card)
         current.hand.clear()
-        # Unspent gold and combat never carry over: clear them on the seat
-        # ending its turn so the stored state (and the opponent's view of it)
-        # never shows stale leftovers.
-        current.gold = 0
-        current.combat = 0
         # Discard Phase: "Prepare all of your Champions."
         for champion in current.board:
             champion.exhausted = False
@@ -1252,7 +1180,7 @@ class GameSession:
         self._check_winner()
         return self.get_state()
 
-    def get_state(self, for_side: str | None = None) -> dict[str, Any]:
+    def get_state(self) -> dict[str, Any]:
         # Every action handler (play_card, buy_card_action, attack_target_action,
         # advance_phase, end_turn) returns self.get_state(), and apply_action
         # discards it. Inside an MCTS rollout that meant serialising both hands,
@@ -1264,27 +1192,10 @@ class GameSession:
         if not self.record_history:
             self._check_winner()
             return {}
-        state = self._core_state(for_side=for_side)
-        history = self.history[-40:]
-        if for_side == "bot":
-            # History frames are recorded from the host's seat; swap the
-            # player/bot views so the guest inspects past boards as themself.
-            # Deep-copy first: the stored frames must stay host-oriented.
-            history = deepcopy(history)
-            for frame in history:
-                frame_state = frame.get("state")
-                if isinstance(frame_state, dict):
-                    frame_state["player"], frame_state["bot"] = (
-                        frame_state["bot"],
-                        frame_state["player"],
-                    )
-                    frame_state["legalActions"] = []
-                    frame_state["autoPlayCount"] = 0
-        state["history"] = history
+        state = self._core_state()
+        state["history"] = self.history[-40:]
         return state
 
 
-def create_session(seed: int | None = None, algorithm: str = "mcts", budget_ms: int = 60,
-                   bot_is_human: bool = False) -> GameSession:
-    return GameSession(seed=seed, algorithm=algorithm, budget_ms=budget_ms,
-                       bot_is_human=bot_is_human)
+def create_session(seed: int | None = None, algorithm: str = "mcts", budget_ms: int = 60) -> GameSession:
+    return GameSession(seed=seed, algorithm=algorithm, budget_ms=budget_ms)
