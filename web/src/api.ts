@@ -99,6 +99,12 @@ export async function runBotTurn(sessionId: string, algorithm: string, budgetMs:
   });
 }
 
+export async function playAll(sessionId: string): Promise<GameState> {
+  return requestJson<GameState>(`/api/sessions/${sessionId}/play-all`, {
+    method: 'POST', body: '{}',
+  });
+}
+
 export async function streamBotTurn(
   sessionId: string, algorithm: string, budgetMs: number,
   onFrame: (frame: HistoryFrame) => Promise<void>, signal: AbortSignal,
