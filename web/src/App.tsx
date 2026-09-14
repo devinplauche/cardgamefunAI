@@ -144,11 +144,11 @@ function CardTile({
 }) {
   return (
     <article className={`card-tile ${card.cardType === 'champion' ? 'champion' : ''}`}>
-      <div className="card-topline" />
+      <div className="card-topline"><span aria-hidden="true">{card.cardType === 'champion' ? '♜' : '✦'}</span><span>{card.cardType === 'champion' ? 'Champion' : 'Action & item'}</span></div>
       <div className="card-main">
         <div className="card-title-row">
           <h3>{card.name}</h3>
-          <span className="cost-pill">{card.cost}</span>
+          <span className="cost-pill" aria-label={`${card.cost} gold cost`}>{card.cost}</span>
         </div>
         <div className="card-meta">
           <span>{card.faction || 'Neutral'}</span>
@@ -313,7 +313,7 @@ function HistoryInspector({
   onLive: () => void;
 }) {
   return (
-    <Panel title="Move history" subtitle="Pick any frame to inspect the board at that moment.">
+    <Panel className="history-panel" title="Move history" subtitle="Pick any frame to inspect the board at that moment.">
       <div className="history-toolbar">
         <button className="secondary-button" onClick={onLive} disabled={!selectedFrame}>
           Back to Live
@@ -500,7 +500,7 @@ function BoardColumn({
   };
 
   return (
-    <Panel title={title} subtitle={hiddenHand ? 'Hand hidden, board visible.' : 'Your cards and board.'}>
+    <Panel className={`player-panel ${role}`} title={title} subtitle={hiddenHand ? 'Your opponent · hand concealed' : 'Your side of the battlefield'}>
       <PlayerSummary player={player} />
       <div className="subsection">
         <div className="subsection-head">
@@ -836,9 +836,9 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <div>
-          <div className="eyebrow">Hero Realms ML Lab</div>
-          <h1>Browser-based bot testing with a clean, readable battlefield.</h1>
-          <p>Play manually, let the model choose its turn, and inspect each move as it happens.</p>
+          <div className="eyebrow"><span className="brand-mark" aria-hidden="true">♜</span> HERO REALMS <span className="lab-badge">ML LAB</span></div>
+          <h1>Make your next move.</h1>
+          <p>A battle of decks. A game of decisions.</p>
         </div>
         <div className="topbar-controls">
           <label className="field">
@@ -853,7 +853,7 @@ function App() {
             </select>
           </label>
           <label className="field compact">
-            <span>Budget</span>
+            <span>Budget · ms</span>
             <input value={budgetMs} onChange={(event) => setBudgetMs(Number(event.target.value || 0))} inputMode="numeric" />
           </label>
           <button className="secondary-button" onClick={() => void startNewMatch()} disabled={busy}>
@@ -865,7 +865,8 @@ function App() {
         </div>
       </header>
 
-      <main className="layout">
+      <main className="layout" id="battlefield">
+        <div className="arena-heading"><span>BATTLEFIELD</span><span>{isReplayMode ? 'REPLAY' : 'LIVE MATCH'}<i aria-hidden="true" />{displayState ? `TURN ${displayState.turnNumber}` : 'CONNECTING'}</span></div>
         {/*
           Above the board, not below it. This banner used to render as the last
           child of <main>, ~2800px below the fold on a 720px viewport with no
@@ -884,7 +885,7 @@ function App() {
         ) : null}
 
         <section className="hero-strip">
-          <div className={`status-chip ${status.tone}`}>{isReplayMode ? 'Replay mode' : status.message}</div>
+          <div role="status" aria-live="polite" className={`status-chip ${status.tone}`}>{isReplayMode ? 'Replay mode' : status.message}</div>
           <div className="phase-block">
             <span className="phase-label">{phaseLabel}</span>
             <span className="phase-copy">
@@ -910,7 +911,7 @@ function App() {
           <div className="side-stack">
             {displayState ? (
               <BoardColumn
-                title="You"
+                title="Your realm"
                 player={displayState.player}
                 phase={phase}
                 activePlayer={activePlayer}
@@ -958,7 +959,7 @@ function App() {
           <div className="side-stack">
             {displayState ? (
               <BoardColumn
-                title="Bot"
+                title="The challenger"
                 player={displayState.bot}
                 phase={phase}
                 activePlayer={activePlayer}
@@ -973,7 +974,7 @@ function App() {
             ) : null}
 
             {displayState ? (
-              <Panel title="Decision log" subtitle="Latest moves from both sides.">
+              <Panel className="log-panel" title="Decision log" subtitle="Latest moves from both sides.">
                 <LogList entries={displayState.log} />
               </Panel>
             ) : null}
@@ -989,6 +990,7 @@ function App() {
           </div>
         </div>
       </main>
+      <footer className="app-footer"><span>HERO REALMS / ML LAB</span><span>Build your deck. Understand every decision.</span></footer>
     </div>
   );
 }
