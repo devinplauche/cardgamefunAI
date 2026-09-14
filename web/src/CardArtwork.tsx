@@ -8,7 +8,7 @@ export function CardArtwork({
   card,
   compact = false,
 }: {
-  card: CardView;
+  card: Pick<CardView, 'name' | 'cardType'>;
   compact?: boolean;
 }) {
   const filename = CARD_ART[card.name];

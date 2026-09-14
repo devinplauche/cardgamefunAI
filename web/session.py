@@ -7,7 +7,7 @@ from pathlib import Path
 import random
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 #: Imported as a module, not `from ... import AGENT_CHOOSES_SACRIFICE`, so the
 #: flag is read at call time. hero_ab.paired_experiment flips knobs by setting
@@ -341,6 +341,7 @@ class GameSession:
     last_bot_insight: dict[str, Any] | None = field(default=None)
     opponent_purchase_observations: tuple[PublicOpponentPurchase, ...] = ()
     record_history: bool = field(default=True)
+    _event_listener: Callable[[dict[str, Any]], None] | None = field(default=None, repr=False)
     rng: random.Random = field(init=False, repr=False)
     _normal_market_cards: tuple[HRCard, ...] = field(init=False, repr=False)
     _full_inventory: tuple[HRCard, ...] = field(init=False, repr=False)
@@ -432,6 +433,7 @@ class GameSession:
         clone.last_bot_insight = None
         clone.opponent_purchase_observations = self.opponent_purchase_observations
         clone.record_history = False
+        clone._event_listener = None
         # Immutable card objects plus read-only-by-convention inventory
         # templates are safe to share. Each determinization copies the Counter
         # before subtracting public cards.
@@ -670,6 +672,8 @@ class GameSession:
             }
         )
         self.history = self.history[-80:]
+        if self._event_listener is not None:
+            self._event_listener(self.history[-1])
 
     def _play_card_actions(self, player, opponent) -> list[dict[str, Any]]:
         actions: list[dict[str, Any]] = []
@@ -1160,12 +1164,18 @@ class GameSession:
         self._check_winner()
         return self.get_state()
 
-    def run_bot_turn(self) -> dict[str, Any]:
+    def run_bot_turn(
+        self, on_event: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         from web.bot import run_bot_turn
 
         if self.active_player != "bot" or self.winner:
             return self.get_state()
-        insight = run_bot_turn(self, budget_ms=self.budget_ms, algorithm=self.algorithm)
+        self._event_listener = on_event
+        try:
+            insight = run_bot_turn(self, budget_ms=self.budget_ms, algorithm=self.algorithm)
+        finally:
+            self._event_listener = None
         self.last_bot_insight = insight
         self._check_winner()
         return self.get_state()
