@@ -869,8 +869,12 @@ def _stun_champion(opponent: HRPlayer, target: Optional[BoardChampion] = None) -
 
 def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
               ally_bonus: bool = False, opponent: HRPlayer = None,
-              stun_target: Optional[BoardChampion] = None):
+              stun_target: Optional[BoardChampion] = None,
+              auto_self_sacrifice: bool = True):
     """Play a card from hand, applying all its effects.
+
+    Human UI callers disable auto_self_sacrifice to keep optional combat
+    sacrifice manual. The default preserves automated-game behavior.
 
     Champions: base effects are from their {Expend} ability, NOT on-play -
     they just go to the board; expend them later via expend_champion().
@@ -989,7 +993,7 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
     # With AGENT_CHOOSES_SACRIFICE the engine declines to decide: the card
     # stays in played_this_turn and web/session.py's `sacrifice_played` action
     # offers the bonus to whoever is playing. See the flag's own comment.
-    if sac_combat > 0 and not AGENT_CHOOSES_SACRIFICE and (
+    if sac_combat > 0 and auto_self_sacrifice and not AGENT_CHOOSES_SACRIFICE and (
         guaranteed_lethal
         or _should_self_sacrifice(player, opponent, requires_open_combat=True)
     ):
