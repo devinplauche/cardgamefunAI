@@ -1,3 +1,6 @@
+import { BotActionBanner } from './BotActionBanner';
+import { useBotPlayback } from './useBotPlayback';
+import { BotStreamError } from './botStream';
 import { CardArtwork } from './CardArtwork';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -9,7 +12,6 @@ import {
   expendChampion,
   loadSession,
   playCard,
-  runBotTurn,
   sacrificePlayed,
 } from './api';
 import type {
@@ -85,7 +87,7 @@ function Stat({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="stat">
       <div className="stat-label">{label}</div>
-      <div className="stat-value">{value}</div>
+      <div className="stat-value" key={value}>{value}</div>
     </div>
   );
 }
@@ -309,16 +311,18 @@ function HistoryInspector({
   selectedFrame,
   onSelectFrame,
   onLive,
+  disabled = false,
 }: {
   history: HistoryFrame[];
   selectedFrame: HistoryFrame | null;
   onSelectFrame: (frame: HistoryFrame) => void;
   onLive: () => void;
+  disabled?: boolean;
 }) {
   return (
     <Panel className="history-panel" title="Move history" subtitle="Pick any frame to inspect the board at that moment.">
       <div className="history-toolbar">
-        <button className="secondary-button" onClick={onLive} disabled={!selectedFrame}>
+        <button className="secondary-button" onClick={onLive} disabled={disabled || !selectedFrame}>
           Back to Live
         </button>
         <span className="history-count">{history.length} frames</span>
@@ -327,6 +331,7 @@ function HistoryInspector({
         {history.slice().reverse().map((frame) => (
           <button
             key={frame.id}
+            disabled={disabled}
             className={`history-item ${selectedFrame?.id === frame.id ? 'selected' : ''}`}
             onClick={() => onSelectFrame(frame)}
           >
@@ -693,14 +698,16 @@ function App() {
     message: 'Ready to start a match.',
   });
   const [busy, setBusy] = useState(false);
+  const playback = useBotPlayback();
+  const attemptedBotTurn = useRef<string | null>(null);
   const winnerBannerRef = useRef<HTMLElement | null>(null);
 
-  const displayState = replayFrame?.state ?? session;
+  const displayState = playback.action?.frame.state ?? replayFrame?.state ?? session;
   const phase = displayState?.phase ?? 'play';
   const activePlayer = displayState?.activePlayer ?? 'player';
   const isBotTurn = activePlayer === 'bot';
   const isReplayMode = replayFrame !== null;
-  const canMutate = !!session && !isReplayMode;
+  const canMutate = !!session && !isReplayMode && !busy && !playback.running;
 
   // The live game's outcome, which is what "the match is over" means even
   // while a history frame from the middle of the game is on screen.
@@ -754,7 +761,7 @@ function App() {
   }
 
   async function handlePlay(cardId: string, stunTargetIndex?: number) {
-    if (!session || isReplayMode) return;
+    if (!canMutate || !session) return;
     await refreshFrom(playCard(session.sessionId, cardId, stunTargetIndex));
   }
 
@@ -765,14 +772,14 @@ function App() {
     sacrificeIndex?: number,
     sacrificeZone?: string,
   ) {
-    if (!session || isReplayMode) return;
+    if (!canMutate || !session) return;
     await refreshFrom(
       expendChampion(session.sessionId, championId, stunTargetIndex, choice, sacrificeIndex, sacrificeZone),
     );
   }
 
   async function handleBuy(index: number) {
-    if (!session || isReplayMode) return;
+    if (!canMutate || !session) return;
     await refreshFrom(buyCard(session.sessionId, index));
   }
 
@@ -780,24 +787,39 @@ function App() {
     // isReplayMode, like every other mutating handler: without it, clicking
     // Sacrifice while inspecting a history frame banished a card in the *live*
     // game, since the button is enabled off the replayed frame's active player.
-    if (!session || isReplayMode) return;
+    if (!canMutate || !session) return;
     await refreshFrom(sacrificePlayed(session.sessionId, cardId));
   }
 
   async function handleAttack(target: 'player' | 'champion', championId?: string) {
-    if (!session || isReplayMode) return;
+    if (!canMutate || !session) return;
     await refreshFrom(attackTarget(session.sessionId, target, championId));
   }
 
   async function handleAdvance() {
-    if (!session || isReplayMode) return;
+    if (!canMutate || !session) return;
     await refreshFrom(phase === 'combat' ? endTurn(session.sessionId) : advancePhase(session.sessionId));
   }
 
   async function handleBotTurn() {
-    if (!session || isReplayMode) return;
-    const next = await refreshFrom(runBotTurn(session.sessionId, algorithm, budgetMs));
-    if (next) setStatus({ tone: 'good', message: `Bot turn complete in ${next.botInsight?.elapsedMs ?? 0} ms.` });
+    if (!canMutate || !session) return;
+    if (session.activePlayer !== 'bot' || session.winner) return;
+    attemptedBotTurn.current = `${session.sessionId}:${session.turnNumber}`;
+    setBusy(true);
+    setStatus({ tone: 'busy', message: 'The challenger is taking its turn…' });
+    try {
+      const next = await playback.run(session, algorithm, budgetMs);
+      setSession(next);
+      setStatus({ tone: 'good', message: next.winner ? 'Match complete.' : 'Bot turn complete. Your move.' });
+    } catch (error) {
+      // Preserve the latest authoritative board on interruption; never rerun a
+      // partially completed turn automatically. Refresh can recover a dropped stream.
+      if (error instanceof BotStreamError && error.state) setSession(error.state);
+      else if (playback.latest.current) setSession({ ...session, ...playback.latest.current });
+      setStatus({ tone: 'error', message: `${error instanceof Error ? error.message : 'Bot turn failed.'} Refresh to check the board.` });
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleRefresh() {
@@ -825,19 +847,23 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!session || busy || !isBotTurn || session.winner || isReplayMode) return;
+    if (!session || busy || playback.running || session.activePlayer !== 'bot' || session.winner || isReplayMode) return;
+    const turnKey = `${session.sessionId}:${session.turnNumber}`;
+    if (attemptedBotTurn.current === turnKey) return;
     const timer = window.setTimeout(() => {
+      attemptedBotTurn.current = turnKey;
       void handleBotTurn();
     }, 350);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.sessionId, session?.activePlayer, session?.phase, busy, isReplayMode]);
+  }, [session?.sessionId, session?.activePlayer, session?.turnNumber, busy, isReplayMode, playback.running]);
 
   // Under the main phase, advancing IS ending the turn.
   const actionLabel = (phase === 'combat' || phase === 'main') ? 'End Turn' : 'Next Phase';
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${playback.running ? 'bot-is-acting' : ''}`} data-bot-action={playback.action?.frame.kind} data-action-beat={(playback.action?.number ?? 0) % 2}>
+      {playback.running && <BotActionBanner action={playback.action} skipping={playback.skipping} onSkip={playback.skip} />}
       <header className="topbar">
         <div>
           <div className="eyebrow"><span className="brand-mark" aria-hidden="true">♜</span> HERO REALMS <span className="lab-badge">ML LAB</span></div>
@@ -985,6 +1011,7 @@ function App() {
 
             {session ? (
               <HistoryInspector
+                disabled={busy || playback.running}
                 history={session.history ?? []}
                 selectedFrame={replayFrame}
                 onSelectFrame={setReplayFrame}
