@@ -7,7 +7,7 @@ from pathlib import Path
 import random
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 #: Imported as a module, not `from ... import AGENT_CHOOSES_SACRIFICE`, so the
 #: flag is read at call time. hero_ab.paired_experiment flips knobs by setting
@@ -341,6 +341,7 @@ class GameSession:
     last_bot_insight: dict[str, Any] | None = field(default=None)
     opponent_purchase_observations: tuple[PublicOpponentPurchase, ...] = ()
     record_history: bool = field(default=True)
+    _event_listener: Callable[[dict[str, Any]], None] | None = field(default=None, repr=False)
     rng: random.Random = field(init=False, repr=False)
     _normal_market_cards: tuple[HRCard, ...] = field(init=False, repr=False)
     _full_inventory: tuple[HRCard, ...] = field(init=False, repr=False)
@@ -432,6 +433,7 @@ class GameSession:
         clone.last_bot_insight = None
         clone.opponent_purchase_observations = self.opponent_purchase_observations
         clone.record_history = False
+        clone._event_listener = None
         # Immutable card objects plus read-only-by-convention inventory
         # templates are safe to share. Each determinization copies the Counter
         # before subtracting public cards.
@@ -645,6 +647,7 @@ class GameSession:
             "bot": _player_view(self.bot, reveal_hand=False),
             "market": _market_view(self.market),
             "legalActions": self.legal_actions(),
+            "autoPlayCount": len(self._auto_play_cards()),
             "log": self.log[-20:],
             "botInsight": self.last_bot_insight,
         }
@@ -670,6 +673,8 @@ class GameSession:
             }
         )
         self.history = self.history[-80:]
+        if self._event_listener is not None:
+            self._event_listener(self.history[-1])
 
     def _play_card_actions(self, player, opponent) -> list[dict[str, Any]]:
         actions: list[dict[str, Any]] = []
@@ -953,7 +958,44 @@ class GameSession:
         actions.append({"type": "advance_phase", "label": "Next Phase", "priority": -10})
         return sorted(actions, key=lambda item: item.get("priority", 0), reverse=True)
 
-    def play_card(self, card_id: str, stun_target_index: int | None = None) -> dict[str, Any]:
+    def _auto_play_cards(self) -> list[HRCard]:
+        """No draws, targets, or immediate choices; purchase flags resolve later.
+
+        Self-sacrifice combat is deferred by the human play path. Unknown
+        effects are excluded, including choice-triggering ally abilities.
+        """
+        if (self.active_player != "player" or self.winner
+                or self.phase not in ("play", MAIN_PHASE) or self.player.pending_choices):
+            return []
+        safe = {"gold", "combat", "health", "ally_faction", "ally_gold", "ally_combat",
+                "ally_health", "ally_per_champion_health", "per_champion_combat",
+                "per_champion_health", "per_other_champion_combat", "per_other_guard_combat",
+                "per_other_wild_combat", "top_of_deck", "top_of_deck_action_only",
+                "to_hand", "sacrifice_combat"}
+        in_play = self.player.played_this_turn + [c.card for c in self.player.board if c.alive]
+        result = []
+        for card in self.player.hand:
+            if card.card_type == "champion" or any(k not in safe and v for k, v in card.effects.items()):
+                continue
+            if card.faction and any(
+                other.faction == card.faction and any(
+                    k.startswith("ally_") and k not in safe and v
+                    for k, v in other.effects.items()
+                ) for other in in_play
+            ):
+                continue
+            result.append(card)
+        return result
+
+    def play_all_action(self) -> dict[str, Any]:
+        if self.active_player != "player" or self.winner or self.phase not in ("play", MAIN_PHASE):
+            raise ValueError("Play all is only available during your play phase")
+        while cards := self._auto_play_cards():
+            self.play_card(cards[0].id, manual_self_sacrifice=True)
+        return self.get_state()
+
+    def play_card(self, card_id: str, stun_target_index: int | None = None,
+                  manual_self_sacrifice: bool = False) -> dict[str, Any]:
         player = self._current()
         opponent = self._opponent()
         if self.phase not in ("play", MAIN_PHASE):
@@ -966,7 +1008,7 @@ class GameSession:
         needs_stun_target = card.get("stun", False)
         stun_target = self._stun_target(opponent, stun_target_index) if needs_stun_target else None
         play_card(player, card, self.market, ally_bonus=ally_bonus, opponent=opponent,
-                  stun_target=stun_target)
+                  stun_target=stun_target, auto_self_sacrifice=not manual_self_sacrifice)
         self.record_event("play", f"Played {card.name}")
         self._drain_effect_log(player, opponent)
         self._check_winner()
@@ -1004,8 +1046,8 @@ class GameSession:
 
         Separate from the card's on-play effect, and optional - Fire Gem gives
         2 gold when played and *may then* be sacrificed for 3 combat. The card
-        is banished (removed from the game), matching how the engine already
-        resolves a self-sacrifice it decides to take.
+        leaves play; Fire Gems return to their supply pile, while other cards
+        enter the sacrifice pile, matching the engine sacrifice routing.
         """
         player = self._current()
         if self.phase not in ("champion", MAIN_PHASE):
@@ -1019,7 +1061,7 @@ class GameSession:
 
         player.combat += amount
         player.played_this_turn.remove(card)
-        player.banish.append(card)
+        hero_engine._sacrifice_to_pile(player, card, self.market)
         self.record_event("sacrifice", f"Sacrificed {card.name} for {amount} combat")
         self._check_winner()
         return self.get_state()
@@ -1160,12 +1202,18 @@ class GameSession:
         self._check_winner()
         return self.get_state()
 
-    def run_bot_turn(self) -> dict[str, Any]:
+    def run_bot_turn(
+        self, on_event: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         from web.bot import run_bot_turn
 
         if self.active_player != "bot" or self.winner:
             return self.get_state()
-        insight = run_bot_turn(self, budget_ms=self.budget_ms, algorithm=self.algorithm)
+        self._event_listener = on_event
+        try:
+            insight = run_bot_turn(self, budget_ms=self.budget_ms, algorithm=self.algorithm)
+        finally:
+            self._event_listener = None
         self.last_bot_insight = insight
         self._check_winner()
         return self.get_state()

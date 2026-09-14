@@ -123,6 +123,7 @@ export interface LegalAction {
 }
 
 export interface GameStateCore {
+  autoPlayCount?: number;
   sessionId: string;
   turnNumber: number;
   phase: Phase;

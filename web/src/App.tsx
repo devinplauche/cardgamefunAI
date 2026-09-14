@@ -1,3 +1,7 @@
+import { BotActionBanner } from './BotActionBanner';
+import { useBotPlayback } from './useBotPlayback';
+import { BotStreamError } from './botStream';
+import { CardArtwork } from './CardArtwork';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   advancePhase,
@@ -8,7 +12,7 @@ import {
   expendChampion,
   loadSession,
   playCard,
-  runBotTurn,
+  playAll,
   sacrificePlayed,
 } from './api';
 import type {
@@ -84,7 +88,7 @@ function Stat({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="stat">
       <div className="stat-label">{label}</div>
-      <div className="stat-value">{value}</div>
+      <div className="stat-value" key={value}>{value}</div>
     </div>
   );
 }
@@ -144,11 +148,12 @@ function CardTile({
 }) {
   return (
     <article className={`card-tile ${card.cardType === 'champion' ? 'champion' : ''}`}>
-      <div className="card-topline" />
+      <div className="card-topline"><span aria-hidden="true">{card.cardType === 'champion' ? '♜' : '✦'}</span><span>{card.cardType === 'champion' ? 'Champion' : 'Action & item'}</span></div>
+      <CardArtwork card={card} />
       <div className="card-main">
         <div className="card-title-row">
           <h3>{card.name}</h3>
-          <span className="cost-pill">{card.cost}</span>
+          <span className="cost-pill" aria-label={`${card.cost} gold cost`}>{card.cost}</span>
         </div>
         <div className="card-meta">
           <span>{card.faction || 'Neutral'}</span>
@@ -207,6 +212,7 @@ function ChampionRow({
 }) {
   return (
     <div className={`champ-row ${quiet ? 'quiet' : ''}`}>
+      <CardArtwork card={champion} compact />
       <div className="champ-copy">
         <div className="champ-name">
           {champion.name}
@@ -306,16 +312,18 @@ function HistoryInspector({
   selectedFrame,
   onSelectFrame,
   onLive,
+  disabled = false,
 }: {
   history: HistoryFrame[];
   selectedFrame: HistoryFrame | null;
   onSelectFrame: (frame: HistoryFrame) => void;
   onLive: () => void;
+  disabled?: boolean;
 }) {
   return (
-    <Panel title="Move history" subtitle="Pick any frame to inspect the board at that moment.">
+    <Panel className="history-panel" title="Move history" subtitle="Pick any frame to inspect the board at that moment.">
       <div className="history-toolbar">
-        <button className="secondary-button" onClick={onLive} disabled={!selectedFrame}>
+        <button className="secondary-button" onClick={onLive} disabled={disabled || !selectedFrame}>
           Back to Live
         </button>
         <span className="history-count">{history.length} frames</span>
@@ -324,6 +332,7 @@ function HistoryInspector({
         {history.slice().reverse().map((frame) => (
           <button
             key={frame.id}
+            disabled={disabled}
             className={`history-item ${selectedFrame?.id === frame.id ? 'selected' : ''}`}
             onClick={() => onSelectFrame(frame)}
           >
@@ -433,6 +442,8 @@ function BoardColumn({
   phase,
   activePlayer,
   onPlay,
+  onPlayAll,
+  autoPlayCount = 0,
   onExpend,
   onSacrifice,
   onAttack,
@@ -450,6 +461,8 @@ function BoardColumn({
   legalActions?: LegalAction[];
   /** False while inspecting a history frame, which must never mutate the game. */
   live: boolean;
+  onPlayAll?: () => void;
+  autoPlayCount?: number;
   onPlay?: (cardId: string, stunTargetIndex?: number) => Promise<void>;
   onExpend?: (
     championId: string,
@@ -500,7 +513,7 @@ function BoardColumn({
   };
 
   return (
-    <Panel title={title} subtitle={hiddenHand ? 'Hand hidden, board visible.' : 'Your cards and board.'}>
+    <Panel className={`player-panel ${role}`} title={title} subtitle={hiddenHand ? 'Your opponent · hand concealed' : 'Your side of the battlefield'}>
       <PlayerSummary player={player} />
       <div className="subsection">
         <div className="subsection-head">
@@ -599,7 +612,7 @@ function BoardColumn({
       {player.playedThisTurn.some((card) => ((card.effects.sacrifice_combat as number | undefined) ?? 0) > 0) ? (
         <div className="subsection">
           <div className="subsection-head">
-            <h3>In play</h3>
+            <h3>In play · optional abilities</h3>
           </div>
           <div className="stack">
             {player.playedThisTurn
@@ -607,6 +620,7 @@ function BoardColumn({
               .filter(({ card }) => ((card.effects.sacrifice_combat as number | undefined) ?? 0) > 0)
               .map(({ card, index }) => (
                 <div key={`${card.id}-played-${index}`} className="champ-row">
+                  <CardArtwork card={card} compact />
                   <div className="champ-copy">
                     <div className="champ-name">{card.name}</div>
                     <div className="champ-sub">
@@ -615,10 +629,10 @@ function BoardColumn({
                   </div>
                   <button
                     className="ghost-button subtle"
-                    disabled={!canInteract || !onSacrifice}
+                    disabled={!canInteract || !onSacrifice || !legalActions.some((action) => action.type === 'sacrifice_played' && action.cardId === card.id)}
                     onClick={() => onSacrifice && void onSacrifice(card.id)}
                   >
-                    Sacrifice
+                    Sacrifice · +{card.effects.sacrifice_combat as number} combat
                   </button>
                 </div>
               ))}
@@ -628,6 +642,13 @@ function BoardColumn({
       <div className="subsection">
         <div className="subsection-head">
           <h3>{hiddenHand ? 'Hidden hand' : 'Hand'}</h3>
+          {!hiddenHand && onPlayAll ? (
+            <button className="secondary-button" onClick={onPlayAll}
+              disabled={!canInteract || !phaseAllows(phase, 'play') || autoPlayCount === 0}
+              title="Play straightforward cards. Draw, targeting, and choice effects stay in hand.">
+              Play all{autoPlayCount > 0 ? ` (${autoPlayCount})` : ''}
+            </button>
+          ) : null}
         </div>
         <div className="stack">
           {hiddenHand ? (
@@ -689,14 +710,16 @@ function App() {
     message: 'Ready to start a match.',
   });
   const [busy, setBusy] = useState(false);
+  const playback = useBotPlayback();
+  const attemptedBotTurn = useRef<string | null>(null);
   const winnerBannerRef = useRef<HTMLElement | null>(null);
 
-  const displayState = replayFrame?.state ?? session;
+  const displayState = playback.action?.frame.state ?? replayFrame?.state ?? session;
   const phase = displayState?.phase ?? 'play';
   const activePlayer = displayState?.activePlayer ?? 'player';
   const isBotTurn = activePlayer === 'bot';
   const isReplayMode = replayFrame !== null;
-  const canMutate = !!session && !isReplayMode;
+  const canMutate = !!session && !isReplayMode && !busy && !playback.running;
 
   // The live game's outcome, which is what "the match is over" means even
   // while a history frame from the middle of the game is on screen.
@@ -749,8 +772,14 @@ function App() {
     return next;
   }
 
+  async function handlePlayAll() {
+    if (!canMutate || !session || session.activePlayer !== 'player') return;
+    const next = await refreshFrom(playAll(session.sessionId));
+    if (next) setStatus({ tone: 'good', message: 'Straightforward cards played. Optional abilities remain yours to use.' });
+  }
+
   async function handlePlay(cardId: string, stunTargetIndex?: number) {
-    if (!session || isReplayMode) return;
+    if (!canMutate || !session) return;
     await refreshFrom(playCard(session.sessionId, cardId, stunTargetIndex));
   }
 
@@ -761,14 +790,14 @@ function App() {
     sacrificeIndex?: number,
     sacrificeZone?: string,
   ) {
-    if (!session || isReplayMode) return;
+    if (!canMutate || !session) return;
     await refreshFrom(
       expendChampion(session.sessionId, championId, stunTargetIndex, choice, sacrificeIndex, sacrificeZone),
     );
   }
 
   async function handleBuy(index: number) {
-    if (!session || isReplayMode) return;
+    if (!canMutate || !session) return;
     await refreshFrom(buyCard(session.sessionId, index));
   }
 
@@ -776,24 +805,39 @@ function App() {
     // isReplayMode, like every other mutating handler: without it, clicking
     // Sacrifice while inspecting a history frame banished a card in the *live*
     // game, since the button is enabled off the replayed frame's active player.
-    if (!session || isReplayMode) return;
+    if (!canMutate || !session) return;
     await refreshFrom(sacrificePlayed(session.sessionId, cardId));
   }
 
   async function handleAttack(target: 'player' | 'champion', championId?: string) {
-    if (!session || isReplayMode) return;
+    if (!canMutate || !session) return;
     await refreshFrom(attackTarget(session.sessionId, target, championId));
   }
 
   async function handleAdvance() {
-    if (!session || isReplayMode) return;
+    if (!canMutate || !session) return;
     await refreshFrom(phase === 'combat' ? endTurn(session.sessionId) : advancePhase(session.sessionId));
   }
 
   async function handleBotTurn() {
-    if (!session || isReplayMode) return;
-    const next = await refreshFrom(runBotTurn(session.sessionId, algorithm, budgetMs));
-    if (next) setStatus({ tone: 'good', message: `Bot turn complete in ${next.botInsight?.elapsedMs ?? 0} ms.` });
+    if (!canMutate || !session) return;
+    if (session.activePlayer !== 'bot' || session.winner) return;
+    attemptedBotTurn.current = `${session.sessionId}:${session.turnNumber}`;
+    setBusy(true);
+    setStatus({ tone: 'busy', message: 'The challenger is taking its turn…' });
+    try {
+      const next = await playback.run(session, algorithm, budgetMs);
+      setSession(next);
+      setStatus({ tone: 'good', message: next.winner ? 'Match complete.' : 'Bot turn complete. Your move.' });
+    } catch (error) {
+      // Preserve the latest authoritative board on interruption; never rerun a
+      // partially completed turn automatically. Refresh can recover a dropped stream.
+      if (error instanceof BotStreamError && error.state) setSession(error.state);
+      else if (playback.latest.current) setSession({ ...session, ...playback.latest.current });
+      setStatus({ tone: 'error', message: `${error instanceof Error ? error.message : 'Bot turn failed.'} Refresh to check the board.` });
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleRefresh() {
@@ -821,24 +865,28 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!session || busy || !isBotTurn || session.winner || isReplayMode) return;
+    if (!session || busy || playback.running || session.activePlayer !== 'bot' || session.winner || isReplayMode) return;
+    const turnKey = `${session.sessionId}:${session.turnNumber}`;
+    if (attemptedBotTurn.current === turnKey) return;
     const timer = window.setTimeout(() => {
+      attemptedBotTurn.current = turnKey;
       void handleBotTurn();
     }, 350);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.sessionId, session?.activePlayer, session?.phase, busy, isReplayMode]);
+  }, [session?.sessionId, session?.activePlayer, session?.turnNumber, busy, isReplayMode, playback.running]);
 
   // Under the main phase, advancing IS ending the turn.
   const actionLabel = (phase === 'combat' || phase === 'main') ? 'End Turn' : 'Next Phase';
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${playback.running ? 'bot-is-acting' : ''}`} data-bot-action={playback.action?.frame.kind} data-action-beat={(playback.action?.number ?? 0) % 2}>
+      {playback.running && <BotActionBanner action={playback.action} skipping={playback.skipping} onSkip={playback.skip} />}
       <header className="topbar">
         <div>
-          <div className="eyebrow">Hero Realms ML Lab</div>
-          <h1>Browser-based bot testing with a clean, readable battlefield.</h1>
-          <p>Play manually, let the model choose its turn, and inspect each move as it happens.</p>
+          <div className="eyebrow"><span className="brand-mark" aria-hidden="true">♜</span> HERO REALMS <span className="lab-badge">ML LAB</span></div>
+          <h1>Make your next move.</h1>
+          <p>A battle of decks. A game of decisions.</p>
         </div>
         <div className="topbar-controls">
           <label className="field">
@@ -853,7 +901,7 @@ function App() {
             </select>
           </label>
           <label className="field compact">
-            <span>Budget</span>
+            <span>Budget · ms</span>
             <input value={budgetMs} onChange={(event) => setBudgetMs(Number(event.target.value || 0))} inputMode="numeric" />
           </label>
           <button className="secondary-button" onClick={() => void startNewMatch()} disabled={busy}>
@@ -865,7 +913,8 @@ function App() {
         </div>
       </header>
 
-      <main className="layout">
+      <main className="layout" id="battlefield">
+        <div className="arena-heading"><span>BATTLEFIELD</span><span>{isReplayMode ? 'REPLAY' : 'LIVE MATCH'}<i aria-hidden="true" />{displayState ? `TURN ${displayState.turnNumber}` : 'CONNECTING'}</span></div>
         {/*
           Above the board, not below it. This banner used to render as the last
           child of <main>, ~2800px below the fold on a 720px viewport with no
@@ -884,7 +933,7 @@ function App() {
         ) : null}
 
         <section className="hero-strip">
-          <div className={`status-chip ${status.tone}`}>{isReplayMode ? 'Replay mode' : status.message}</div>
+          <div role="status" aria-live="polite" className={`status-chip ${status.tone}`}>{isReplayMode ? 'Replay mode' : status.message}</div>
           <div className="phase-block">
             <span className="phase-label">{phaseLabel}</span>
             <span className="phase-copy">
@@ -910,11 +959,13 @@ function App() {
           <div className="side-stack">
             {displayState ? (
               <BoardColumn
-                title="You"
+                title="Your realm"
                 player={displayState.player}
                 phase={phase}
                 activePlayer={activePlayer}
                 onPlay={handlePlay}
+                onPlayAll={() => void handlePlayAll()}
+                autoPlayCount={displayState.autoPlayCount ?? 0}
                 onExpend={handleExpend}
                 onSacrifice={handleSacrifice}
                 onAttack={handleAttack}
@@ -958,7 +1009,7 @@ function App() {
           <div className="side-stack">
             {displayState ? (
               <BoardColumn
-                title="Bot"
+                title="The challenger"
                 player={displayState.bot}
                 phase={phase}
                 activePlayer={activePlayer}
@@ -973,13 +1024,14 @@ function App() {
             ) : null}
 
             {displayState ? (
-              <Panel title="Decision log" subtitle="Latest moves from both sides.">
+              <Panel className="log-panel" title="Decision log" subtitle="Latest moves from both sides.">
                 <LogList entries={displayState.log} />
               </Panel>
             ) : null}
 
             {session ? (
               <HistoryInspector
+                disabled={busy || playback.running}
                 history={session.history ?? []}
                 selectedFrame={replayFrame}
                 onSelectFrame={setReplayFrame}
@@ -989,6 +1041,7 @@ function App() {
           </div>
         </div>
       </main>
+      <footer className="app-footer"><span>HERO REALMS / ML LAB</span><a href="https://www.herorealms.com/card-gallery/" target="_blank" rel="noreferrer">Card artwork © Wise Wizard Games</a></footer>
     </div>
   );
 }

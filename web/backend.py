@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections import defaultdict
+from threading import Lock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -16,6 +18,7 @@ from web.session import create_session
 
 
 SESSIONS: dict[str, object] = {}
+SESSION_LOCKS = defaultdict(Lock)
 
 
 def _json_bytes(payload: dict) -> bytes:
@@ -117,6 +120,34 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _stream_bot_turn(self, session) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        connected = True
+
+        def emit(payload):
+            nonlocal connected
+            if not connected:
+                return
+            try:
+                self.wfile.write(_json_bytes(payload) + b"\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                # Finish the committed turn even if its viewer disconnects.
+                connected = False
+
+        try:
+            state = session.run_bot_turn(on_event=lambda frame: emit({"type": "frame", "frame": frame}))
+            emit({"type": "complete", "state": state})
+        except Exception as exc:  # A streamed response already has its HTTP headers.
+            emit({"type": "error", "error": str(exc), "state": session.get_state()})
+
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         return
 
@@ -136,7 +167,14 @@ class Handler(BaseHTTPRequestHandler):
             if err:
                 self._send(404, err)
                 return
-            self._send(200, session.get_state())
+            lock = SESSION_LOCKS[session.session_id]
+            if not lock.acquire(blocking=False):
+                self._send(409, {"error": "A turn is still running. Try refreshing again shortly."})
+                return
+            try:
+                self._send(200, session.get_state())
+            finally:
+                lock.release()
             return
 
         self._send(404, {"error": "Not found"})
@@ -163,9 +201,16 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             route = parts[3]
+            lock = SESSION_LOCKS[session.session_id]
+            if not lock.acquire(blocking=False):
+                self._send(409, {"error": "A turn is already running. Refresh when it finishes."})
+                return
             try:
                 if route == "play-card":
-                    payload = session.play_card(body["cardId"], body.get("stunTargetIndex"))
+                    payload = session.play_card(body["cardId"], body.get("stunTargetIndex"),
+                                                manual_self_sacrifice=session.active_player == "player")
+                elif route == "play-all":
+                    payload = session.play_all_action()
                 elif route == "expend-champion":
                     payload = session.expend_champion_action(
                         body["championId"], body.get("stunTargetIndex"), body.get("choice"),
@@ -184,11 +229,14 @@ class Handler(BaseHTTPRequestHandler):
                     payload = session.advance_phase()
                 elif route == "end-turn":
                     payload = session.end_turn()
-                elif route == "bot-turn":
+                elif route in ("bot-turn", "bot-turn-stream"):
                     if body.get("algorithm"):
                         session.algorithm = body["algorithm"]
                     if body.get("budgetMs") is not None:
                         session.budget_ms = int(body["budgetMs"])
+                    if route == "bot-turn-stream":
+                        self._stream_bot_turn(session)
+                        return
                     payload = session.run_bot_turn()
                 else:
                     self._send(404, {"error": "Unknown action"})
@@ -196,6 +244,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001
                 self._send(400, {"error": str(exc)})
                 return
+            finally:
+                lock.release()
 
             self._send(200, payload)
             return
