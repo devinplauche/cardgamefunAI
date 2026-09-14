@@ -12,6 +12,7 @@ import {
   expendChampion,
   loadSession,
   playCard,
+  playAll,
   sacrificePlayed,
 } from './api';
 import type {
@@ -441,6 +442,8 @@ function BoardColumn({
   phase,
   activePlayer,
   onPlay,
+  onPlayAll,
+  autoPlayCount = 0,
   onExpend,
   onSacrifice,
   onAttack,
@@ -458,6 +461,8 @@ function BoardColumn({
   legalActions?: LegalAction[];
   /** False while inspecting a history frame, which must never mutate the game. */
   live: boolean;
+  onPlayAll?: () => void;
+  autoPlayCount?: number;
   onPlay?: (cardId: string, stunTargetIndex?: number) => Promise<void>;
   onExpend?: (
     championId: string,
@@ -607,7 +612,7 @@ function BoardColumn({
       {player.playedThisTurn.some((card) => ((card.effects.sacrifice_combat as number | undefined) ?? 0) > 0) ? (
         <div className="subsection">
           <div className="subsection-head">
-            <h3>In play</h3>
+            <h3>In play · optional abilities</h3>
           </div>
           <div className="stack">
             {player.playedThisTurn
@@ -624,10 +629,10 @@ function BoardColumn({
                   </div>
                   <button
                     className="ghost-button subtle"
-                    disabled={!canInteract || !onSacrifice}
+                    disabled={!canInteract || !onSacrifice || !legalActions.some((action) => action.type === 'sacrifice_played' && action.cardId === card.id)}
                     onClick={() => onSacrifice && void onSacrifice(card.id)}
                   >
-                    Sacrifice
+                    Sacrifice · +{card.effects.sacrifice_combat as number} combat
                   </button>
                 </div>
               ))}
@@ -637,6 +642,13 @@ function BoardColumn({
       <div className="subsection">
         <div className="subsection-head">
           <h3>{hiddenHand ? 'Hidden hand' : 'Hand'}</h3>
+          {!hiddenHand && onPlayAll ? (
+            <button className="secondary-button" onClick={onPlayAll}
+              disabled={!canInteract || !phaseAllows(phase, 'play') || autoPlayCount === 0}
+              title="Play straightforward cards. Draw, targeting, and choice effects stay in hand.">
+              Play all{autoPlayCount > 0 ? ` (${autoPlayCount})` : ''}
+            </button>
+          ) : null}
         </div>
         <div className="stack">
           {hiddenHand ? (
@@ -758,6 +770,12 @@ function App() {
     const next = await refreshFrom(createSession({ seed, algorithm, budgetMs }));
     if (next) setStatus({ tone: 'good', message: `Match started with seed ${seed}.` });
     return next;
+  }
+
+  async function handlePlayAll() {
+    if (!canMutate || !session || session.activePlayer !== 'player') return;
+    const next = await refreshFrom(playAll(session.sessionId));
+    if (next) setStatus({ tone: 'good', message: 'Straightforward cards played. Optional abilities remain yours to use.' });
   }
 
   async function handlePlay(cardId: string, stunTargetIndex?: number) {
@@ -946,6 +964,8 @@ function App() {
                 phase={phase}
                 activePlayer={activePlayer}
                 onPlay={handlePlay}
+                onPlayAll={() => void handlePlayAll()}
+                autoPlayCount={displayState.autoPlayCount ?? 0}
                 onExpend={handleExpend}
                 onSacrifice={handleSacrifice}
                 onAttack={handleAttack}

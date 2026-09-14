@@ -69,9 +69,11 @@ def test_fire_gem_sacrifice_becomes_a_legal_action(agent_chooses):
     assert FIRE_GEM in session.player.played_this_turn
     assert "sacrifice_played" in _types(session)
 
+    pile_before = session.market.fire_gems_remaining
     session.sacrifice_played_action(FIRE_GEM.id)
     assert session.player.combat == 3
-    assert FIRE_GEM in session.player.banish
+    assert FIRE_GEM not in session.player.banish
+    assert session.market.fire_gems_remaining == pile_before + 1
     assert FIRE_GEM not in session.player.played_this_turn
 
 

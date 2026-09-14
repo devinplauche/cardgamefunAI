@@ -207,7 +207,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 if route == "play-card":
-                    payload = session.play_card(body["cardId"], body.get("stunTargetIndex"))
+                    payload = session.play_card(body["cardId"], body.get("stunTargetIndex"),
+                                                manual_self_sacrifice=session.active_player == "player")
+                elif route == "play-all":
+                    payload = session.play_all_action()
                 elif route == "expend-champion":
                     payload = session.expend_champion_action(
                         body["championId"], body.get("stunTargetIndex"), body.get("choice"),
