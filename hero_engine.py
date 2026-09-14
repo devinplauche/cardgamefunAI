@@ -1460,20 +1460,6 @@ def _apply_ally_effects(player: HRPlayer, card: HRCard, opponent: Optional[HRPla
                                 ("card", len(player.hand), before[3])):
             if now > was:
                 gained.append(f"+{now - was} {label}")
-        # Non-resource ally effects armed no counter above, so "no resource
-        # gain" read as if the ally did nothing (Deception's ally is exactly
-        # this case). Name what was actually set up.
-        if card.get("to_hand", False):
-            gained.append("next acquired card goes to your hand")
-        if card.get("top_of_deck", False):
-            gained.append("next acquired card goes on top of your deck"
-                          + (" (action only)" if card.get("top_of_deck_action_only", False) else ""))
-        if card.get("prepare", False):
-            gained.append("prepare a champion")
-        if card.get("stun", False) and opponent:
-            gained.append("stun an enemy champion")
-        if card.get("ally_opponent_discard", 0) and opponent:
-            gained.append(f"opponent discards {card.get('ally_opponent_discard', 0)}")
         detail = ", ".join(gained) if gained else "no resource gain"
         player.note(f"{card.name} ally ({card.effects.get('ally_faction', '')}): {detail}")
 
