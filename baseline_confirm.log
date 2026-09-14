@@ -1,0 +1,25 @@
+preflight: every arm must be doing what its label says
+  heuristic (control)      algorithm=heuristic
+  heuristic (control) [NULL] algorithm=heuristic
+  mcts                     algorithm=mcts
+
+
+=== TUNE (seeds 1000+, 400 games/arm) ===
+arm                       win rate   vs control        p   secs
+---------------------------------------------------------------
+heuristic (control)         57.2%                            8
+heuristic (control) [NULL]    57.2%     0/0         1.000      8
+mcts                        61.5%    68/51        0.142    372
+
+noise floor: the null arm differs from the control by 0-0 discordant games (p=1.000). Nothing below this is real.
+
+best on tuning: mcts (+17 net discordant games)
+
+=== HOLDOUT (seeds 60000+, 400 games/arm) ===
+arm                       win rate   vs control        p   secs
+---------------------------------------------------------------
+heuristic (control)         58.0%                            8
+mcts                        64.0%    70/46        0.032    368
+
+confirm: mcts vs control -> discordant 70-46, p=0.0323
+Replicated on a disjoint block.

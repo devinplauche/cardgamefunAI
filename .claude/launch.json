@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "hero-realms-backend",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["web/backend.py"],
+      "port": 8000
+    },
+    {
+      "name": "hero-realms-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "web"],
+      "port": 5173
+    }
+  ]
+}
