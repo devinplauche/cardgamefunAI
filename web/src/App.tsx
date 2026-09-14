@@ -1,3 +1,4 @@
+import { CardArtwork } from './CardArtwork';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   advancePhase,
@@ -145,6 +146,7 @@ function CardTile({
   return (
     <article className={`card-tile ${card.cardType === 'champion' ? 'champion' : ''}`}>
       <div className="card-topline"><span aria-hidden="true">{card.cardType === 'champion' ? '♜' : '✦'}</span><span>{card.cardType === 'champion' ? 'Champion' : 'Action & item'}</span></div>
+      <CardArtwork card={card} />
       <div className="card-main">
         <div className="card-title-row">
           <h3>{card.name}</h3>
@@ -207,6 +209,7 @@ function ChampionRow({
 }) {
   return (
     <div className={`champ-row ${quiet ? 'quiet' : ''}`}>
+      <CardArtwork card={champion} compact />
       <div className="champ-copy">
         <div className="champ-name">
           {champion.name}
@@ -607,6 +610,7 @@ function BoardColumn({
               .filter(({ card }) => ((card.effects.sacrifice_combat as number | undefined) ?? 0) > 0)
               .map(({ card, index }) => (
                 <div key={`${card.id}-played-${index}`} className="champ-row">
+                  <CardArtwork card={card} compact />
                   <div className="champ-copy">
                     <div className="champ-name">{card.name}</div>
                     <div className="champ-sub">
@@ -990,7 +994,7 @@ function App() {
           </div>
         </div>
       </main>
-      <footer className="app-footer"><span>HERO REALMS / ML LAB</span><span>Build your deck. Understand every decision.</span></footer>
+      <footer className="app-footer"><span>HERO REALMS / ML LAB</span><a href="https://www.herorealms.com/card-gallery/" target="_blank" rel="noreferrer">Card artwork © Wise Wizard Games</a></footer>
     </div>
   );
 }

@@ -777,3 +777,51 @@ button:not(:disabled):active {
     transition: none !important;
   }
 }
+
+/* The source scans retain their credits; this viewport shows their illustration. */
+.card-artwork {
+  position: relative;
+  aspect-ratio: 1.55;
+  overflow: hidden;
+  isolation: isolate;
+  background: radial-gradient(ellipse at center, #4a5840, #202c24);
+  border-bottom: 1px solid var(--border);
+}
+.card-artwork img {
+  position: absolute;
+  width: 112%;
+  max-width: none;
+  height: auto;
+  left: -6%;
+  top: -38%;
+}
+.artwork-fallback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  font-size: 44px;
+}
+.card-artwork.compact {
+  width: 54px;
+  flex: 0 0 54px;
+  aspect-ratio: 1;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.card-artwork.compact img {
+  width: 160%;
+  left: -30%;
+  top: -40%;
+}
+.champ-copy {
+  flex: 1;
+}
+.app-footer a {
+  color: var(--muted);
+  text-underline-offset: 3px;
+}
+.app-footer a:hover {
+  color: var(--accent);
+}
