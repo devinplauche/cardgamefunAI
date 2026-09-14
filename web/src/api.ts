@@ -1,4 +1,4 @@
-import type { GameState, GameSummary, HumanGameState } from './types';
+import type { GameState } from './types';
 import type { HistoryFrame } from './types';
 import { readBotStream } from './botStream';
 
@@ -99,12 +99,6 @@ export async function runBotTurn(sessionId: string, algorithm: string, budgetMs:
   });
 }
 
-export async function playAll(sessionId: string): Promise<GameState> {
-  return requestJson<GameState>(`/api/sessions/${sessionId}/play-all`, {
-    method: 'POST', body: '{}',
-  });
-}
-
 export async function streamBotTurn(
   sessionId: string, algorithm: string, budgetMs: number,
   onFrame: (frame: HistoryFrame) => Promise<void>, signal: AbortSignal,
@@ -119,45 +113,4 @@ export async function streamBotTurn(
   }
   if (!response.body) throw new Error('This browser does not support streamed turns.');
   return readBotStream(response.body, onFrame);
-}
-
-export type { GameSummary, HumanGameState };
-
-export async function createGame(): Promise<{ id: string; inviteCode: string }> {
-  return requestJson('/api/games', { method: 'POST', body: '{}' });
-}
-
-export async function joinGame(code: string): Promise<{ id: string; inviteCode: string }> {
-  return requestJson('/api/games/join', {
-    method: 'POST',
-    body: JSON.stringify({ code }),
-  });
-}
-
-export async function listGames(): Promise<{ games: GameSummary[] }> {
-  return requestJson('/api/games');
-}
-
-export interface GamePollResult {
-  changed?: boolean;
-  turnCount?: number;
-}
-
-export async function loadGame(
-  gameId: string,
-  since?: number,
-): Promise<HumanGameState | GamePollResult> {
-  const path = since === undefined ? `/api/games/${gameId}` : `/api/games/${gameId}?since=${since}`;
-  return requestJson(path);
-}
-
-export async function gameAction(
-  gameId: string,
-  action: string,
-  params: Record<string, unknown> = {},
-): Promise<HumanGameState> {
-  return requestJson(`/api/games/${gameId}/action`, {
-    method: 'POST',
-    body: JSON.stringify({ action, ...params }),
-  });
 }
