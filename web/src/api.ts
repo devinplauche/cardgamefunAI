@@ -1,4 +1,6 @@
 import type { GameState } from './types';
+import type { HistoryFrame } from './types';
+import { readBotStream } from './botStream';
 
 const API_BASE = '';
 
@@ -95,4 +97,20 @@ export async function runBotTurn(sessionId: string, algorithm: string, budgetMs:
     method: 'POST',
     body: JSON.stringify({ algorithm, budgetMs }),
   });
+}
+
+export async function streamBotTurn(
+  sessionId: string, algorithm: string, budgetMs: number,
+  onFrame: (frame: HistoryFrame) => Promise<void>, signal: AbortSignal,
+): Promise<GameState> {
+  const response = await fetch(`${API_BASE}/api/sessions/${sessionId}/bot-turn-stream`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ algorithm, budgetMs }), signal,
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new Error(payload?.error || response.statusText);
+  }
+  if (!response.body) throw new Error('This browser does not support streamed turns.');
+  return readBotStream(response.body, onFrame);
 }
