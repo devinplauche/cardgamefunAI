@@ -30,8 +30,8 @@ people playing nightly, and Neon's free Postgres never expires.
 3. Create a free Postgres at [neon.tech](https://neon.tech) (no card needed).
    In the Neon dashboard copy the **pooled** connection string — its hostname
    contains `-pooler` — and append `?sslmode=require` if not already present.
-4. (Recommended) set a $1 budget alert in the console so any surprise usage
-   emails you instead of billing you.
+4. Set up cost guardrails (see "Cost guardrails" below) so you can never be
+   surprised by a bill.
 
 ## Deploy
 
@@ -46,6 +46,25 @@ Build (120 free build-minutes/day), and deploys. It prints the public
 Run terminates TLS.
 
 To redeploy after pulling new changes, just run the script again.
+
+## Cost guardrails (so you never get charged)
+
+A budget alone only sends email alerts — it cannot stop spending by itself.
+Combine it with a spend cap and you get an automatic kill-switch:
+
+1. In the Cloud Console go to **Billing → Budgets & alerts → Create budget**.
+2. Scope it to your project, set the amount to **$1**, and turn on email
+   alerts at 50%, 80%, and 100%.
+3. On the same budget, enable a **spend cap** for the Cloud Run service.
+   When the budget is breached, Cloud Run usage is automatically halted
+   instead of accruing charges; you lift the block with one click in the
+   Budgets UI when you want the site back.
+
+Two honest caveats: spend caps are currently in preview, so the exact UI
+location may move; and enforcement can lag a few minutes behind real usage,
+so in a worst case you might overshoot by cents, not dollars. With
+`--max-instances 3` in the deploy script and usage at ~5% of the free tier,
+you should never come near the cap — it is purely a seatbelt.
 
 ## Play
 
