@@ -1,0 +1,3 @@
+# Backend runtime dependencies. The game server itself is stdlib-only;
+# psycopg is needed only when DATABASE_URL points at PostgreSQL (Render).
+psycopg[binary]
