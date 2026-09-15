@@ -18,8 +18,6 @@ COPY web/requirements.txt ./web-requirements.txt
 RUN pip install --no-cache-dir -r web-requirements.txt
 # Backend imports: hero_engine (+ its card data) and the web package.
 COPY hero_engine.py ./
-COPY hero_weights.py ./
-COPY hero_ai.py ./
 COPY data/hero_realms_cards.json ./data/hero_realms_cards.json
 COPY web/__init__.py web/auth.py web/backend.py web/bot.py web/db.py web/games.py web/opponent_profiles.py web/session.py ./web/
 COPY --from=frontend /app/web/dist/ ./web/dist/
