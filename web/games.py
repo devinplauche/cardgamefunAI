@@ -79,20 +79,12 @@ def save_game(game_id: str, session, bump_turn: bool = True) -> None:
         )
 
 
-def join_game(game_id: str, guest_id: str, session) -> bool:
-    """Atomically claim a waiting game for a guest.
-
-    The conditional UPDATE makes the claim race-safe: two guests racing to
-    join the same code cannot both succeed, since only one row transitions
-    out of 'waiting'. Returns True when this caller won the game.
-    """
-    changed = db.execute(
+def join_game(game_id: str, guest_id: str) -> None:
+    db.execute(
         f"UPDATE games SET guest_id = {db.PH}, status = 'playing', "
-        f"session = {db.PH}, updated_at = {db.PH} "
-        f"WHERE id = {db.PH} AND status = 'waiting'",
-        (guest_id, _serialize(session), db.now(), game_id),
+        f"updated_at = {db.PH} WHERE id = {db.PH}",
+        (guest_id, db.now(), game_id),
     )
-    return changed == 1
 
 
 def finish_game(game_id: str) -> None:

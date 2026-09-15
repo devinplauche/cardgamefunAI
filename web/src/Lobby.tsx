@@ -13,26 +13,19 @@ export function Lobby({ user, onOpenGame }: { user: User; onOpenGame: (gameId: s
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [listError, setListError] = useState<string | null>(null);
   const [newCode, setNewCode] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
       const payload = await listGames();
       setGames(payload.games);
-      setListError(null);
-    } catch (err) {
-      // Don't silently show "No games yet" when the list simply failed to load.
-      setListError(err instanceof Error ? err.message : 'Could not load your games.');
+    } catch {
+      /* lobby refresh is best-effort */
     }
   }, []);
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => {
-      void refresh();
-    }, 5000);
-    return () => window.clearInterval(timer);
   }, [refresh]);
 
   async function handleCreate() {
@@ -101,13 +94,7 @@ export function Lobby({ user, onOpenGame }: { user: User; onOpenGame: (gameId: s
       </section>
       {error ? <p className="auth-error lobby-error">{error}</p> : null}
       <section className="lobby-list">
-        <div className="lobby-list-head">
-          <h2>Your games</h2>
-          <button className="secondary-button" onClick={() => void refresh()}>
-            Refresh
-          </button>
-        </div>
-        {listError ? <p className="auth-error lobby-error">{listError}</p> : null}
+        <h2>Your games</h2>
         {games.length === 0 ? (
           <p className="lobby-empty">No games yet. Create one or join with an invite code.</p>
         ) : (
