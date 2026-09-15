@@ -1,4 +1,8 @@
 import { BotActionBanner } from './BotActionBanner';
+import { AuthScreen } from './AuthScreen';
+import { Lobby } from './Lobby';
+import { HumanGame } from './HumanGame';
+import { logout, me } from './auth';
 import { useBotPlayback } from './useBotPlayback';
 import { BotStreamError } from './botStream';
 import { CardArtwork } from './CardArtwork';
@@ -25,11 +29,12 @@ import type {
   Phase,
   PlayerView,
   LegalAction,
+  User,
 } from './types';
 
-type StatusTone = 'idle' | 'busy' | 'error' | 'good';
+export type StatusTone = 'idle' | 'busy' | 'error' | 'good';
 
-const PHASE_COPY: Record<Phase, string> = {
+export const PHASE_COPY: Record<Phase, string> = {
   main: 'Play cards, expend champions, buy, and attack - in any order.',
   play: 'Play cards from your hand.',
   champion: 'Expend ready champions.',
@@ -84,7 +89,7 @@ function money(n: number) {
   return n.toLocaleString();
 }
 
-function Stat({ label, value }: { label: string; value: string | number }) {
+export function Stat({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="stat">
       <div className="stat-label">{label}</div>
@@ -93,7 +98,7 @@ function Stat({ label, value }: { label: string; value: string | number }) {
   );
 }
 
-function Panel({ title, subtitle, children, className = '' }: { title: string; subtitle?: string; children: React.ReactNode; className?: string }) {
+export function Panel({ title, subtitle, children, className = '' }: { title: string; subtitle?: string; children: React.ReactNode; className?: string }) {
   return (
     <section className={`panel ${className}`}>
       <div className="panel-head">
@@ -114,7 +119,7 @@ function Panel({ title, subtitle, children, className = '' }: { title: string; s
  * reproduction, so the UI accepts either: under 'main' everything is enabled,
  * otherwise the old per-phase gating applies.
  */
-function phaseAllows(phase: Phase, category: 'play' | 'champion' | 'buy' | 'combat'): boolean {
+export function phaseAllows(phase: Phase, category: 'play' | 'champion' | 'buy' | 'combat'): boolean {
   return phase === 'main' || phase === category;
 }
 
@@ -130,7 +135,7 @@ const OR_CHOICE_LABEL: Record<string, string> = {
   per_champion_health: 'heal/champ',
 };
 
-function orChoiceBranches(card: CardView): string[] {
+export function orChoiceBranches(card: CardView): string[] {
   const branches = (card.effects.or_choice as string[] | undefined) ?? [];
   return branches.filter((kind) => ((card.effects[kind] as number | undefined) ?? 0) > 0);
 }
@@ -239,7 +244,7 @@ function ChampionRow({
   );
 }
 
-function LogList({ entries }: { entries: LogEntry[] }) {
+export function LogList({ entries }: { entries: LogEntry[] }) {
   return (
     <div className="log-list">
       {entries.length === 0 ? <div className="empty-note">No actions yet.</div> : null}
@@ -268,7 +273,7 @@ function LogList({ entries }: { entries: LogEntry[] }) {
   );
 }
 
-function PlayerSummary({ player }: { player: PlayerView }) {
+export function PlayerSummary({ player }: { player: PlayerView }) {
   return (
     <div className="summary-grid">
       <Stat label="HP" value={player.hp} />
@@ -281,7 +286,7 @@ function PlayerSummary({ player }: { player: PlayerView }) {
   );
 }
 
-function CandidateList({ candidates }: { candidates: NonNullable<NonNullable<GameState['botInsight']>['candidates']> }) {
+export function CandidateList({ candidates }: { candidates: NonNullable<NonNullable<GameState['botInsight']>['candidates']> }) {
   if (!candidates.length) {
     return <div className="empty-note">No ranked candidates recorded.</div>;
   }
@@ -307,7 +312,7 @@ function CandidateList({ candidates }: { candidates: NonNullable<NonNullable<Gam
   );
 }
 
-function HistoryInspector({
+export function HistoryInspector({
   history,
   selectedFrame,
   onSelectFrame,
@@ -366,7 +371,7 @@ function HistoryInspector({
   );
 }
 
-function MarketColumn({
+export function MarketColumn({
   market,
   phase,
   canInteract,
@@ -436,7 +441,7 @@ function MarketColumn({
   );
 }
 
-function BoardColumn({
+export function BoardColumn({
   title,
   player,
   phase,
@@ -450,6 +455,7 @@ function BoardColumn({
   stunTargets,
   hiddenHand = false,
   role,
+  perspective = 'player',
   attackingCombat,
   legalActions = [],
   live,
@@ -476,9 +482,11 @@ function BoardColumn({
   stunTargets: ChampionView[];
   hiddenHand?: boolean;
   role: 'player' | 'bot';
+  /** Which engine side the interacting human sits on; defaults to 'player'. */
+  perspective?: 'player' | 'bot';
   attackingCombat?: number;
 }) {
-  const isHumanTurn = activePlayer === 'player';
+  const isHumanTurn = activePlayer === perspective;
   const canInteract = isHumanTurn && live;
   const combatAvailable = role === 'bot' ? attackingCombat ?? 0 : player.combat;
   const legalAttackTargets = role === 'bot'
@@ -699,7 +707,7 @@ function BoardColumn({
   );
 }
 
-function App() {
+function BotGame() {
   const [session, setSession] = useState<GameState | null>(null);
   const [replayFrame, setReplayFrame] = useState<HistoryFrame | null>(null);
   const [seedText, setSeedText] = useState('7');
@@ -1042,6 +1050,84 @@ function App() {
         </div>
       </main>
       <footer className="app-footer"><span>HERO REALMS / ML LAB</span><a href="https://www.herorealms.com/card-gallery/" target="_blank" rel="noreferrer">Card artwork © Wise Wizard Games</a></footer>
+    </div>
+  );
+}
+
+type Mode = 'bot' | 'lobby' | 'human';
+
+function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [mode, setMode] = useState<Mode>('lobby');
+  const [humanGameId, setHumanGameId] = useState<string | null>(null);
+
+  useEffect(() => {
+    me().then((u) => {
+      setUser(u);
+      setAuthChecked(true);
+    }).catch(() => setAuthChecked(true));
+  }, []);
+
+  async function handleLogout() {
+    await logout();
+    setUser(null);
+    setMode('lobby');
+    setHumanGameId(null);
+  }
+
+  function openGame(gameId: string) {
+    setHumanGameId(gameId);
+    setMode('human');
+  }
+
+  if (!authChecked) {
+    return (
+      <div className="app-shell">
+        <main className="auth-main">
+          <p className="auth-sub">Loading…</p>
+        </main>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <AuthScreen onAuth={(u) => { setUser(u); setMode('lobby'); }} />;
+  }
+
+  return (
+    <div className="app-mode-shell">
+      {mode !== 'human' ? (
+        <nav className="mode-tabs">
+          <div className="mode-tabs-left">
+            <button
+              className={mode === 'lobby' ? 'mode-tab active' : 'mode-tab'}
+              onClick={() => setMode('lobby')}
+            >
+              Vs Human
+            </button>
+            <button
+              className={mode === 'bot' ? 'mode-tab active' : 'mode-tab'}
+              onClick={() => setMode('bot')}
+            >
+              Vs Bot
+            </button>
+          </div>
+          <div className="mode-tabs-right">
+            <span className="mode-user">{user.username}</span>
+            <button className="secondary-button" onClick={() => void handleLogout()}>
+              Sign out
+            </button>
+          </div>
+        </nav>
+      ) : null}
+      {mode === 'bot' ? (
+        <BotGame />
+      ) : mode === 'human' && humanGameId ? (
+        <HumanGame gameId={humanGameId} user={user} onExit={() => { setHumanGameId(null); setMode('lobby'); }} />
+      ) : (
+        <Lobby user={user} onOpenGame={openGame} />
+      )}
     </div>
   );
 }

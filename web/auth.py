@@ -12,7 +12,7 @@ from web import db
 
 _ITERATIONS = 210_000
 _TOKEN_TTL = 30 * 24 * 3600  # 30 days
-_USERNAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{2,64}$")
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{2,24}$")
 
 
 def hash_password(password: str) -> str:
@@ -39,7 +39,7 @@ def valid_username(username: str) -> bool:
 
 def create_user(username: str, password: str) -> dict:
     if not valid_username(username):
-        raise ValueError("Username must be 2-64 characters: letters, numbers, _, -, . or @.")
+        raise ValueError("Username must be 2-24 characters: letters, numbers, _ or -.")
     if len(password) < 6:
         raise ValueError("Password must be at least 6 characters.")
     if db.query_one(
