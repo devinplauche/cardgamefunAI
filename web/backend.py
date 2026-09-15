@@ -146,16 +146,27 @@ class Handler(BaseHTTPRequestHandler):
             self._send(401, {"error": "Sign in to continue."})
         return user
 
+    def _cookie_secure(self) -> bool:
+        # Cookies must be Secure on HTTPS (Render) but must NOT be Secure on
+        # plain-HTTP local dev, or the browser will refuse to store them.
+        if os.environ.get("COOKIE_SECURE", "").lower() in ("1", "true", "yes"):
+            return True
+        return (
+            self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip()
+            == "https"
+        )
+
     def _set_session_cookie(self, token: str | None) -> list[tuple[str, str]]:
+        secure = "; Secure" if self._cookie_secure() else ""
         if token:
             return [(
                 "Set-Cookie",
                 f"{COOKIE_NAME}={token}; HttpOnly; Path=/; SameSite=Lax; "
-                f"Max-Age={30 * 24 * 3600}",
+                f"Max-Age={30 * 24 * 3600}{secure}",
             )]
         return [(
             "Set-Cookie",
-            f"{COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0",
+            f"{COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0{secure}",
         )]
 
     def _send_with_cookies(
@@ -341,7 +352,57 @@ class Handler(BaseHTTPRequestHandler):
                 lock.release()
             return
 
+        if not parsed.path.startswith("/api/"):
+            self._serve_frontend(parsed.path)
+            return
+
         self._send(404, {"error": "Not found"})
+
+    # ---- static frontend -------------------------------------------------
+
+    _MIME = {
+        ".html": "text/html; charset=utf-8",
+        ".js": "text/javascript; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".svg": "image/svg+xml",
+        ".ico": "image/x-icon",
+        ".woff2": "font/woff2",
+    }
+
+    def _serve_frontend(self, path: str) -> None:
+        """Serve the vite build (web/dist); SPA fallback to index.html."""
+        dist = REPO_ROOT / "web" / "dist"
+        target = (dist / path.lstrip("/")).resolve() if path != "/" else dist / "index.html"
+        try:
+            target.relative_to(dist.resolve())
+        except ValueError:
+            self._send(404, {"error": "Not found"})
+            return
+        if not target.is_file():
+            target = dist / "index.html"
+        if not target.is_file():
+            self._send(404, {"error": "Not found"})
+            return
+        data = target.read_bytes()
+        self.send_response(200)
+        self.send_header(
+            "Content-Type",
+            self._MIME.get(target.suffix.lower(), "application/octet-stream"),
+        )
+        self.send_header("Content-Length", str(len(data)))
+        # index.html is never cached; hashed assets are immutable.
+        if target.name == "index.html":
+            self.send_header("Cache-Control", "no-cache")
+        else:
+            self.send_header(
+                "Cache-Control", "public, max-age=31536000, immutable"
+            )
+        self.end_headers()
+        self.wfile.write(data)
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -410,8 +471,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             session = game["session"]
             session.bot.name = user["username"]
-            game_store.save_game(game["id"], session, bump_turn=False)
-            game_store.join_game(game["id"], user["id"])
+            if not game_store.join_game(game["id"], user["id"], session):
+                self._send(400, {"error": "That game already started."})
+                return
             self._send(200, {"id": game["id"], "inviteCode": game["invite_code"]})
             return
 
