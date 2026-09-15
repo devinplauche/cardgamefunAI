@@ -151,3 +151,29 @@ export interface HistoryFrame {
 export interface GameState extends GameStateCore {
   history: HistoryFrame[];
 }
+
+export interface User {
+  id: string;
+  username: string;
+}
+
+/** Multiplayer-only fields the backend adds on /api/games/* responses. */
+export interface HumanGameMeta {
+  yourSide: 'player' | 'bot';
+  gameId: string;
+  inviteCode: string;
+  gameStatus: 'waiting' | 'playing' | 'finished';
+  turnCount: number;
+  hostName: string | null;
+  guestName: string | null;
+}
+
+export interface HumanGameState extends GameState, HumanGameMeta {}
+
+export interface GameSummary {
+  id: string;
+  inviteCode: string;
+  status: 'waiting' | 'playing' | 'finished';
+  opponent: string | null;
+  updatedAt: number;
+}
