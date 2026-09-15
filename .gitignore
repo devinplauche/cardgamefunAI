@@ -23,3 +23,10 @@ nul
 # Specialist checkpoints from the opponent-exploitability probe (~11 MB),
 # same policy as models_v*/ above.
 models_spec/
+
+# --- Card artwork ---
+# Official Hero Realms card scans belong to Wise Wizard Games and are not
+# licensed for redistribution. They are fetched at setup time by
+# web/scripts/fetch_card_art.py (URLs in web/public/cards/sources.json)
+# and served locally; only the URL catalog is tracked.
+web/public/cards/*.jpg
