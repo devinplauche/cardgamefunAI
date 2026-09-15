@@ -974,3 +974,259 @@ button:not(:disabled):active {
     animation: none !important;
   }
 }
+
+/* ---- Auth / lobby / mode tabs (multiplayer) ---- */
+
+.auth-main {
+  min-height: 70vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+}
+
+.auth-card {
+  width: min(26rem, 100%);
+  background: var(--panel, #1c1a17);
+  border: 1px solid var(--line, #3a352c);
+  border-radius: 0.75rem;
+  padding: 1.75rem;
+}
+
+.auth-title {
+  margin: 0 0 0.25rem;
+  font-size: 1.6rem;
+}
+
+.auth-sub {
+  margin: 0 0 1.25rem;
+  opacity: 0.75;
+}
+
+.auth-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.auth-tab {
+  flex: 1;
+  padding: 0.5rem;
+  background: transparent;
+  border: 1px solid var(--line, #3a352c);
+  border-radius: 0.4rem;
+  color: inherit;
+  cursor: pointer;
+}
+
+.auth-tab.active {
+  background: var(--accent, #b98a2f);
+  border-color: var(--accent, #b98a2f);
+  color: #14110c;
+  font-weight: 600;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.auth-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  opacity: 0.95;
+}
+
+.auth-input {
+  padding: 0.6rem 0.7rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--line, #3a352c);
+  background: var(--bg, #12100d);
+  color: inherit;
+  font-size: 1rem;
+}
+
+.auth-error {
+  color: #e08080;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.auth-submit {
+  margin-top: 0.25rem;
+}
+
+.mode-tabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--line, #3a352c);
+  background: var(--panel, #1c1a17);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.mode-tabs-left {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.mode-tab {
+  padding: 0.45rem 1rem;
+  background: transparent;
+  border: 1px solid var(--line, #3a352c);
+  border-radius: 0.4rem;
+  color: inherit;
+  cursor: pointer;
+}
+
+.mode-tab.active {
+  background: var(--accent, #b98a2f);
+  border-color: var(--accent, #b98a2f);
+  color: #14110c;
+  font-weight: 600;
+}
+
+.mode-tabs-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.mode-user {
+  font-weight: 600;
+}
+
+.lobby {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.lobby-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1rem;
+}
+
+.lobby-card {
+  background: var(--panel, #1c1a17);
+  border: 1px solid var(--line, #3a352c);
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+}
+
+.lobby-card h2 {
+  margin: 0 0 0.4rem;
+  font-size: 1.15rem;
+}
+
+.lobby-hint {
+  margin: 0 0 1rem;
+  opacity: 0.75;
+  font-size: 0.9rem;
+}
+
+.lobby-code {
+  margin: 0.9rem 0 0;
+  font-size: 1.05rem;
+}
+
+.lobby-join {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.lobby-code-input {
+  flex: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  font-family: monospace;
+}
+
+.lobby-error {
+  margin: 0;
+}
+
+.lobby-list h2 {
+  margin: 0 0 0.75rem;
+}
+
+.lobby-empty {
+  opacity: 0.7;
+}
+
+.lobby-games {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.lobby-game {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.8rem 1rem;
+  background: var(--panel, #1c1a17);
+  border: 1px solid var(--line, #3a352c);
+  border-radius: 0.5rem;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.lobby-game:hover {
+  border-color: var(--accent, #b98a2f);
+}
+
+.lobby-game-opponent {
+  font-weight: 600;
+  font-size: 1.05rem;
+}
+
+.lobby-game-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.lobby-game-code {
+  font-family: monospace;
+  letter-spacing: 0.1em;
+  opacity: 0.7;
+}
+
+.lobby-status {
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--line, #3a352c);
+}
+
+.lobby-status-playing {
+  border-color: #7fc97f;
+  color: #7fc97f;
+}
+
+.lobby-status-waiting {
+  border-color: #d8b84a;
+  color: #d8b84a;
+}
+
+.lobby-status-finished {
+  opacity: 0.6;
+}

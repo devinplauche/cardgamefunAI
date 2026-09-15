@@ -635,22 +635,41 @@ class GameSession:
         )
         self.log = self.log[-50:]
 
-    def _core_state(self) -> dict[str, Any]:
+    def _core_state(self, for_side: str | None = None) -> dict[str, Any]:
+        """State snapshot, optionally from one human's seat.
+
+        ``for_side="bot"`` swaps the player/bot views so the guest in a
+        human-vs-human game sees their own hand under the ``"player"`` key
+        (the key the UI treats as "you") and the host's hand stays hidden.
+        Opponent legal actions and auto-play counts are suppressed: they
+        would leak the other side's hand contents.
+        """
         self._check_winner()
-        return {
+        mine = for_side == "bot"
+        state = {
             "sessionId": self.session_id,
             "turnNumber": self.turn_number,
             "phase": self.phase,
             "activePlayer": self.active_player,
             "winner": self.winner,
-            "player": _player_view(self.player, reveal_hand=True),
-            "bot": _player_view(self.bot, reveal_hand=False),
+            "player": _player_view(self.bot if mine else self.player, reveal_hand=True),
+            "bot": _player_view(self.player if mine else self.bot, reveal_hand=False),
             "market": _market_view(self.market),
-            "legalActions": self.legal_actions(),
-            "autoPlayCount": len(self._auto_play_cards()),
+            "legalActions": self.legal_actions()
+            if (for_side is None or self.active_player == for_side)
+            else [],
+            "autoPlayCount": len(self._auto_play_cards())
+            if (for_side is None or self.active_player == for_side)
+            else 0,
             "log": self.log[-20:],
             "botInsight": self.last_bot_insight,
         }
+        if mine:
+            # The UI keys "you" off state["player"]; keep the seat consistent.
+            state["yourSide"] = "bot"
+        else:
+            state["yourSide"] = for_side or "player"
+        return state
 
     def record_event(self, kind: str, label: str, bot_insight: dict[str, Any] | None = None) -> None:
         # Simulation clones skip this entirely: every call serialises a full
@@ -1218,7 +1237,7 @@ class GameSession:
         self._check_winner()
         return self.get_state()
 
-    def get_state(self) -> dict[str, Any]:
+    def get_state(self, for_side: str | None = None) -> dict[str, Any]:
         # Every action handler (play_card, buy_card_action, attack_target_action,
         # advance_phase, end_turn) returns self.get_state(), and apply_action
         # discards it. Inside an MCTS rollout that meant serialising both hands,
@@ -1230,8 +1249,23 @@ class GameSession:
         if not self.record_history:
             self._check_winner()
             return {}
-        state = self._core_state()
-        state["history"] = self.history[-40:]
+        state = self._core_state(for_side=for_side)
+        history = self.history[-40:]
+        if for_side == "bot":
+            # History frames are recorded from the host's seat; swap the
+            # player/bot views so the guest inspects past boards as themself.
+            # Deep-copy first: the stored frames must stay host-oriented.
+            history = deepcopy(history)
+            for frame in history:
+                frame_state = frame.get("state")
+                if isinstance(frame_state, dict):
+                    frame_state["player"], frame_state["bot"] = (
+                        frame_state["bot"],
+                        frame_state["player"],
+                    )
+                    frame_state["legalActions"] = []
+                    frame_state["autoPlayCount"] = 0
+        state["history"] = history
         return state
 
 
