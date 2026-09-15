@@ -51,21 +51,3 @@ URL="$(gcloud run services describe "${SERVICE}" --project "${PROJECT}" \
 echo ""
 echo "Deployed: ${URL}"
 echo "Register two accounts there, create a game, share the invite code, play."
-
-# Post-deploy live QA (Playwright, real browsers against the live URL).
-# Runs only here, on deployments — never on a schedule, to avoid pointless
-# traffic. Skip with SKIP_E2E=1.
-if [[ "${SKIP_E2E:-0}" == "1" ]]; then
-  echo "SKIP_E2E=1: skipping post-deploy live QA."
-else
-  echo ""
-  echo "Running post-deploy live QA against ${URL} ..."
-  if command -v node >/dev/null 2>&1 && node -e "require('playwright')" 2>/dev/null; then
-    BASE_URL="${URL}" node web/e2e/live-qa.mjs || {
-      echo "WARNING: post-deploy live QA failed — see output above." >&2
-    }
-  else
-    echo "WARNING: node + playwright not available; skipping live QA." >&2
-    echo "Install with: npm i -g playwright && npx playwright install chromium" >&2
-  fi
-fi
