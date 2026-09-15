@@ -2,7 +2,7 @@
 
 DATABASE_URL set to a postgres:// URL uses PostgreSQL (psycopg); otherwise a
 local SQLite file is used, which keeps local dev and tests dependency-free.
-PostgreSQL uses BYTEA for the session blob where SQLite uses BLOB.
+Only portable SQL is used so both backends behave identically.
 """
 
 from __future__ import annotations
@@ -41,10 +41,7 @@ def connect():
     return conn
 
 
-#: Session blob column type: PostgreSQL has no BLOB type, so use BYTEA there.
-SESSION_TYPE = "BYTEA" if is_postgres() else "BLOB"
-
-SCHEMA = f"""
+SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     username TEXT UNIQUE NOT NULL,
@@ -63,7 +60,7 @@ CREATE TABLE IF NOT EXISTS games (
     guest_id TEXT REFERENCES users(id),
     status TEXT NOT NULL DEFAULT 'waiting',
     turn_count INTEGER NOT NULL DEFAULT 0,
-    session {SESSION_TYPE} NOT NULL,
+    session BLOB NOT NULL,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );

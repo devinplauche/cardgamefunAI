@@ -14,11 +14,17 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from hero_engine import BoardChampion, DAGGER, FIRE_GEM, GOLD, RUBY, SHORTSWORD
+from web import auth as auth_store
+from web import db as db_store
+from web import games as game_store
 from web.session import create_session
 
 
 SESSIONS: dict[str, object] = {}
 SESSION_LOCKS = defaultdict(Lock)
+GAME_LOCKS = defaultdict(Lock)
+COOKIE_NAME = "hr_session"
+REGISTER_ENABLED = os.environ.get("HR_REGISTER_ENABLED", "1") == "1"
 
 
 def _json_bytes(payload: dict) -> bytes:
@@ -120,6 +126,50 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    # ---- auth helpers ----------------------------------------------------
+
+    def _cookies(self) -> dict[str, str]:
+        raw = self.headers.get("Cookie", "")
+        out: dict[str, str] = {}
+        for part in raw.split(";"):
+            if "=" in part:
+                key, _, value = part.partition("=")
+                out[key.strip()] = value.strip()
+        return out
+
+    def _current_user(self) -> dict | None:
+        return auth_store.user_for_token(self._cookies().get(COOKIE_NAME, ""))
+
+    def _require_user(self) -> dict | None:
+        user = self._current_user()
+        if user is None:
+            self._send(401, {"error": "Sign in to continue."})
+        return user
+
+    def _set_session_cookie(self, token: str | None) -> list[tuple[str, str]]:
+        if token:
+            return [(
+                "Set-Cookie",
+                f"{COOKIE_NAME}={token}; HttpOnly; Path=/; SameSite=Lax; "
+                f"Max-Age={30 * 24 * 3600}",
+            )]
+        return [(
+            "Set-Cookie",
+            f"{COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0",
+        )]
+
+    def _send_with_cookies(
+        self, status: int, payload: dict, cookies: list[tuple[str, str]]
+    ) -> None:
+        data = _json_bytes(payload)
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        for name, value in cookies:
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(data)
+
     def _stream_bot_turn(self, session) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
@@ -148,6 +198,85 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:  # A streamed response already has its HTTP headers.
             emit({"type": "error", "error": str(exc), "state": session.get_state()})
 
+    # ---- multiplayer game helpers ------------------------------------------
+
+    def _game_state_for(self, game: dict, side: str) -> dict:
+        """Full state from one participant's seat, plus lobby metadata."""
+        session = game["session"]
+        state = session.get_state(for_side=side)
+        host = auth_store.public_user(game["host_id"]) or {}
+        guest = auth_store.public_user(game["guest_id"]) if game["guest_id"] else None
+        state["gameId"] = game["id"]
+        state["inviteCode"] = game["invite_code"]
+        state["gameStatus"] = game["status"]
+        state["turnCount"] = game["turn_count"]
+        state["hostName"] = host.get("username")
+        state["guestName"] = guest.get("username") if guest else None
+        return state
+
+    def _apply_game_action(self, session, route: str, body: dict) -> dict:
+        # Both seats are human: optional sacrifices stay manual, never auto.
+        if route == "play-card":
+            return session.play_card(
+                body["cardId"], body.get("stunTargetIndex"), manual_self_sacrifice=True
+            )
+        if route == "play-all":
+            return session.play_all_action()
+        if route == "expend-champion":
+            return session.expend_champion_action(
+                body["championId"], body.get("stunTargetIndex"), body.get("choice"),
+                body.get("sacrificeIndex"), body.get("sacrificeZone", "hand"))
+        if route == "sacrifice-played":
+            return session.sacrifice_played_action(body["cardId"])
+        if route == "resolve-choice":
+            return session.resolve_choice_action(int(body["candidateIndex"]))
+        if route == "buy-card":
+            return session.buy_card_action(int(body["marketIndex"]))
+        if route == "attack":
+            return session.attack_target_action(body["target"], body.get("championId"))
+        if route == "advance-phase":
+            return session.advance_phase()
+        if route == "end-turn":
+            return session.end_turn()
+        raise ValueError(f"Unknown action: {route}")
+
+    def _handle_game_action(self, game_id: str, user: dict, body: dict) -> None:
+        lock = GAME_LOCKS[game_id]
+        if not lock.acquire(blocking=False):
+            self._send(409, {"error": "An action is already resolving."})
+            return
+        try:
+            game = game_store.get_game(game_id)
+            if game is None:
+                self._send(404, {"error": "Game not found."})
+                return
+            side = game_store.participant_side(game, user["id"])
+            if side is None:
+                self._send(403, {"error": "You are not in this game."})
+                return
+            if game["status"] == "waiting":
+                self._send(400, {"error": "Waiting for your opponent to join."})
+                return
+            if game["status"] == "finished":
+                self._send(400, {"error": "This game is over."})
+                return
+            session = game["session"]
+            if session.winner or session.active_player != side:
+                self._send(400, {"error": "It is not your turn."})
+                return
+            try:
+                self._apply_game_action(session, body.get("action", ""), body)
+            except Exception as exc:  # noqa: BLE001
+                self._send(400, {"error": str(exc)})
+                return
+            if session.winner:
+                game_store.finish_game(game_id)
+            game_store.save_game(game_id, session, bump_turn=True)
+            game = game_store.get_game(game_id)
+            self._send(200, self._game_state_for(game, side))
+        finally:
+            lock.release()
+
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         return
 
@@ -160,6 +289,41 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/health":
             self._send(200, {"ok": True})
+            return
+
+        if parsed.path == "/api/auth/me":
+            user = self._current_user()
+            if user is None:
+                self._send(401, {"error": "Not signed in."})
+            else:
+                self._send(200, {"user": user})
+            return
+
+        if parsed.path == "/api/games":
+            user = self._require_user()
+            if user is None:
+                return
+            self._send(200, {"games": game_store.list_for_user(user["id"])})
+            return
+
+        if len(parts) == 3 and parts[:2] == ["api", "games"] and parts[2]:
+            user = self._require_user()
+            if user is None:
+                return
+            game = game_store.get_game(parts[2])
+            if game is None:
+                self._send(404, {"error": "Game not found."})
+                return
+            side = game_store.participant_side(game, user["id"])
+            if side is None:
+                self._send(403, {"error": "You are not in this game."})
+                return
+            query = parse_qs(parsed.query)
+            since = query.get("since", [None])[0]
+            if since is not None and str(game["turn_count"]) == since:
+                self._send(200, {"changed": False, "turnCount": game["turn_count"]})
+                return
+            self._send(200, self._game_state_for(game, side))
             return
 
         if len(parts) == 3 and parts[:2] == ["api", "sessions"] and parts[2]:
@@ -183,6 +347,84 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         parts = [item for item in parsed.path.split("/") if item]
         body = _read_body(self)
+
+        if parsed.path == "/api/auth/register":
+            if not REGISTER_ENABLED:
+                self._send(403, {"error": "Registration is closed."})
+                return
+            try:
+                user = auth_store.create_user(
+                    (body.get("username") or "").strip(), body.get("password") or ""
+                )
+            except ValueError as exc:
+                self._send(400, {"error": str(exc)})
+                return
+            token = auth_store.create_token(user["id"])
+            self._send_with_cookies(200, {"user": user}, self._set_session_cookie(token))
+            return
+
+        if parsed.path == "/api/auth/login":
+            record = auth_store.find_by_username((body.get("username") or "").strip())
+            if record is None or not auth_store.verify_password(
+                body.get("password") or "", record["password_hash"]
+            ):
+                self._send(401, {"error": "Wrong username or password."})
+                return
+            token = auth_store.create_token(record["id"])
+            self._send_with_cookies(
+                200,
+                {"user": {"id": record["id"], "username": record["username"]}},
+                self._set_session_cookie(token),
+            )
+            return
+
+        if parsed.path == "/api/auth/logout":
+            auth_store.delete_token(self._cookies().get(COOKIE_NAME, ""))
+            self._send_with_cookies(200, {"ok": True}, self._set_session_cookie(None))
+            return
+
+        if parsed.path == "/api/games" and self.command == "POST":
+            user = self._require_user()
+            if user is None:
+                return
+            session = create_session()
+            session.player.name = user["username"]
+            created = game_store.create_game(user["id"], session)
+            self._send(200, created)
+            return
+
+        if parsed.path == "/api/games/join":
+            user = self._require_user()
+            if user is None:
+                return
+            code = (body.get("code") or "").strip()
+            game = game_store.get_by_code(code)
+            if game is None:
+                self._send(404, {"error": "No waiting game with that code."})
+                return
+            if game["status"] != "waiting":
+                self._send(400, {"error": "That game already started."})
+                return
+            if game["host_id"] == user["id"]:
+                self._send(200, {"id": game["id"], "inviteCode": game["invite_code"]})
+                return
+            session = game["session"]
+            session.bot.name = user["username"]
+            game_store.save_game(game["id"], session, bump_turn=False)
+            game_store.join_game(game["id"], user["id"])
+            self._send(200, {"id": game["id"], "inviteCode": game["invite_code"]})
+            return
+
+        if (
+            len(parts) == 4
+            and parts[:2] == ["api", "games"]
+            and parts[3] == "action"
+        ):
+            user = self._require_user()
+            if user is None:
+                return
+            self._handle_game_action(parts[2], user, body)
+            return
 
         if parsed.path == "/api/sessions":
             session = create_session(
@@ -261,6 +503,9 @@ def main() -> None:
     # the container - but keep loopback as the default so running it on a dev
     # machine does not silently expose a game server on the LAN.
     host = os.environ.get("HR_BACKEND_HOST", "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1")
+    db_store.init_schema()
+    if db_store.is_postgres():
+        print("Hero Realms backend using PostgreSQL")
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Hero Realms backend listening on http://{host}:{port}")
     try:
