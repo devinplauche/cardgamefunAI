@@ -1,0 +1,22 @@
+# Keep the Cloud Build upload lean: the Dockerfile only needs web/,
+# hero_engine.py, and data/hero_realms_cards.json. Everything else just
+# slows the upload (Cloud Build gives 120 free build-minutes per day).
+.git/
+__pycache__/
+*.pyc
+tests/
+tools/
+archive/
+docs/
+models_value/
+*.log
+*.md
+!CLOUD_RUN.md
+web/node_modules/
+web/dist/
+web/public/cards/*.jpg
+hero_realms_gui.py
+hero_rl_*.py
+hero_selfplay.py
+hero_mcts_bench.py
+hero_benchmark.py
