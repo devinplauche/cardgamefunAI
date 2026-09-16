@@ -105,6 +105,13 @@ export async function playAll(sessionId: string): Promise<GameState> {
   });
 }
 
+export async function resolveChoice(sessionId: string, candidateIndex: number): Promise<GameState> {
+  return requestJson<GameState>(`/api/sessions/${sessionId}/resolve-choice`, {
+    method: 'POST',
+    body: JSON.stringify({ candidateIndex }),
+  });
+}
+
 export async function streamBotTurn(
   sessionId: string, algorithm: string, budgetMs: number,
   onFrame: (frame: HistoryFrame) => Promise<void>, signal: AbortSignal,

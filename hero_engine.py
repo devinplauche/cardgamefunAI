@@ -571,13 +571,14 @@ def _should_self_sacrifice(player: HRPlayer, opponent: Optional[HRPlayer] = None
     return owned_economy >= 2
 
 
-def _discard_from_hand(player: HRPlayer, n: int, opponent: Optional[HRPlayer] = None):
+def _discard_from_hand(player: HRPlayer, n: int, opponent: Optional[HRPlayer] = None,
+                      source: Optional[str] = None):
     """Discard n lowest-value cards from hand (self-discard: keep best)."""
     n = min(n, len(player.hand))
     if n <= 0:
         return
     if player.defer_choices:
-        _enqueue_choice(player, "discard", n)
+        _enqueue_choice(player, "discard", n, source=source)
         return
     for _ in range(n):
         idx = _find_worst_idx(player.hand, player, opponent)
@@ -586,21 +587,55 @@ def _discard_from_hand(player: HRPlayer, n: int, opponent: Optional[HRPlayer] = 
         player.note(f"Discarded {dumped.name} from hand")
 
 
-def _enqueue_choice(player: HRPlayer, kind: str, count: int, zone: str = "hand"):
-    """Record a targeting decision for later instead of resolving it now."""
+def _enqueue_choice(player: HRPlayer, kind: str, count: int, zone: str = "hand",
+                   source: Optional[str] = None):
+    """Record a targeting decision for later instead of resolving it now.
+
+    `source` names the card whose effect created the choice, so the UI can
+    tell the player what they are choosing for.
+    """
     if count > 0:
-        player.pending_choices.append({"kind": kind, "count": count, "zone": zone})
+        entry = {"kind": kind, "count": count, "zone": zone}
+        if source:
+            entry["source"] = source
+        player.pending_choices.append(entry)
 
 
 def choice_candidates(player: HRPlayer, choice: dict) -> list[HRCard]:
     """The cards a pending choice may legally select from."""
     if choice["kind"] == "discard":
         return list(player.hand)
-    # Sacrifice reads "a card in your hand or discard pile"; hand is offered
-    # first only when non-empty, matching the original inline resolution.
-    if choice["zone"] == "hand":
+    zone = choice.get("zone", "hand")
+    # "You may sacrifice a card in your hand or discard pile": the player
+    # chooses the card AND the zone, so both are offered together.
+    if zone == "hand_or_discard":
+        return list(player.hand) + list(player.discard)
+    if zone == "hand":
         return list(player.hand)
     return list(player.discard)
+
+
+def choice_candidates_zoned(player: HRPlayer, choice: dict) -> list[tuple[HRCard, str]]:
+    """choice_candidates paired with each card's zone ("hand"/"discard").
+
+    The zone is positional - candidates are hand ++ discard - matching how
+    apply_choice removes the selected index. A discard-kind choice only ever
+    offers the hand.
+    """
+    cands = choice_candidates(player, choice)
+    if choice.get("kind") == "discard":
+        return [(c, "hand") for c in cands]
+    nhand = len(player.hand)
+    return [(c, "hand" if i < nhand else "discard") for i, c in enumerate(cands)]
+
+
+def candidate_zone(player: HRPlayer, card: HRCard) -> Optional[str]:
+    """Which zone currently holds this candidate card instance."""
+    if any(c is card for c in player.hand):
+        return "hand"
+    if any(c is card for c in player.discard):
+        return "discard"
+    return None
 
 
 def _sacrifice_to_pile(player: HRPlayer, card: HRCard, market: Optional[HRMarket] = None):
@@ -621,17 +656,32 @@ def _sacrifice_to_pile(player: HRPlayer, card: HRCard, market: Optional[HRMarket
 
 
 def apply_choice(player: HRPlayer, choice: dict, index: int) -> Optional[HRCard]:
-    """Resolve one unit of a pending choice by selecting candidate `index`."""
+    """Resolve one unit of a pending choice by selecting candidate `index`.
+
+    `index` positions into a fresh `choice_candidates(player, choice)` list,
+    so removal is positional: the candidate the UI offered is the card that
+    leaves, even when identical copies sit in both zones.
+    """
     candidates = choice_candidates(player, choice)
     if not candidates or not (0 <= index < len(candidates)):
         return None
     card = candidates[index]
     if choice["kind"] == "discard":
-        player.hand.remove(card)
+        player.hand.pop(index)
         player.discard.append(card)
     else:
-        source = player.hand if choice["zone"] == "hand" else player.discard
-        source.remove(card)
+        zone = choice.get("zone", "hand")
+        if zone == "hand_or_discard":
+            # candidates == hand ++ discard; the split point is the current
+            # hand size, which is unchanged while the choice is pending.
+            if index < len(player.hand):
+                player.hand.pop(index)
+            else:
+                player.discard.pop(index - len(player.hand))
+        elif zone == "hand":
+            player.hand.pop(index)
+        else:
+            player.discard.pop(index)
         _sacrifice_to_pile(player, card)
     choice["count"] -= 1
     if choice["count"] <= 0 and choice in player.pending_choices:
@@ -966,13 +1016,13 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
             # "You may draw a card. If you do, discard a card." (Elven Gift):
             # no discard when the draw produced nothing.
             drawn_now = player.draw(discard_n)
-            _discard_from_hand(player, len(drawn_now), opponent)
+            _discard_from_hand(player, len(drawn_now), opponent, source=card.name)
         else:
-            _discard_from_hand(player, min(discard_n, actual_base_draws), opponent)
+            _discard_from_hand(player, min(discard_n, actual_base_draws), opponent, source=card.name)
 
     # ---- Filter-draw (discard_drawn: draw X then discard X) ----
     if card.get("discard_drawn", False) and actual_base_draws > 0:
-        _discard_from_hand(player, actual_base_draws, opponent)
+        _discard_from_hand(player, actual_base_draws, opponent, source=card.name)
 
     # ---- Self-sacrifice (sacrifice THIS card for bonus effects) ----
     # Optional per the printed text ("{Sacrifice}:" / "you may sacrifice") -
@@ -1013,18 +1063,24 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
 
     # ---- Generic sacrifice from hand/discard (Dark Reward, Death Touch, etc.) ----
     # Optional ("you may sacrifice a card in your hand or discard pile") -
-    # only take it if the worst available card is actually junk; see
-    # _worth_sacrificing.
+    # the player chooses the card AND the zone, so both zones are candidates
+    # and only the worst overall is taken when resolving automatically.
     if card.effects.get("sacrifice_card", False):
-        zone = "hand" if player.hand else ("discard" if player.discard else None)
-        if zone:
-            if player.defer_choices:
-                _enqueue_choice(player, "sacrifice", 1, zone)
-            else:
-                source = player.hand if zone == "hand" else player.discard
-                idx = _find_worst_idx(source, player, opponent)
-                if _worth_sacrificing(source[idx], player, opponent):
-                    victim = source.pop(idx)
+        if player.defer_choices:
+            if player.hand or player.discard:
+                _enqueue_choice(player, "sacrifice", 1, "hand_or_discard",
+                                source=card.name)
+        else:
+            candidates = list(player.hand) + list(player.discard)
+            if candidates:
+                idx = _find_worst_idx(candidates, player, opponent)
+                if _worth_sacrificing(candidates[idx], player, opponent):
+                    victim = candidates[idx]
+                    zone = candidate_zone(player, victim)
+                    if zone == "hand":
+                        player.hand.remove(victim)
+                    else:
+                        player.discard.remove(victim)
                     _sacrifice_to_pile(player, victim, market)
                     player.note(
                         f"Sacrificed {victim.name} from {zone}")
@@ -1191,10 +1247,10 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
     if discard_n > 0:
         if draws == 0:
             actual_draws = len(player.draw(discard_n))
-        _discard_from_hand(player, min(discard_n, actual_draws), opponent)
+        _discard_from_hand(player, min(discard_n, actual_draws), opponent, source=card.name)
 
     if card.get("discard_drawn", False) and actual_draws > 0:
-        _discard_from_hand(player, actual_draws, opponent)
+        _discard_from_hand(player, actual_draws, opponent, source=card.name)
 
     # ---- Sacrifice a card from hand/discard for bonus combat (Krythos, Lys) ----
     # "You may sacrifice a card... If you do, gain an additional combat" - the
@@ -1305,7 +1361,7 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
             # what the draw actually produced.
             actual_ally_draw = len(player.draw(ally_draw))
             if card.get("ally_discard_drawn", False):
-                _discard_from_hand(player, actual_ally_draw, opponent)
+                _discard_from_hand(player, actual_ally_draw, opponent, source=card.name)
 
         # Champion ally top_of_deck (Rasmus: next bought card goes on top; Bribe: action only)
         if card.get("top_of_deck", False):
@@ -1425,7 +1481,7 @@ def _apply_ally_effects(player: HRPlayer, card: HRCard, opponent: Optional[HRPla
         # Discard only what the draw actually produced (partial-effects rule).
         actual_ally_draw = len(player.draw(ally_draw))
         if card.get("ally_discard_drawn", False):
-            _discard_from_hand(player, actual_ally_draw, opponent)
+            _discard_from_hand(player, actual_ally_draw, opponent, source=card.name)
 
     if card.get("prepare", False):
         prepared = False

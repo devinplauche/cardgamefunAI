@@ -135,6 +135,9 @@ export function HumanGame({ gameId, user, onExit, onSignOut }: Props) {
   async function handleAttack(target: 'player' | 'champion', championId?: string) {
     await act('attack', { target, championId });
   }
+  async function handleResolveChoice(candidateIndex: number) {
+    await act('resolve-choice', { candidateIndex });
+  }
   const handleAdvance = () => void act('advance-phase');
   const handleEndTurn = () => void act('end-turn');
   const handleRefresh = () =>
@@ -175,6 +178,7 @@ export function HumanGame({ gameId, user, onExit, onSignOut }: Props) {
           onSacrifice={handleSacrifice}
           onBuy={handleBuy}
           onAttack={handleAttack}
+          onResolveChoice={handleResolveChoice}
           onEndTurn={handleEndTurn}
           onAdvance={handleAdvance}
           onExit={onExit}

@@ -119,6 +119,12 @@ export interface LegalAction {
   sacrificeZone?: string | null;
   /** On `attack_target`: 'player' for the face, 'champion' for a board target. */
   target?: string;
+  /** On `resolve_choice`: index into the pending choice's candidates (-1 = decline). */
+  candidateIndex?: number;
+  /** On `resolve_choice`: 'discard' | 'sacrifice'. */
+  kind?: string;
+  /** On `resolve_choice`: the card whose effect created the choice. */
+  source?: string | null;
   [key: string]: unknown;
 }
 

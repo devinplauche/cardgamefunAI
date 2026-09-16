@@ -22,7 +22,7 @@ would split the policy's probability mass across identical outcomes.
 
 import numpy as np
 
-from hero_engine import apply_choice, choice_candidates
+from hero_engine import apply_choice, choice_candidates, choice_candidates_zoned
 from hero_rl_env_v2 import N_ACTIONS as V2_ACTIONS
 from hero_rl_env_v2 import HeroRealmsMaskedEnv
 
@@ -37,10 +37,14 @@ def distinct_candidates(player, choice):
     Order must not depend on hand/discard shuffling, or the same slot would
     mean different cards from one state to the next and the policy could not
     learn a slot's meaning.
+
+    Dedup is by (card id, zone): the same card in hand and in the discard
+    pile are different sacrifices - one costs a playable card, the other
+    costs nothing - so they occupy different slots.
     """
     seen = {}
-    for card in choice_candidates(player, choice):
-        seen.setdefault(card.id, card)
+    for card, zone in choice_candidates_zoned(player, choice):
+        seen.setdefault((card.id, zone), card)
     return sorted(seen.values(), key=lambda c: (c.cost, c.id))[:CHOICE_SLOTS]
 
 
@@ -100,13 +104,21 @@ class HeroRealmsChoiceEnv(HeroRealmsMaskedEnv):
         if choice is None:
             return super()._action_table(side)
         me, _ = self._seats(side)
+        zones = {}
+        for card, zone in choice_candidates_zoned(me, choice):
+            zones.setdefault(id(card), zone)
         table = {}
         for i, card in enumerate(distinct_candidates(me, choice)):
+            zone = zones.get(id(card), "hand")
+            label = f"{choice['kind']}: {card.name}"
+            if choice["kind"] == "sacrifice" and zone == "discard":
+                label += " (discard pile)"
             table[CHOICE_BASE + i] = {
                 "type": "resolve_choice",
                 "kind": choice["kind"],
                 "cardId": card.id,
-                "label": f"{choice['kind']}: {card.name}",
+                "zone": zone,
+                "label": label,
                 # Keeping the engine's own valuation as the priority means the
                 # greedy baseline in this env reproduces the old inline
                 # behaviour, which is what makes it a fair comparison point.
@@ -130,16 +142,21 @@ class HeroRealmsChoiceEnv(HeroRealmsMaskedEnv):
         if choice is None:
             return
         candidates = distinct_candidates(me, choice)
+        zones = {}
+        for card, zone in choice_candidates_zoned(me, choice):
+            zones.setdefault(id(card), zone)
         index = next((i for i, c in enumerate(candidates)
-                      if c.id == chosen["cardId"]), None)
+                      if c.id == chosen["cardId"]
+                      and zones.get(id(c)) == chosen.get("zone", "hand")), None)
         if index is None:
             me.pending_choices.remove(choice)
             return
         # distinct_candidates reorders and dedupes, so translate back to the
-        # index apply_choice expects in the raw candidate list.
+        # index apply_choice expects in the raw candidate list. Identity, not
+        # id: the same card can appear in both zones.
         raw = choice_candidates(me, choice)
         target = candidates[index]
-        raw_index = next(i for i, c in enumerate(raw) if c.id == target.id)
+        raw_index = next(i for i, c in enumerate(raw) if c is target)
         apply_choice(me, choice, raw_index)
 
     def step(self, action):

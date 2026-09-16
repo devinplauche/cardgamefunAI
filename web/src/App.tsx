@@ -18,6 +18,7 @@ import {
   loadSession,
   playCard,
   playAll,
+  resolveChoice,
   sacrificePlayed,
 } from './api';
 import type {
@@ -848,6 +849,11 @@ function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => v
     await refreshFrom(attackTarget(session.sessionId, target, championId));
   }
 
+  async function handleResolveChoice(candidateIndex: number) {
+    if (!canMutate || !session) return;
+    await refreshFrom(resolveChoice(session.sessionId, candidateIndex));
+  }
+
   async function handleAdvance() {
     if (!canMutate || !session) return;
     await refreshFrom(phase === 'combat' ? endTurn(session.sessionId) : advancePhase(session.sessionId));
@@ -1003,6 +1009,7 @@ function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => v
       onSacrifice={(cardId) => void handleSacrifice(cardId)}
       onBuy={(index) => void handleBuy(index)}
       onAttack={(target, championId) => void handleAttack(target, championId)}
+      onResolveChoice={(candidateIndex) => void handleResolveChoice(candidateIndex)}
       onEndTurn={() => void handleAdvance()}
       onAdvance={() => void handleAdvance()}
       onExit={onExit}

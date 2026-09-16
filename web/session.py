@@ -29,6 +29,7 @@ from hero_engine import (
     auto_expend_all,
     buy_card,
     choice_candidates,
+    choice_candidates_zoned,
     expend_champion,
     has_ally,
     load_hero_cards,
@@ -886,18 +887,27 @@ class GameSession:
             return []
         choice = player.pending_choices[0]
         kind = choice["kind"]
-        candidates = choice_candidates(player, choice)
+        source = choice.get("source")
         actions: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for index, card in enumerate(candidates):
-            # Duplicates are interchangeable; offering one action per copy
-            # would inflate the branching factor for no strategic gain.
-            if card.id in seen:
+        seen: set[tuple[str, str]] = set()
+        for index, (card, zone) in enumerate(choice_candidates_zoned(player, choice)):
+            # Duplicates within one zone are interchangeable; offering one
+            # action per copy would inflate the branching factor for no
+            # strategic gain. Across zones they are NOT interchangeable -
+            # a Gold in hand costs a playable card, a Gold in the discard
+            # pile costs nothing - so the zone is part of the dedup key and
+            # shown in the label.
+            key = (card.id, zone)
+            if key in seen:
                 continue
-            seen.add(card.id)
+            seen.add(key)
+            label = f"{kind.capitalize()} {card.name}"
+            if kind == "sacrifice" and zone == "discard":
+                label = f"{label} (discard pile)"
             actions.append({
                 "type": "resolve_choice", "candidateIndex": index,
-                "label": f"{kind.capitalize()} {card.name}",
+                "kind": kind, "source": source,
+                "label": label,
                 # Negated: the engine's own inline resolution picked the
                 # *lowest* contextual value, so this orders the choices the
                 # way the heuristic would have, keeping a greedy consumer
@@ -909,6 +919,7 @@ class GameSession:
         if kind == "sacrifice":
             actions.append({
                 "type": "resolve_choice", "candidateIndex": -1,
+                "kind": kind, "source": source,
                 "label": "Decline sacrifice", "priority": 0,
             })
         return actions
@@ -1015,18 +1026,36 @@ class GameSession:
             result.append(card)
         return result
 
+    def _require_no_pending_choice(self, player) -> None:
+        """A half-resolved card effect outranks everything else.
+
+        legal_actions() already returns *only* the resolve_choice actions
+        while a choice pends, but the frontend is not the only caller - this
+        guard makes the lock real at the state-machine level, so no play,
+        buy, attack, phase advance, or turn end can silently swallow an
+        unanswered choice (e.g. Elven Gift's discard vanishing into end_turn).
+        """
+        if player.pending_choices:
+            raise ValueError("Resolve the pending choice first")
+
     def play_all_action(self) -> dict[str, Any]:
         if ((self.active_player == "bot" and not self.bot_is_human)
                 or self.winner or self.phase not in ("play", MAIN_PHASE)):
             raise ValueError("Play all is only available during your play phase")
         while cards := self._auto_play_cards():
             self.play_card(cards[0].id, manual_self_sacrifice=True)
+            # A played card may leave a choice pending (Elven Gift's discard,
+            # The Rot's sacrifice): stop and let the player answer it before
+            # any further card resolves.
+            if self._current().pending_choices:
+                break
         return self.get_state()
 
     def play_card(self, card_id: str, stun_target_index: int | None = None,
                   manual_self_sacrifice: bool = False) -> dict[str, Any]:
         player = self._current()
         opponent = self._opponent()
+        self._require_no_pending_choice(player)
         if self.phase not in ("play", MAIN_PHASE):
             raise ValueError("Cards can only be played during the main phase")
         card = next((item for item in player.hand if item.id == card_id), None)
@@ -1050,6 +1079,7 @@ class GameSession:
                                 sacrifice_zone: str = "hand") -> dict[str, Any]:
         player = self._current()
         opponent = self._opponent()
+        self._require_no_pending_choice(player)
         if self.phase not in ("champion", MAIN_PHASE):
             raise ValueError("Champions can only be expended during the main phase")
         champion = next((item for item in player.board if str(item.instance_id) == champion_id), None)
@@ -1079,6 +1109,7 @@ class GameSession:
         enter the sacrifice pile, matching the engine sacrifice routing.
         """
         player = self._current()
+        self._require_no_pending_choice(player)
         if self.phase not in ("champion", MAIN_PHASE):
             raise ValueError("Cards can only be sacrificed during the main phase")
         card = next((item for item in player.played_this_turn if item.id == card_id), None)
@@ -1097,6 +1128,7 @@ class GameSession:
 
     def buy_card_action(self, market_index: int) -> dict[str, Any]:
         player = self._current()
+        self._require_no_pending_choice(player)
         if self.phase not in ("buy", MAIN_PHASE):
             raise ValueError("Cards can only be bought during the main phase")
         if not isinstance(market_index, int) or not 0 <= market_index <= 5:
@@ -1144,6 +1176,7 @@ class GameSession:
 
     def attack_target_action(self, target_kind: str, champion_id: str | None = None) -> dict[str, Any]:
         player = self._current()
+        self._require_no_pending_choice(player)
         opponent = self._opponent()
         if self.phase not in ("combat", MAIN_PHASE):
             raise ValueError("Combat attacks can only happen during the main phase")
@@ -1186,6 +1219,7 @@ class GameSession:
     def advance_phase(self) -> dict[str, Any]:
         if self.winner:
             return self.get_state()
+        self._require_no_pending_choice(self._current())
 
         current = self.phase
         if current == MAIN_PHASE:
@@ -1213,6 +1247,7 @@ class GameSession:
             return self.get_state()
 
         current = self._current()
+        self._require_no_pending_choice(current)
         current.discard_played_cards()
         for card in list(current.hand):
             current.discard.append(card)

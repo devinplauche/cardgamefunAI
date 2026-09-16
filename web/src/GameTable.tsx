@@ -33,6 +33,7 @@ export interface TableHandlers {
   onSacrifice: (cardId: string) => void;
   onBuy: (index: number) => void;
   onAttack: (target: 'player' | 'champion', championId?: string) => void;
+  onResolveChoice: (candidateIndex: number) => void;
   onEndTurn: () => void;
   onAdvance: () => void;
   onExit?: () => void;
@@ -194,6 +195,7 @@ function ActionSheet({
   actions,
   onClose,
   cancelLabel,
+  hideCancel,
 }: {
   title: string;
   subtitle?: string;
@@ -201,6 +203,7 @@ function ActionSheet({
   actions: ChampionAction[];
   onClose: () => void;
   cancelLabel?: string;
+  hideCancel?: boolean;
 }) {
   return (
     <div className="sheet-scrim" onClick={onClose}>
@@ -231,9 +234,41 @@ function ActionSheet({
             </button>
           ))}
         </div>
-        <button className="secondary-button" onClick={onClose}>{cancelLabel ?? 'Cancel'}</button>
+        {hideCancel ? null : (
+          <button className="secondary-button" onClick={onClose}>{cancelLabel ?? 'Cancel'}</button>
+        )}
       </div>
     </div>
+  );
+}
+
+function ChoiceSheet({ actions, kind, source, onResolve }: {
+  actions: LegalAction[];
+  kind: string;
+  source?: string | null;
+  onResolve: (candidateIndex: number) => void;
+}) {
+  // A pending card-effect choice must be answered before anything else can
+  // happen: no scrim dismiss, no cancel button. The backend enforces the
+  // same lock, so there is no path that silently swallows the choice.
+  const isDiscard = kind === 'discard';
+  return (
+    <ActionSheet
+      title={isDiscard ? 'Discard a card' : 'Sacrifice a card'}
+      subtitle={
+        isDiscard
+          ? `${source ? `${source}: ` : ''}choose a card from your hand to discard.`
+          : `${source ? `${source}: ` : ''}you may sacrifice a card from your hand or discard pile.`
+      }
+      actions={actions.map((action) => ({
+        key: `choice-${String(action.candidateIndex)}`,
+        label: action.label,
+        detail: action.candidateIndex === -1 ? 'Keep everything' : undefined,
+        onAction: () => onResolve(Number(action.candidateIndex)),
+      }))}
+      onClose={() => {}}
+      hideCancel
+    />
   );
 }
 
@@ -431,6 +466,16 @@ export function GameTable(props: Props) {
   }, [foe.board]);
 
   const canAttackNow = canInteract && phaseAllows(phase, 'combat') && me.combat > 0;
+
+  // Pending card-effect choice (Elven Gift's discard, The Rot's sacrifice,
+  // ...): the backend answers legalActions with ONLY these while one pends,
+  // so this sheet is the whole UI until it's resolved. Gated on canInteract
+  // so it only ever prompts the human whose turn it is.
+  const choiceActions = useMemo(
+    () => state.legalActions.filter((a) => a.type === 'resolve_choice'),
+    [state.legalActions],
+  );
+  const pendingChoice = canInteract && choiceActions.length > 0 ? choiceActions[0] : null;
 
   // Attack button: face when legal, otherwise the guard. One tap for the
   // common cases; a picker only when several guards could be killed.
@@ -698,6 +743,15 @@ export function GameTable(props: Props) {
       </footer>
 
       {/* overlays */}
+      {pendingChoice ? (
+        <ChoiceSheet
+          actions={choiceActions}
+          kind={pendingChoice.kind ?? ''}
+          source={pendingChoice.source}
+          onResolve={(candidateIndex) => props.onResolveChoice(candidateIndex)}
+        />
+      ) : null}
+
       {attackPicker ? (
         <ActionSheet
           title="Attack which guard?"
