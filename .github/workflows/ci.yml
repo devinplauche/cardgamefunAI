@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install pytest numpy gymnasium
+      # test_selfplay.py needs sb3_contrib + torch (heavy ML stack, not installed
+      # here); test_value_net.py needs models_value/value_net_v1.npz, a gitignored
+      # trained-weights artifact that is not in the repo. Both are excluded until
+      # those environments are available.
+      - name: Run test suite
+        run: python -m pytest tests/ -q -p no:cacheprovider --ignore=tests/test_selfplay.py --ignore=tests/test_value_net.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+      - name: Typecheck
+        working-directory: web
+        run: npm run check
+      - name: Build
+        working-directory: web
+        run: npm run build
