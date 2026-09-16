@@ -1685,3 +1685,17 @@ button:not(:disabled):active {
   padding: 2px 9px;
   white-space: nowrap;
 }
+
+/* Seed field + dice button in the bot match setup. */
+.seed-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.seed-row input {
+  flex: 1;
+  min-width: 0;
+}
+.seed-row .icon-button {
+  flex: none;
+}
