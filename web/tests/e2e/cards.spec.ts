@@ -160,7 +160,9 @@ async function resolveSheet(page: Page, title: string, preferNonDecline = false)
   // the card under test (e.g. Dark Reward's "sacrifice a card" or Elven
   // Gift's "discard a card" would otherwise burn it and the test would time
   // out waiting for it in hand).
-  let pick = buttons.filter({ hasText: /^gold(\s|\(|$)/i }).first();
+  // Backend labels are "<Kind> <Card>" (e.g. "Sacrifice Gold",
+  // "Discard Elven Curse"), so match the card name inside the label.
+  let pick = buttons.filter({ hasText: /\bgold\b/i }).first();
   if ((await pick.count()) === 0) {
     pick = preferNonDecline
       ? buttons.filter({ hasNotText: /decline|keep everything|stop here/i }).first()
@@ -305,17 +307,22 @@ for (const card of CARDS) {
     expect(stillInHand, `"${card.name}" should leave the hand after being played`).toBe(0);
 
     if (card.type === 'champion') {
-      // 4. Champions: tap the board champion and expend it.
+      // 4. Champions: tap the board champion and expend it. Champions whose
+      // expend only adds gold/combat expend themselves on play, so the button
+      // is then spent (disabled) - that is the expected state, not a failure.
       const boardChamp = page.getByRole('button', { name: card.name, exact: true }).first();
       await expect(boardChamp, `champion "${card.name}" on board`).toBeVisible({ timeout: 10_000 });
       await boardChamp.click();
       const sheet = page.getByRole('dialog', { name: card.name });
       await expect(sheet, 'champion action sheet').toBeVisible({ timeout: 10_000 });
       const expend = sheet.getByRole('button', { name: /^Expend/ }).first();
-      await expect(expend, 'expend action').toBeEnabled({ timeout: 10_000 });
-      await expend.click();
-      await page.waitForTimeout(800);
-      await settleOverlays(page);
+      await expect(expend, 'expend action').toBeVisible({ timeout: 10_000 });
+      if (await expend.isEnabled()) {
+        await expend.click();
+        await page.waitForTimeout(800);
+        await settleOverlays(page);
+      }
+      // Disabled means already spent via auto-expend: nothing left to do.
       await triggerAllyIfOffered(page);
       // Champions can also carry an ally trigger on their own sheet.
       await triggerChampionAllyIfOffered(page, card.name);

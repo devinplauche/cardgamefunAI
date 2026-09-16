@@ -53,6 +53,7 @@ from hero_engine import (  # noqa: E402
     GOLD,
     BoardChampion,
     HRCard,
+    _should_auto_expend,
     load_hero_cards,
     trigger_all_available_allies,
 )
@@ -529,12 +530,25 @@ def audit_card(card: HRCard) -> list[Finding]:
 
     # ---- base ability -----------------------------------------------------
     if is_champion:
-        # A champion must do nothing on play but enter the board.
+        # A champion must do nothing on play but enter the board - except a
+        # simple one, which expends itself on the way in (auto-expend), so its
+        # plain combat/gold gain is expected here too.
         session = fresh(hand=[card])
         observed = play(session, card)
         stray = {k: v for k, v in observed.items()
                  if k not in ("hand", "board") and v}
-        if stray:
+        if _should_auto_expend(card):
+            expected = {}
+            if card.effects.get("combat", 0) > 0:
+                expected["combat"] = card.effects["combat"]
+            if card.effects.get("gold", 0) > 0:
+                expected["gold"] = card.effects["gold"]
+            if stray != expected:
+                findings.append(Finding(
+                    card.name, "champion applied effects on play",
+                    f"expected auto-expend {expected}, saw {stray}",
+                ))
+        elif stray:
             findings.append(Finding(
                 card.name, "champion applied effects on play",
                 f"expected board+1 only, also saw {stray}",
@@ -638,7 +652,7 @@ def audit_card(card: HRCard) -> list[Finding]:
             # lands in the delta and reads as a false positive (Tyrannor and
             # Life Drain both did exactly that).
             withp = fresh(board=[card], played=[partner])
-            withp.player.ally_used_this_turn.add(id(card))
+            withp.player.ally_used_this_turn.add(card.uid)
             paired_expend = expend(withp, withp.player.board[0])
             if paired_expend != lone_expend:
                 findings.append(Finding(

@@ -9,6 +9,8 @@
    Phase actions in any order).
 """
 
+import pickle
+import random
 import unittest
 
 from hero_ai import auto_expend_all, play_all_playable
@@ -273,7 +275,7 @@ class TestChampionAllyTiming(unittest.TestCase):
                       "Grunt's ally should be offered when the partner arrived")
         self.assertEqual(len(player.hand), 0)
         trigger_all_available_allies(player, opponent)
-        self.assertIn(id(grunt), player.ally_used_this_turn)
+        self.assertIn(grunt.uid, player.ally_used_this_turn)
         self.assertEqual(len(player.hand), 1, "ally drew on trigger")
 
     def test_ally_fires_only_once_per_turn(self):
@@ -294,6 +296,37 @@ class TestChampionAllyTiming(unittest.TestCase):
         self.assertEqual(player.combat, 10,
                          f"ally re-offered on re-expend; combat={player.combat}")
 
+    def test_ally_not_reoffered_after_pickle_roundtrip(self):
+        # Web sessions pickle the whole game between requests. The old
+        # id()-keyed ally_used_this_turn died on the first save/load, so a
+        # fired ally was offered again on the next expend and could fire
+        # twice (Orc Grunt drew 2). The uid key must survive pickling.
+        player, opponent = HRPlayer("P"), HRPlayer("O")
+        _market_with(player)
+        grunt = [c for c in CARDS if c.name == "Orc Grunt"][0]
+        bc = BoardChampion(grunt)
+        player.board.append(bc)
+        player.board.append(BoardChampion(_card("Wolf Shaman")))
+        player.deck = [HRCard(**GOLD_DICT), HRCard(**GOLD_DICT)]
+        player.discard = []
+        expend_champion(player, bc, opponent)
+        self.assertIn(grunt, player.available_ally_triggers)
+        trigger_ally_ability(player, grunt, opponent)
+        self.assertEqual(len(player.hand), 1, "ally drew on trigger")
+        # Simulate the web save/load between the player's taps (production
+        # always uses a Random instance for _rng, never the random module).
+        player._rng = random.Random(42)
+        player2 = pickle.loads(pickle.dumps(player))
+        bc2 = player2.board[0]
+        self.assertEqual(bc2.card.uid, grunt.uid, "uid must survive pickling")
+        bc2.exhausted = False  # Domination-style prepare
+        expend_champion(player2, bc2, opponent)
+        self.assertEqual(player2.combat, 4, "base expend works twice")
+        self.assertNotIn(bc2.card, player2.available_ally_triggers,
+                         "fired ally re-offered after save/load")
+        self.assertEqual(len(player2.hand), 1,
+                         "ally fired twice across the save/load")
+
     def test_ally_usage_resets_each_turn(self):
         # ally_used_this_turn is per-turn: after a turn boundary the same
         # champion's ally may be offered again. Orc Grunt: base 2 combat, ally draw 1.
@@ -309,7 +342,7 @@ class TestChampionAllyTiming(unittest.TestCase):
         self.assertEqual(player.combat, 2, "expend base only")
         self.assertIn(grunt, player.available_ally_triggers)
         trigger_ally_ability(player, grunt, opponent)
-        self.assertIn(id(grunt), player.ally_used_this_turn)
+        self.assertIn(grunt.uid, player.ally_used_this_turn)
         self.assertEqual(len(player.hand), 1, "ally drew on turn 1")
         player.ally_used_this_turn.clear()  # what take_turn does
         player.available_ally_triggers.clear()

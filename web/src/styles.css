@@ -809,6 +809,12 @@ button:not(:disabled):active {
   aspect-ratio: 1;
   border: 1px solid var(--border);
   border-radius: 5px;
+  transition: transform 0.25s ease;
+}
+/* Expended champions lie sideways, like a tapped card. The compact art is
+   square, so the rotation never shifts the row layout. */
+.card-artwork.compact.tapped {
+  transform: rotate(90deg);
 }
 .card-artwork.compact img {
   width: 160%;

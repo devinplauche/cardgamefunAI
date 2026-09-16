@@ -5,7 +5,8 @@ import copy
 import itertools
 import json
 import random
-from dataclasses import dataclass, field
+import uuid
+from dataclasses import dataclass, field, fields
 from typing import Optional
 
 
@@ -21,6 +22,25 @@ class HRCard:
     health: int = 0
     effects: dict = field(default_factory=dict)
     text: str = ""
+    # Stable per-physical-copy identity, excluded from value equality so two
+    # copies of one card still compare equal. Python id() cannot serve this
+    # role: web sessions pickle the whole game between requests, and every
+    # unpickle creates new objects with new ids - so an id()-keyed
+    # ally_used_this_turn silently stopped working after the first save/load,
+    # and an already-fired ally could be offered (and fired) a second time.
+    uid: str = field(default_factory=lambda: uuid.uuid4().hex, compare=False)
+
+    def __deepcopy__(self, memo):
+        """A deep copy is a new physical copy, so it gets a fresh uid."""
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for f in fields(self):
+            if f.name == "uid":
+                setattr(result, f.name, uuid.uuid4().hex)
+            else:
+                setattr(result, f.name, copy.deepcopy(getattr(self, f.name), memo))
+        return result
 
     def get(self, key: str, default=0):
         return self.effects.get(key, default)
@@ -184,12 +204,15 @@ class HRPlayer:
         # triggers it via trigger_ally_ability(); once offered it stays
         # available for the rest of the turn even if the partner leaves play.
         self.available_ally_triggers: list[HRCard] = []
-        # Card ids whose ally ability already fired this turn. Ally abilities
+        # Card uids whose ally ability already fired this turn. Ally abilities
         # are usable "as soon as you have another card of that faction in
         # play" but each only once per turn - so a champion played with a
         # partner fires its ally on entering play, and a later expend (or a
-        # prepare + re-expend) must not fire it again. Cleared at turn start.
-        self.ally_used_this_turn: set[int] = set()
+        # prepare + re-expend) must not fire it again. Keyed by the card's
+        # stable uid (not id()): web sessions pickle between requests, and
+        # id()-keyed entries died on the first save/load, letting an ally
+        # fire twice. Cleared at turn start.
+        self.ally_used_this_turn: set[str] = set()
         # Played actions with a per_champion_* bonus, topped up when a
         # champion enters play later the same turn - see
         # _apply_per_champion_bonus / _resolve_pending_per_champion.
@@ -875,6 +898,11 @@ class HRGame:
         # A board that already holds two same-faction champions satisfies the
         # ally condition before a single card is played this turn.
         _resolve_board_allies(player, opponent)
+        # Champions whose expend is a pure resource gain expend themselves as
+        # the turn starts: nothing about the expend is a decision.
+        for bc in player.board:
+            if bc.alive and not bc.exhausted:
+                auto_expend_champion(player, bc, opponent)
 
         phase = "play"
         while phase:
@@ -950,6 +978,51 @@ def _stun_champion(opponent: HRPlayer, target: Optional[BoardChampion] = None) -
     return True
 
 
+# Every effect key expend_champion consults beyond plain combat/gold.
+_COMPLEX_EXPEND_KEYS = ("health", "per_champion_health", "per_other_champion_combat",
+                        "per_other_guard_combat", "per_other_wild_combat", "draw",
+                        "discard", "discard_drawn", "opponent_discard", "reanimate",
+                        "sacrifice_for_combat", "sacrifice_up_to", "stun")
+
+
+def _should_auto_expend(card: HRCard) -> bool:
+    """Whether a champion expends itself without being asked.
+
+    True when the expend does nothing but add combat and/or gold: no
+    or-choice branches, no costs, no targets, no side effects - there is
+    nothing for the player to decide, so the tap is pure friction. Guards
+    are excluded even when simple: expending a guard drops its block, which
+    is a genuine decision the player must make themselves.
+    """
+    if card.guard:
+        return False
+    e = card.effects
+    if e.get("or_choice"):
+        return False
+    if not (e.get("combat", 0) > 0 or e.get("gold", 0) > 0):
+        return False
+    return not any(e.get(key) for key in _COMPLEX_EXPEND_KEYS)
+
+
+def auto_expend_champion(player: HRPlayer, bc: BoardChampion,
+                         opponent: HRPlayer = None) -> bool:
+    """Expend a champion by itself when its expend is a pure resource gain.
+
+    Returns True when it fired. The gain is noted so the event log shows it.
+    """
+    if not _should_auto_expend(bc.card):
+        return False
+    if not expend_champion(player, bc, opponent):
+        return False
+    gains = []
+    if bc.card.get("combat", 0) > 0:
+        gains.append(f"+{bc.card.get('combat', 0)} combat")
+    if bc.card.get("gold", 0) > 0:
+        gains.append(f"+{bc.card.get('gold', 0)} gold")
+    player.note(f"{bc.card.name} expended itself ({', '.join(gains)})")
+    return True
+
+
 def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
               ally_bonus: bool = False, opponent: HRPlayer = None,
               stun_target: Optional[BoardChampion] = None,
@@ -987,6 +1060,9 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
         _resolve_pending_allies(player, opponent)
         _resolve_board_allies(player, opponent)
         _resolve_pending_per_champion(player)
+        # Champions whose expend is a pure resource gain expend themselves on
+        # the way in: there is nothing to decide, so no tap is needed.
+        auto_expend_champion(player, bc, opponent)
         return True
 
     # Non-champions remain in play until the Discard Phase. Keeping every such
@@ -1482,7 +1558,7 @@ def _offer_ally_trigger(player: HRPlayer, card: HRCard) -> bool:
     abilities follow the official app, not the rulebook: they never fire on
     their own - the player triggers each one explicitly, once per turn.
     """
-    if (id(card) in player.ally_used_this_turn
+    if (card.uid in player.ally_used_this_turn
             or not _has_ally_payload(card)
             or not has_ally(card, player)):
         return any(c is card for c in player.available_ally_triggers)
@@ -1568,7 +1644,7 @@ def _apply_ally_effects(player: HRPlayer, card: HRCard, opponent: Optional[HRPla
         _stun_champion(opponent, stun_target)
     # Once per turn: a later expend (or prepare + re-expend) of this card must
     # not fire the ally again this turn.
-    player.ally_used_this_turn.add(id(card))
+    player.ally_used_this_turn.add(card.uid)
 
     if player.log_effects:
         gained = []
@@ -1679,7 +1755,7 @@ def _resolve_board_allies(player: HRPlayer, opponent: Optional[HRPlayer] = None)
         card = bc.card
         if not bc.alive or not _has_ally_payload(card):
             continue
-        if id(card) in player.ally_used_this_turn:
+        if card.uid in player.ally_used_this_turn:
             continue
         if not _offer_ally_trigger(player, card):
             if not any(pending is card for pending in player.pending_ally):

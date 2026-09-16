@@ -7,9 +7,12 @@ import type { CardView } from "./types";
 export function CardArtwork({
   card,
   compact = false,
+  tapped = false,
 }: {
   card: Pick<CardView, 'name' | 'cardType'>;
   compact?: boolean;
+  /** Expended champions render turned sideways, like a tapped card. */
+  tapped?: boolean;
 }) {
   const filename = CARD_ART[card.name];
   const [failedSource, setFailedSource] = useState<string>();
@@ -20,7 +23,7 @@ export function CardArtwork({
 
   return (
     <div
-      className={`card-artwork${compact ? " compact" : ""}`}
+      className={`card-artwork${compact ? " compact" : ""}${tapped ? " tapped" : ""}`}
       aria-hidden="true"
     >
       <span className="artwork-fallback">

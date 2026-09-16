@@ -220,7 +220,7 @@ function ChampionRow({
 }) {
   return (
     <div className={`champ-row ${quiet ? 'quiet' : ''}`}>
-      <CardArtwork card={champion} compact />
+      <CardArtwork card={champion} compact tapped={champion.exhausted} />
       <div className="champ-copy">
         <div className="champ-name">
           {champion.name}

@@ -27,6 +27,7 @@ from hero_engine import (
     _resolve_board_allies,
     apply_choice,
     auto_expend_all,
+    auto_expend_champion,
     buy_card,
     choice_candidates,
     choice_candidates_zoned,
@@ -570,6 +571,12 @@ class GameSession:
         # ally condition before this turn's first card is played.
         opponent = self.bot if player is self.player else self.player
         _resolve_board_allies(player, opponent)
+        # Champions whose expend is a pure resource gain expend themselves as
+        # the turn starts (they were prepared in the owner's Discard Phase):
+        # nothing about the expend is a decision.
+        for bc in player.board:
+            if bc.alive and not bc.exhausted:
+                auto_expend_champion(player, bc, opponent)
         self._drain_effect_log(player, opponent)
 
     def _current(self) -> HRPlayer:

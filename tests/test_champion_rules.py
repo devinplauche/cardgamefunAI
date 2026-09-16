@@ -398,3 +398,77 @@ class TestRetroactivePerChampionBonus(unittest.TestCase):
         player.board.append(BoardChampion(other_champ))
         self.assertEqual(player.combat, combat_after_expend,
                          "a later champion must not retroactively boost an already-resolved expend")
+
+
+class TestAutoExpend(unittest.TestCase):
+    """Champions whose expend only adds gold/combat expend themselves.
+
+    No choices, costs, or targets - the tap is pure friction. Guards are
+    excluded: expending a guard drops its block, a real decision.
+    """
+
+    def _play(self, name):
+        from hero_engine import HRPlayer, play_card
+        player = HRPlayer("P")
+        opponent = HRPlayer("O")
+        card = next(c for c in CARDS if c.name == name)
+        market = HRMarket(CARDS)
+        player.hand = [card]
+        play_card(player, card, market, opponent=opponent)
+        return player, player.board[0]
+
+    def test_simple_combat_champion_expends_itself_on_play(self):
+        player, bc = self._play("Rayla, Endweaver")  # expend: +3 combat
+        self.assertTrue(bc.exhausted, "should be expended on entering play")
+        self.assertEqual(player.combat, 3)
+
+    def test_simple_gold_champion_expends_itself_on_play(self):
+        player, bc = self._play("Rasmus, the Smuggler")  # expend: +2 gold
+        self.assertTrue(bc.exhausted)
+        self.assertEqual(player.gold, 2)
+
+    def test_guard_does_not_auto_expend(self):
+        # Orc Grunt's expend is simple (+2 combat) but it is a guard:
+        # expending drops its block, so the player decides.
+        player, bc = self._play("Orc Grunt")
+        self.assertFalse(bc.exhausted, "guards stay manual")
+        self.assertEqual(player.combat, 0)
+
+    def test_or_choice_champion_does_not_auto_expend(self):
+        player, bc = self._play("Cult Priest")  # expend: 1 gold OR 1 combat
+        self.assertFalse(bc.exhausted)
+        self.assertEqual(player.combat, 0)
+        self.assertEqual(player.gold, 0)
+
+    def test_champion_with_side_effects_does_not_auto_expend(self):
+        player, bc = self._play("Rake, Master Assassin")  # expend: 4 combat + stun
+        self.assertFalse(bc.exhausted)
+
+    def test_ally_trigger_still_offered_after_auto_expend(self):
+        # Auto-expend must not swallow the manual ally trigger: Orc Grunt is
+        # a guard (no auto-expend), so use a faction pair where the simple
+        # champion's ally still gets offered.
+        from hero_engine import HRPlayer, play_card
+        player = HRPlayer("P")
+        opponent = HRPlayer("O")
+        market = HRMarket(CARDS)
+        rayla = next(c for c in CARDS if c.name == "Rayla, Endweaver")  # Necros
+        partner = next(c for c in CARDS
+                       if c.card_type == "champion" and c.faction == "Necros"
+                       and c.name != "Rayla, Endweaver")
+        player.hand = [partner, rayla]
+        play_card(player, partner, market, opponent=opponent)
+        play_card(player, rayla, market, opponent=opponent)
+        self.assertIn(rayla, player.available_ally_triggers,
+                      "ally must still be offered after auto-expend")
+
+    def test_simple_champion_auto_expends_at_turn_start(self):
+        from web.session import create_session
+        from hero_engine import BoardChampion
+        session = create_session(seed=11)
+        rayla = next(c for c in CARDS if c.name == "Rayla, Endweaver")
+        bc = BoardChampion(rayla)
+        session.player.board = [bc]
+        session._start_turn(session.player)
+        self.assertTrue(bc.exhausted, "should expend itself at turn start")
+        self.assertEqual(session.player.combat, 3)
