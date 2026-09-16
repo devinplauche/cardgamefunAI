@@ -2,6 +2,7 @@ import { BotActionBanner } from './BotActionBanner';
 import { AuthScreen } from './AuthScreen';
 import { Lobby } from './Lobby';
 import { HumanGame } from './HumanGame';
+import { GameTable } from './GameTable';
 import { logout, me } from './auth';
 import { useBotPlayback } from './useBotPlayback';
 import { BotStreamError } from './botStream';
@@ -42,7 +43,7 @@ export const PHASE_COPY: Record<Phase, string> = {
   combat: 'Assign combat to guards or the opponent.',
 };
 
-function formatCardTags(card: CardView): string[] {
+export function formatCardTags(card: CardView): string[] {
   const tags: string[] = [];
   if ((card.effects.gold as number | undefined) ?? 0) tags.push(`+${card.effects.gold as number} Gold`);
   if ((card.effects.combat as number | undefined) ?? 0) tags.push(`+${card.effects.combat as number} Combat`);
@@ -65,7 +66,7 @@ function formatCardTags(card: CardView): string[] {
  * "Expend: Gain 1 gold <i>or</i> Gain 1 combat" on its face. `<hr>` stays the
  * section split; every other tag is dropped and the words around it kept.
  */
-function formatCardRules(text: string): string[] {
+export function formatCardRules(text: string): string[] {
   return text
     .split(/<hr\s*\/?>/i)
     .map((section) =>
@@ -128,7 +129,7 @@ export function phaseAllows(phase: Phase, category: 'play' | 'champion' | 'buy' 
  * this the player's call, so each branch gets its own button; the engine's
  * heuristic only decides when no choice is supplied (i.e. for the bot).
  */
-const OR_CHOICE_LABEL: Record<string, string> = {
+export const OR_CHOICE_LABEL: Record<string, string> = {
   combat: 'combat',
   gold: 'gold',
   health: 'heal',
@@ -244,7 +245,8 @@ function ChampionRow({
   );
 }
 
-export function LogList({ entries }: { entries: LogEntry[] }) {
+export function LogList({ entries, seatNames }: { entries: LogEntry[]; seatNames?: Record<string, string> }) {
+  const seatLabel = (seat: string) => seatNames?.[seat] ?? seat;
   return (
     <div className="log-list">
       {entries.length === 0 ? <div className="empty-note">No actions yet.</div> : null}
@@ -255,7 +257,7 @@ export function LogList({ entries }: { entries: LogEntry[] }) {
             <span>{entry.phase}</span>
           </div>
           <div className="log-meta">
-            Turn {entry.turn} - {entry.activePlayer}
+            Turn {entry.turn} - {seatLabel(entry.activePlayer)}
           </div>
           {entry.botInsight?.candidates?.length ? (
             <div className="log-candidates">
@@ -318,13 +320,16 @@ export function HistoryInspector({
   onSelectFrame,
   onLive,
   disabled = false,
+  seatNames,
 }: {
   history: HistoryFrame[];
   selectedFrame: HistoryFrame | null;
   onSelectFrame: (frame: HistoryFrame) => void;
   onLive: () => void;
   disabled?: boolean;
+  seatNames?: Record<string, string>;
 }) {
+  const seatLabel = (seat: string) => seatNames?.[seat] ?? seat;
   return (
     <Panel className="history-panel" title="Move history" subtitle="Pick any frame to inspect the board at that moment.">
       <div className="history-toolbar">
@@ -346,7 +351,7 @@ export function HistoryInspector({
               <span>{frame.kind}</span>
             </div>
             <div className="history-item-meta">
-              Turn {frame.turn} - {frame.phase} - {frame.activePlayer}
+              Turn {frame.turn} - {frame.phase} - {seatLabel(frame.activePlayer)}
             </div>
           </button>
         ))}
@@ -355,7 +360,7 @@ export function HistoryInspector({
         <div className="history-detail">
           <div className="history-detail-title">Replay snapshot</div>
           <div className="history-detail-meta">
-            Turn {selectedFrame.turn} - {selectedFrame.phase} - {selectedFrame.activePlayer}
+            Turn {selectedFrame.turn} - {selectedFrame.phase} - {seatLabel(selectedFrame.activePlayer)}
           </div>
           {selectedFrame.botInsight?.candidates?.length ? (
             <div className="history-detail-candidates">
@@ -707,7 +712,7 @@ export function BoardColumn({
   );
 }
 
-function BotGame() {
+function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => void }) {
   const [session, setSession] = useState<GameState | null>(null);
   const [replayFrame, setReplayFrame] = useState<HistoryFrame | null>(null);
   const [seedText, setSeedText] = useState('7');
@@ -720,7 +725,6 @@ function BotGame() {
   const [busy, setBusy] = useState(false);
   const playback = useBotPlayback();
   const attemptedBotTurn = useRef<string | null>(null);
-  const winnerBannerRef = useRef<HTMLElement | null>(null);
 
   const displayState = playback.action?.frame.state ?? replayFrame?.state ?? session;
   const phase = displayState?.phase ?? 'play';
@@ -854,18 +858,8 @@ function BotGame() {
     await refreshFrom(loadSession(session.sessionId));
   }
 
-  // The banner sits at the top of the board, but a player reading the move
-  // history is scrolled well past it when the killing blow lands - which is
-  // the whole failure this replaced. Bring it into view once, on the
-  // transition into a finished game.
-  useEffect(() => {
-    if (!winner) return;
-    // Instant, not smooth: `behavior: 'smooth'` is silently ignored in some
-    // engines (verified here - the page did not move), and the result needs to
-    // land on screen, not animate there.
-    winnerBannerRef.current?.scrollIntoView({ block: 'center' });
-  }, [winner]);
-
+  // The table layout has no page scroll, so no scroll-into-view is needed
+  // when the match ends - the winner overlay covers the table instead.
   useEffect(() => {
     if (session || busy) return;
     void startNewMatch();
@@ -887,170 +881,101 @@ function BotGame() {
   // Under the main phase, advancing IS ending the turn.
   const actionLabel = (phase === 'combat' || phase === 'main') ? 'End Turn' : 'Next Phase';
 
+  // --- bot-only extras for the table: match setup + bot insight in the info sheet ---
+  const botInfoExtra = (
+    <>
+      <h4>New match</h4>
+      <div className="bot-setup">
+        <label className="field">
+          <span>Seed</span>
+          <input value={seedText} onChange={(event) => setSeedText(event.target.value)} inputMode="numeric" />
+        </label>
+        <label className="field">
+          <span>Algorithm</span>
+          <select value={algorithm} onChange={(event) => setAlgorithm(event.target.value)}>
+            <option value="mcts">MCTS</option>
+            <option value="heuristic">Heuristic</option>
+          </select>
+        </label>
+        <label className="field compact">
+          <span>Budget · ms</span>
+          <input value={budgetMs} onChange={(event) => setBudgetMs(Number(event.target.value || 0))} inputMode="numeric" />
+        </label>
+        <button className="primary-button" onClick={() => void startNewMatch()} disabled={busy}>
+          New Match
+        </button>
+      </div>
+      {displayState?.botInsight ? (
+        <>
+          <h4>Bot insight</h4>
+          <p className="phase-copy">
+            {displayState.botInsight.algorithm} · {displayState.botInsight.iterations ?? 0} rollouts · {displayState.botInsight.elapsedMs ?? 0} ms
+          </p>
+          {displayState.botInsight.candidates?.length ? (
+            <CandidateList candidates={displayState.botInsight.candidates} />
+          ) : null}
+        </>
+      ) : null}
+    </>
+  );
+
+  if (!displayState) {
+    return (
+      <div className="game-table">
+        <header className="table-topbar">
+          <span className="icon-button-spacer" aria-hidden="true" />
+          <span className="table-title"><span aria-hidden="true">♜</span> Hero Realms</span>
+          <span className="icon-button-spacer" aria-hidden="true" />
+        </header>
+        <div className="center-overlay">
+          <div className="overlay-card"><h3>Starting match…</h3></div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className={`app-shell ${playback.running ? 'bot-is-acting' : ''}`} data-bot-action={playback.action?.frame.kind} data-action-beat={(playback.action?.number ?? 0) % 2}>
-      {playback.running && <BotActionBanner action={playback.action} skipping={playback.skipping} onSkip={playback.skip} />}
-      <header className="topbar">
-        <div>
-          <div className="eyebrow"><span className="brand-mark" aria-hidden="true">♜</span> HERO REALMS <span className="lab-badge">ML LAB</span></div>
-          <h1>Make your next move.</h1>
-          <p>A battle of decks. A game of decisions.</p>
-        </div>
-        <div className="topbar-controls">
-          <label className="field">
-            <span>Seed</span>
-            <input value={seedText} onChange={(event) => setSeedText(event.target.value)} inputMode="numeric" />
-          </label>
-          <label className="field">
-            <span>Algorithm</span>
-            <select value={algorithm} onChange={(event) => setAlgorithm(event.target.value)}>
-              <option value="mcts">MCTS</option>
-              <option value="heuristic">Heuristic</option>
-            </select>
-          </label>
-          <label className="field compact">
-            <span>Budget · ms</span>
-            <input value={budgetMs} onChange={(event) => setBudgetMs(Number(event.target.value || 0))} inputMode="numeric" />
-          </label>
-          <button className="secondary-button" onClick={() => void startNewMatch()} disabled={busy}>
-            New Game
-          </button>
-          <button className="primary-button" onClick={() => void handleAdvance()} disabled={!canMutate || busy || displayState?.winner !== null || isBotTurn}>
-            {actionLabel}
-          </button>
-        </div>
-      </header>
-
-      <main className="layout" id="battlefield">
-        <div className="arena-heading"><span>BATTLEFIELD</span><span>{isReplayMode ? 'REPLAY' : 'LIVE MATCH'}<i aria-hidden="true" />{displayState ? `TURN ${displayState.turnNumber}` : 'CONNECTING'}</span></div>
-        {/*
-          Above the board, not below it. This banner used to render as the last
-          child of <main>, ~2800px below the fold on a 720px viewport with no
-          scroll-into-view - so the game simply stopped responding and the only
-          on-screen sign it had ended was a small "Winner" stat three panels
-          down. It is the single most important thing on the page once it
-          exists.
-        */}
-        {winnerCopy ? (
-          <section ref={winnerBannerRef} className={`winner-banner ${winner === 'player' ? 'won' : 'lost'}`}>
-            <strong>{winnerCopy}</strong>
-            <button className="secondary-button" onClick={() => void startNewMatch()} disabled={busy}>
-              New Game
-            </button>
-          </section>
-        ) : null}
-
-        <section className="hero-strip">
-          <div role="status" aria-live="polite" className={`status-chip ${status.tone}`}>{isReplayMode ? 'Replay mode' : status.message}</div>
-          <div className="phase-block">
-            <span className="phase-label">{phaseLabel}</span>
-            <span className="phase-copy">
-              {!displayState
-                ? 'Create a match to begin.'
-                : winner && !isReplayMode
-                  ? 'The match is over - start a new game to keep playing.'
-                  : PHASE_COPY[phase]}
-            </span>
-          </div>
-          <div className="insight">
-            <span>Bot insight</span>
-            <strong>
-              {displayState?.botInsight
-                ? `${displayState.botInsight.algorithm} - ${displayState.botInsight.iterations ?? 0} rollouts - ${displayState.botInsight.elapsedMs ?? 0} ms`
-                : 'No decision yet'}
-            </strong>
-            {displayState?.botInsight?.candidates?.length ? <CandidateList candidates={displayState.botInsight.candidates} /> : null}
-          </div>
-        </section>
-
-        <div className="board-grid">
-          <div className="side-stack">
-            {displayState ? (
-              <BoardColumn
-                title="Your realm"
-                player={displayState.player}
-                phase={phase}
-                activePlayer={activePlayer}
-                onPlay={handlePlay}
-                onPlayAll={() => void handlePlayAll()}
-                autoPlayCount={displayState.autoPlayCount ?? 0}
-                onExpend={handleExpend}
-                onSacrifice={handleSacrifice}
-                onAttack={handleAttack}
-                stunTargets={displayState.bot.board}
-                legalActions={displayState.legalActions}
-                role="player"
-                live={canMutate && !winner}
-              />
-            ) : null}
-          </div>
-
-          <div className="center-stack">
-            {displayState ? (
-              <>
-                <MarketColumn
-                  market={displayState.market}
-                  phase={phase}
-                  canInteract={canMutate && activePlayer === 'player' && !winner}
-                  playerGold={displayState.player.gold}
-                  onBuy={handleBuy}
-                />
-                <Panel title="Battle notes" subtitle="Recent actions and search results.">
-                  <div className="battle-summary">
-                    <Stat label="Turn" value={displayState.turnNumber} />
-                    <Stat label="Active" value={displayState.activePlayer} />
-                    <Stat label="Winner" value={displayState.winner ?? 'None'} />
-                  </div>
-                  <div className="bot-actions">
-                    <button className="secondary-button" onClick={() => void handleBotTurn()} disabled={!canMutate || !isBotTurn || busy || displayState.winner !== null}>
-                      Run Bot Turn
-                    </button>
-                    <button className="secondary-button" onClick={() => void handleRefresh()} disabled={!session || busy}>
-                      Refresh
-                    </button>
-                  </div>
-                </Panel>
-              </>
-            ) : null}
-          </div>
-
-          <div className="side-stack">
-            {displayState ? (
-              <BoardColumn
-                title="The challenger"
-                player={displayState.bot}
-                phase={phase}
-                activePlayer={activePlayer}
-                hiddenHand
-                onAttack={handleAttack}
-                stunTargets={[]}
-                role="bot"
-                attackingCombat={displayState.player.combat}
-                legalActions={displayState.legalActions}
-                live={canMutate && !winner}
-              />
-            ) : null}
-
-            {displayState ? (
-              <Panel className="log-panel" title="Decision log" subtitle="Latest moves from both sides.">
-                <LogList entries={displayState.log} />
-              </Panel>
-            ) : null}
-
-            {session ? (
-              <HistoryInspector
-                disabled={busy || playback.running}
-                history={session.history ?? []}
-                selectedFrame={replayFrame}
-                onSelectFrame={setReplayFrame}
-                onLive={() => setReplayFrame(null)}
-              />
-            ) : null}
-          </div>
-        </div>
-      </main>
-      <footer className="app-footer"><span>HERO REALMS / ML LAB</span><a href="https://www.herorealms.com/card-gallery/" target="_blank" rel="noreferrer">Card artwork © Wise Wizard Games</a></footer>
-    </div>
+    <GameTable
+      game={{ history: session?.history }}
+      state={displayState}
+      yourSide="player"
+      opponentName="Bot"
+      seatNames={{ player: 'You', bot: 'Bot' }}
+      isMyTurn={!isBotTurn && !isReplayMode && !playback.running}
+      canMutate={canMutate}
+      busy={busy}
+      waiting={false}
+      winner={winner}
+      winnerCopy={winnerCopy}
+      isReplayMode={isReplayMode}
+      phase={phase}
+      phaseLabel={phaseLabel}
+      status={status}
+      actionLabel={actionLabel}
+      autoPlayCount={displayState.autoPlayCount ?? 0}
+      replayFrame={playback.action?.frame ?? replayFrame}
+      onSelectFrame={(frame) => setReplayFrame(frame)}
+      onLive={() => setReplayFrame(null)}
+      onPlay={(cardId, stunTargetIndex) => void handlePlay(cardId, stunTargetIndex)}
+      onPlayAll={() => void handlePlayAll()}
+      onExpend={(championId, stunTargetIndex, choice, sacrificeIndex, sacrificeZone) =>
+        void handleExpend(championId, stunTargetIndex, choice, sacrificeIndex, sacrificeZone)}
+      onSacrifice={(cardId) => void handleSacrifice(cardId)}
+      onBuy={(index) => void handleBuy(index)}
+      onAttack={(target, championId) => void handleAttack(target, championId)}
+      onEndTurn={() => void handleAdvance()}
+      onAdvance={() => void handleAdvance()}
+      onExit={onExit}
+      onRefresh={() => void handleRefresh()}
+      onSignOut={onSignOut}
+      onNewGame={() => void startNewMatch()}
+      botBanner={
+        playback.running ? (
+          <BotActionBanner action={playback.action} skipping={playback.skipping} onSkip={playback.skip} />
+        ) : undefined
+      }
+      infoExtra={botInfoExtra}
+    />
   );
 }
 
@@ -1097,17 +1022,17 @@ function App() {
 
   return (
     <div className="app-mode-shell">
-      {mode !== 'human' ? (
+      {mode !== 'human' && mode !== 'bot' ? (
         <nav className="mode-tabs">
           <div className="mode-tabs-left">
             <button
-              className={mode === 'lobby' ? 'mode-tab active' : 'mode-tab'}
+              className="mode-tab active"
               onClick={() => setMode('lobby')}
             >
               Vs Human
             </button>
             <button
-              className={mode === 'bot' ? 'mode-tab active' : 'mode-tab'}
+              className="mode-tab"
               onClick={() => setMode('bot')}
             >
               Vs Bot
@@ -1122,9 +1047,9 @@ function App() {
         </nav>
       ) : null}
       {mode === 'bot' ? (
-        <BotGame />
+        <BotGame onExit={() => setMode('lobby')} onSignOut={() => void handleLogout()} />
       ) : mode === 'human' && humanGameId ? (
-        <HumanGame gameId={humanGameId} user={user} onExit={() => { setHumanGameId(null); setMode('lobby'); }} />
+        <HumanGame gameId={humanGameId} user={user} onSignOut={() => void handleLogout()} onExit={() => { setHumanGameId(null); setMode('lobby'); }} />
       ) : (
         <Lobby user={user} onOpenGame={openGame} />
       )}
