@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type {
   CardView,
@@ -9,6 +9,7 @@ import type {
   PlayerView,
 } from './types';
 import { CardArtwork } from './CardArtwork';
+import { playSound, unlockAudio, isMuted, setMuted } from './juice';
 import {
   HistoryInspector,
   LogList,
@@ -243,6 +244,40 @@ function ActionSheet({
   );
 }
 
+const CONFETTI_COLORS = ['#ffd166', '#ef476f', '#06d6a0', '#118ab2', '#f78c6b', '#c39bd3'];
+
+function Confetti() {
+  const pieces = useMemo(
+    () =>
+      Array.from({ length: 42 }, (_, i) => ({
+        id: i,
+        left: Math.random() * 100,
+        delay: Math.random() * 0.9,
+        duration: 2.2 + Math.random() * 1.8,
+        color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+        width: 6 + Math.random() * 6,
+      })),
+    [],
+  );
+  return (
+    <div className="confetti" aria-hidden="true">
+      {pieces.map((p) => (
+        <span
+          key={p.id}
+          className="confetti-piece"
+          style={{
+            left: `${p.left}%`,
+            width: p.width,
+            background: p.color,
+            animationDelay: `${p.delay}s`,
+            animationDuration: `${p.duration}s`,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 function DiscardSheet({ title, cards, onInspect, onClose }: {
   title: string;
   cards: CardView[];
@@ -338,6 +373,52 @@ export function GameTable(props: Props) {
   const [infoOpen, setInfoOpen] = useState(false);
   // Discard pile viewer: { title, cards } for your pile or the opponent's.
   const [discardView, setDiscardView] = useState<{ title: string; cards: CardView[] } | null>(null);
+
+  // Juice: rewarding-moment banners, screen shake, floating damage numbers.
+  const [moment, setMoment] = useState<{ id: number; kind: string; title: string; sub?: string } | null>(null);
+  const [shake, setShake] = useState<'hard' | 'soft' | null>(null);
+  const [floaters, setFloaters] = useState<{ id: number; text: string }[]>([]);
+  const [mutedUi, setMutedUi] = useState(isMuted());
+  const juiceId = useRef(0);
+  const momentTimer = useRef<number | null>(null);
+
+  const fireMoment = (kind: string, title: string, sub?: string) => {
+    if (momentTimer.current !== null) window.clearTimeout(momentTimer.current);
+    juiceId.current += 1;
+    setMoment({ id: juiceId.current, kind, title, sub });
+    momentTimer.current = window.setTimeout(() => setMoment(null), 1500);
+  };
+  useEffect(
+    () => () => {
+      if (momentTimer.current !== null) window.clearTimeout(momentTimer.current);
+    },
+    [],
+  );
+
+  const addFloater = (text: string) => {
+    juiceId.current += 1;
+    const id = juiceId.current;
+    setFloaters((prev) => [...prev.slice(-2), { id, text }]);
+    window.setTimeout(() => {
+      setFloaters((prev) => prev.filter((f) => f.id !== id));
+    }, 1150);
+  };
+
+  // Screen shake is a one-shot CSS animation: clear the class after it
+  // finishes so the next hit re-triggers it.
+  useEffect(() => {
+    if (!shake) return;
+    const t = window.setTimeout(() => setShake(null), 450);
+    return () => window.clearTimeout(t);
+  }, [shake]);
+
+  // iOS Safari only allows audio after a user gesture - prime it on the
+  // first tap anywhere.
+  useEffect(() => {
+    const unlock = () => unlockAudio();
+    window.addEventListener('pointerdown', unlock, { once: true });
+    return () => window.removeEventListener('pointerdown', unlock);
+  }, []);
   // End-turn confirmation: warnings shown once per turn, then it goes through.
   const [confirmEndTurn, setConfirmEndTurn] = useState<string[] | null>(null);
   const [warnedTurn, setWarnedTurn] = useState<string | null>(null);
@@ -376,6 +457,78 @@ export function GameTable(props: Props) {
   // (session._core_state swaps the views for the guest's for_side).
   const me = state.player;
   const foe = state.bot;
+
+  // Kill detection: a foe champion that was on the board and is now gone was
+  // destroyed (attack or stun) - celebrate it. Your own losses get a soft
+  // shake, not a party. Board identity resets on a new match so the fresh
+  // board isn't read as a massacre.
+  const prevBoards = useRef<{ sessionId: string | null; foe: Map<string, ChampionView>; me: Map<string, ChampionView> }>({
+    sessionId: null,
+    foe: new Map(),
+    me: new Map(),
+  });
+  useEffect(() => {
+    const prev = prevBoards.current;
+    if (prev.sessionId !== state.sessionId) {
+      prev.sessionId = state.sessionId;
+      prev.foe = new Map(foe.board.map((c) => [c.instanceId, c]));
+      prev.me = new Map(me.board.map((c) => [c.instanceId, c]));
+      return;
+    }
+    for (const [id, champ] of prev.foe) {
+      if (!foe.board.some((c) => c.instanceId === id)) {
+        fireMoment('kill', `💥 ${champ.name} destroyed!`, champ.guard > 0 ? 'Guard down — the way is open' : 'One less blocker');
+        playSound('kill');
+        setShake('hard');
+      }
+    }
+    for (const [id, champ] of prev.me) {
+      if (!me.board.some((c) => c.instanceId === id)) {
+        setShake('soft');
+        playSound('damage');
+      }
+    }
+    prev.foe = new Map(foe.board.map((c) => [c.instanceId, c]));
+    prev.me = new Map(me.board.map((c) => [c.instanceId, c]));
+    // fireMoment/playSound are stable enough; boards drive this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [foe.board, me.board, state.sessionId]);
+
+  // Faction combo: playing 2+ non-wild cards of one faction in a turn is the
+  // core synergy loop - count it up out loud. Wilds don't build combos.
+  const combo = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const card of me.playedThisTurn) {
+      if (!card.faction || card.faction === 'Wild') continue;
+      counts.set(card.faction, (counts.get(card.faction) ?? 0) + 1);
+    }
+    let best: { faction: string; count: number } | null = null;
+    for (const [faction, count] of counts) {
+      if (count >= 2 && (!best || count > best.count)) best = { faction, count };
+    }
+    return best;
+  }, [me.playedThisTurn]);
+  const prevComboCount = useRef(0);
+  useEffect(() => {
+    // playedThisTurn empties each turn, which naturally resets the count.
+    const n = combo?.count ?? 0;
+    if (n > prevComboCount.current && n >= 2 && isMyTurn && !winner) {
+      fireMoment('combo', `⚡ ${combo!.faction} synergy ×${n}!`, 'Same-faction cards played this turn');
+      playSound('combo', { combo: n });
+    }
+    prevComboCount.current = n;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [combo, isMyTurn, winner]);
+
+  // Soft whoosh when your turn starts; fanfare when you win.
+  const prevMyTurn = useRef(isMyTurn);
+  const prevWinnerRef = useRef(winner);
+  useEffect(() => {
+    if (isMyTurn && !prevMyTurn.current && !winner) playSound('turn');
+    prevMyTurn.current = isMyTurn;
+    if (winner && !prevWinnerRef.current && winner === yourSide) playSound('win');
+    prevWinnerRef.current = winner;
+  }, [isMyTurn, winner, yourSide]);
   const canInteract = canMutate && isMyTurn && !winner && !busy;
 
   const handlePlayCard = (card: CardView) => {
@@ -392,6 +545,16 @@ export function GameTable(props: Props) {
 
   const handleBuyCard = (index: number, cost: number) => {
     if (!canInteract || !phaseAllows(phase, 'buy') || cost > me.gold) return;
+    // Optimistic juice: the tap is the reward. Legality is already gated
+    // above, so a false fanfare is all but impossible.
+    const card = state.market.row[index];
+    if (card && cost >= 5) {
+      fireMoment('bigbuy', `🔥 ${card.name} recruited!`, `${cost} gold of pure power`);
+      playSound('bigbuy');
+      setShake('soft');
+    } else {
+      playSound('buy');
+    }
     props.onBuy(index);
   };
 
@@ -489,7 +652,7 @@ export function GameTable(props: Props) {
             if (needsPick && stunCandidates.length > 0) {
               setStunPicker({ kind: 'trigger', id: first.cardId ?? '', name: champion.name });
             } else {
-              props.onTriggerAlly(first.cardId ?? '');
+              juicyTriggerAlly(first.cardId ?? '');
             }
           },
         });
@@ -593,18 +756,31 @@ export function GameTable(props: Props) {
   );
   const pendingChoice = canInteract && choiceActions.length > 0 ? choiceActions[0] : null;
 
+  // Attack with impact: face hits get a damage floater, shake and thud;
+  // champion kills are celebrated by the board-diff effect above.
+  const juicyAttack = (target: 'player' | 'champion', championId?: string) => {
+    if (target === 'player') {
+      addFloater(`−${me.combat}`);
+      setShake('soft');
+      playSound('damage');
+    } else {
+      playSound('click');
+    }
+    props.onAttack(target, championId);
+  };
+
   // Attack button: face when legal, otherwise the guard. One tap for the
   // common cases; a picker only when several guards could be killed.
   const canAttackButton = canAttackNow && attackInfo.canAttack;
   const handleAttackButton = () => {
     if (!canAttackButton) return;
     if (attackInfo.faceLegal) {
-      props.onAttack('player');
+      juicyAttack('player');
       return;
     }
     const killable = foe.board.filter((c) => attackInfo.ids.has(c.instanceId));
     if (killable.length === 1) {
-      props.onAttack('champion', killable[0].instanceId);
+      juicyAttack('champion', killable[0].instanceId);
       return;
     }
     setAttackPicker(true);
@@ -621,6 +797,18 @@ export function GameTable(props: Props) {
   // Ally trigger for a card in the played strip (board champions get theirs
   // in the champion sheet). Stun allies open the target picker; the rest
   // fire immediately.
+  // Ally trigger with the dopamine hit: banner + zap sound, then the action.
+  const juicyTriggerAlly = (cardId: string, stunTargetIndex?: number) => {
+    const card =
+      me.playedThisTurn.find((c) => c.id === cardId) ??
+      me.board.find((c) => c.id === cardId) ??
+      foe.board.find((c) => c.id === cardId);
+    const name = card?.name ?? 'Ally';
+    fireMoment('ally', `⚡ ${name}!`, 'Ally ability triggered');
+    playSound('ally');
+    props.onTriggerAlly(cardId, stunTargetIndex);
+  };
+
   const handleTriggerPlayed = (cardId: string) => {
     const acts = triggerActions.filter(
       (action) => action.cardId === cardId && !action.championId,
@@ -634,7 +822,7 @@ export function GameTable(props: Props) {
       const card = me.playedThisTurn.find((c) => c.id === cardId);
       setStunPicker({ kind: 'trigger', id: cardId, name: card?.name ?? 'Ally' });
     } else {
-      props.onTriggerAlly(cardId);
+      juicyTriggerAlly(cardId);
     }
   };
 
@@ -647,7 +835,7 @@ export function GameTable(props: Props) {
         : `${opponentName}'s turn · Turn ${state.turnNumber}`;
 
   return (
-    <div className="game-table">
+    <div className={`game-table${shake ? ` shake-${shake}` : ''}`}>
       {/* slim top bar */}
       <header className="table-topbar">
         {props.onExit ? (
@@ -657,6 +845,19 @@ export function GameTable(props: Props) {
         )}
         <span className="table-title"><span aria-hidden="true">♜</span> Hero Realms</span>
         <div className="table-top-actions">
+          <button
+            className="icon-button"
+            onClick={() => {
+              const next = !mutedUi;
+              setMuted(next);
+              setMutedUi(next);
+              if (!next) playSound('click');
+            }}
+            aria-label={mutedUi ? 'Unmute sound effects' : 'Mute sound effects'}
+            title={mutedUi ? 'Unmute sound effects' : 'Mute sound effects'}
+          >
+            {mutedUi ? '🔇' : '🔊'}
+          </button>
           <button
             className="icon-button"
             onClick={() => setInfoOpen(true)}
@@ -672,14 +873,19 @@ export function GameTable(props: Props) {
         <div className="player-strip">
           <span className="avatar" aria-hidden="true">{opponentName.slice(0, 1).toUpperCase()}</span>
           <span className="player-strip-name">{opponentName}</span>
-          <button
-            className={`hp-pill foe${attackInfo.faceLegal && canAttackNow ? ' attackable' : ''}`}
-            disabled={!(attackInfo.faceLegal && canAttackNow)}
-            onClick={() => props.onAttack('player')}
-            title={attackInfo.guardsBlocking ? 'Guards must be destroyed first' : attackInfo.faceLegal && canAttackNow ? 'Attack!' : undefined}
-          >
-            ♥ {foe.hp}
-          </button>
+          <span className="hp-wrap">
+            <button
+              className={`hp-pill foe${attackInfo.faceLegal && canAttackNow ? ' attackable' : ''}`}
+              disabled={!(attackInfo.faceLegal && canAttackNow)}
+              onClick={() => juicyAttack('player')}
+              title={attackInfo.guardsBlocking ? 'Guards must be destroyed first' : attackInfo.faceLegal && canAttackNow ? 'Attack!' : undefined}
+            >
+              ♥ {foe.hp}
+            </button>
+            {floaters.map((f) => (
+              <span key={f.id} className="floater" aria-hidden="true">{f.text}</span>
+            ))}
+          </span>
           <span className="deck-pip" title="Deck">🂠 {foe.deckCount}</span>
           <span className="deck-pip" title="Hand">🂡 {foe.handCount}</span>
           <button
@@ -704,7 +910,7 @@ export function GameTable(props: Props) {
                 onInspect={setInspectCard}
                 onTap={
                   canAttackNow && attackInfo.ids.has(champion.instanceId)
-                    ? () => props.onAttack('champion', champion.instanceId)
+                    ? () => juicyAttack('champion', champion.instanceId)
                     : undefined
                 }
               />
@@ -762,11 +968,22 @@ export function GameTable(props: Props) {
       {/* turn banner + pools */}
       <div className={`turn-banner${isMyTurn && !winner && !waiting ? ' mine' : ''}`}>
         <span className="turn-text">{isReplayMode ? 'Replay' : bannerText}</span>
+        {combo ? (
+          <span className="combo-badge" title={`${combo.count} ${combo.faction} cards played this turn`}>
+            ⚡ {combo.faction} ×{combo.count}
+          </span>
+        ) : null}
         <span className="pools">
           <span className="pool combat" title="Combat">⚔ {me.combat}</span>
           <span className="pool gold" title="Gold">● {me.gold}</span>
         </span>
       </div>
+      {moment ? (
+        <div key={moment.id} className={`juice-banner juice-${moment.kind}`} aria-live="polite">
+          <div className="juice-title">{moment.title}</div>
+          {moment.sub ? <div className="juice-sub">{moment.sub}</div> : null}
+        </div>
+      ) : null}
       {props.botBanner}
 
       {/* player champions */}
@@ -932,7 +1149,7 @@ export function GameTable(props: Props) {
               detail: `${c.currentHealth}❤ · your ${me.combat}⚔ is lethal`,
               onAction: () => {
                 setAttackPicker(false);
-                props.onAttack('champion', c.instanceId);
+                juicyAttack('champion', c.instanceId);
               },
             }))}
           onClose={() => setAttackPicker(false)}
@@ -952,7 +1169,7 @@ export function GameTable(props: Props) {
               setStunPicker(null);
               if (target.kind === 'card') props.onPlay(target.id, index);
               else if (target.kind === 'champion') props.onExpend(target.id, index);
-              else props.onTriggerAlly(target.id, index);
+              else juicyTriggerAlly(target.id, index);
             },
           }))}
           onClose={() => setStunPicker(null)}
@@ -1057,6 +1274,7 @@ export function GameTable(props: Props) {
 
       {winnerCopy ? (
         <div className="center-overlay">
+          {winner === yourSide ? <Confetti /> : null}
           <div className={`overlay-card${winner === yourSide ? ' won' : ''}`}>
             <h3>{winnerCopy}</h3>
             {props.onNewGame ? (
