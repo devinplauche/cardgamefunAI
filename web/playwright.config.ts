@@ -23,6 +23,10 @@ import { defineConfig } from '@playwright/test';
 // start /tmp/fwd-proxy.mjs (a loopback forward proxy that relays through the
 // egress proxy) and set E2E_VIA_FORWARDER=1. The proxy also MITMs TLS, hence
 // ignoreHTTPSErrors below - harmless on CI where there is no proxy.
+// The sandbox also can't use Playwright's own browser downloader, so local
+// runs additionally set E2E_LOCAL_BROWSER=1 to use the manually fetched
+// binary (see launchOptions below); CI omits it and Playwright launches the
+// browser it installed itself.
 function egressProxy() {
   if (process.env.E2E_VIA_FORWARDER === '1') {
     return { server: 'http://127.0.0.1:3129' };
@@ -54,10 +58,18 @@ export default defineConfig({
     proxy: egressProxy(),
     // The sandbox egress proxy MITMs TLS; CI has no proxy so this is a no-op there.
     ignoreHTTPSErrors: true,
-    // Browser binary fetched manually (the sandbox network drops Playwright's
-    // own downloader); keep this in sync with the installed version.
+    // Browser binary: on CI, let Playwright launch the browser it installed
+    // itself - its registry knows the exact extracted layout (the
+    // Chrome-for-Testing builds moved it from chrome-linux/ to
+    // chrome-linux64/, which a hardcoded path gets wrong). The sandbox
+    // can't use Playwright's own downloader, so local runs set
+    // E2E_LOCAL_BROWSER=1 to use the manually fetched binary instead.
     launchOptions: {
-      executablePath: `${process.env.HOME}/.cache/ms-playwright/chromium-1243/chrome-linux/chrome`,
+      ...(process.env.E2E_LOCAL_BROWSER === '1'
+        ? {
+            executablePath: `${process.env.HOME}/.cache/ms-playwright/chromium-1243/chrome-linux/chrome`,
+          }
+        : {}),
       args: ['--no-sandbox'],
     },
     // Devin plays on iPhone: run the suite at a mobile-ish viewport with a
