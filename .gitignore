@@ -30,3 +30,4 @@ models_spec/
 # web/scripts/fetch_card_art.py (URLs in web/public/cards/sources.json)
 # and served locally; only the URL catalog is tracked.
 web/public/cards/*.jpg
+web/data/
