@@ -11,7 +11,7 @@ COPY web/ ./
 # Card scans are gitignored (Wise Wizard Games copyright), so fetch them at
 # build time; vite copies web/public/cards/ into dist/. Fails the build if
 # any scan is missing rather than shipping silently broken art.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 \
+RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && python3 scripts/fetch_card_art.py
 RUN npm run build
