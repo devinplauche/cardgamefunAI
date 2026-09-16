@@ -1080,6 +1080,38 @@ def _best_stun_target_action(session, first_action: dict[str, Any],
     return max(same_effect, key=target_value, default=first_action)
 
 
+def _best_trigger_action(session, actions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Fire the highest-priority available ally trigger, choosing the best
+    stun target for stun allies.
+
+    Ally abilities are free, always-beneficial bonuses the engine used to
+    grant automatically - there is no reason to hold one back, and firing
+    before anything else lets draw/gold/combat land ahead of the plays,
+    buys, and attacks that use them. Returns None when no trigger_ally
+    action is legal.
+    """
+    triggers = [action for action in actions if action["type"] == "trigger_ally"]
+    if not triggers:
+        return None
+    first = max(triggers, key=lambda action: action.get("priority", 0))
+    if "stunTargetIndex" not in first:
+        return first
+    opponent = session.player if session.active_player == "bot" else session.bot
+    targets = session._attack_targets(opponent)
+    same_card = [
+        action for action in triggers
+        if action.get("triggerIndex") == first.get("triggerIndex")
+        and "stunTargetIndex" in action
+    ]
+
+    def target_value(action: dict[str, Any]) -> float:
+        index = action.get("stunTargetIndex")
+        if not isinstance(index, int) or not 0 <= index < len(targets):
+            return float("-inf")
+        return _champion_threat_value(targets[index], opponent)
+
+    return max(same_card, key=target_value, default=first)
+
 def _heuristic_rollout_action(session, actions: list[dict[str, Any]] | None = None,
                               buy_policy: str | None = None) -> dict[str, Any]:
     """Greedy default policy. `actions` may be passed in by a caller that has
@@ -1094,6 +1126,14 @@ def _heuristic_rollout_action(session, actions: list[dict[str, Any]] | None = No
         actions = legal_actions(session)
     if not actions:
         return {"type": "advance_phase"}
+
+    # Ally triggers are free bonuses - fire them before any other decision so
+    # draw/gold/combat land ahead of the plays, buys, and attacks that use
+    # them. This also covers every rollout and ISMCTS interior node, which all
+    # funnel through this policy.
+    trigger = _best_trigger_action(session, actions)
+    if trigger is not None:
+        return trigger
 
     phase = _decision_category(session, actions)
     selected_buy_policy = BUY_POLICY if buy_policy is None else buy_policy
@@ -1871,10 +1911,41 @@ def _tree_size(root: Node) -> int:
     return 1 + sum(_tree_size(child) for child in root.children)
 
 
+def _heuristic_choice_result(session, chosen: dict[str, Any],
+                              actions: list[dict[str, Any]],
+                              start: float) -> dict[str, Any]:
+    """Wrap a greedily-chosen action in the choose_bot_action result schema.
+
+    A forced heuristic action is the only candidate and is visited once
+    conceptually, even though no UCT loop is required - kept consistent with
+    searched choices for the UI/result schema.
+    """
+    candidates = []
+    for action in actions[:3]:
+        candidate = _action_summary(action)
+        candidate["visits"] = 1
+        candidates.append(candidate)
+    return {
+        **chosen,
+        "score": evaluate_state(session.clone()) if hasattr(session, "clone") else 0.0,
+        "iterations": 1,
+        "elapsedMs": int((perf_counter() - start) * 1000),
+        "algorithm": "heuristic",
+        "candidates": candidates,
+    }
+
+
 def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts",
                       max_iterations: int | None = None) -> dict[str, Any]:
     start = perf_counter()
-    actions = _search_actions(session, algorithm=algorithm)
+    full_actions = _sorted_actions(legal_actions(session))
+    # Ally triggers never enter the search: they are free, always-beneficial
+    # bonuses, and the combat pruning below would otherwise drop them from
+    # the root action set whenever an attack is also legal.
+    trigger = _best_trigger_action(session, full_actions)
+    if trigger is not None:
+        return _heuristic_choice_result(session, trigger, full_actions, start)
+    actions = _search_actions(session, full_actions, algorithm=algorithm)
     if not actions:
         return {"type": "advance_phase", "label": "Next Phase", "score": 0.0, "iterations": 0, "elapsedMs": 0}
 
@@ -1889,23 +1960,8 @@ def choose_bot_action(session, budget_ms: int = 60, algorithm: str = "mcts",
     # only ones where the tradeoff is genuinely situational.
     auto_resolved = _decision_category(session, actions) not in SEARCHED_PHASES
     if algorithm != "mcts" or len(actions) == 1 or auto_resolved:
-        chosen = _heuristic_rollout_action(session)
-        candidates = []
-        for action in actions[:3]:
-            candidate = _action_summary(action)
-            # Keep the UI/result schema consistent with searched choices. A
-            # forced heuristic action is the only candidate and is visited
-            # once conceptually, even though no UCT loop is required.
-            candidate["visits"] = 1
-            candidates.append(candidate)
-        return {
-            **chosen,
-            "score": evaluate_state(session.clone()) if hasattr(session, "clone") else 0.0,
-            "iterations": 1,
-            "elapsedMs": int((perf_counter() - start) * 1000),
-            "algorithm": "heuristic",
-            "candidates": candidates,
-        }
+        return _heuristic_choice_result(
+            session, _heuristic_rollout_action(session), actions, start)
 
     # Three search modes share this root. "ismcts" builds a real information-set
     # tree whose statistics persist across determinizations. The other two are
