@@ -712,10 +712,18 @@ export function BoardColumn({
   );
 }
 
+function randomSeed(): number {
+  return Math.floor(Math.random() * 1_000_000_000);
+}
+
 function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => void }) {
   const [session, setSession] = useState<GameState | null>(null);
   const [replayFrame, setReplayFrame] = useState<HistoryFrame | null>(null);
-  const [seedText, setSeedText] = useState('7');
+  // Every match rolls a fresh random seed so games don't repeat; the field
+  // always shows the seed in use, and typing one overrides the roll for the
+  // next start (handy for replaying a memorable game).
+  const [seedText, setSeedText] = useState(() => String(randomSeed()));
+  const seedAuto = useRef(true);
   const [algorithm, setAlgorithm] = useState('mcts');
   const [budgetMs, setBudgetMs] = useState(60);
   const [status, setStatus] = useState<{ tone: StatusTone; message: string }>({
@@ -776,12 +784,26 @@ function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => v
   }
 
   async function startNewMatch() {
-    const parsedSeed = Number.parseInt(seedText, 10);
-    const seed = Number.isFinite(parsedSeed) ? parsedSeed : 7;
+    let seed: number;
+    if (seedAuto.current) {
+      seed = randomSeed();
+    } else {
+      const parsedSeed = Number.parseInt(seedText, 10);
+      seed = Number.isFinite(parsedSeed) ? parsedSeed : randomSeed();
+    }
+    setSeedText(String(seed));
+    seedAuto.current = true;
     setReplayFrame(null);
     const next = await refreshFrom(createSession({ seed, algorithm, budgetMs }));
     if (next) setStatus({ tone: 'good', message: `Match started with seed ${seed}.` });
     return next;
+  }
+
+  function rollSeed() {
+    // Treat the rolled value as a chosen seed: the next match uses it
+    // verbatim, then auto-roll resumes.
+    setSeedText(String(randomSeed()));
+    seedAuto.current = false;
   }
 
   async function handlePlayAll() {
@@ -888,7 +910,25 @@ function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => v
       <div className="bot-setup">
         <label className="field">
           <span>Seed</span>
-          <input value={seedText} onChange={(event) => setSeedText(event.target.value)} inputMode="numeric" />
+          <span className="seed-row">
+            <input
+              value={seedText}
+              onChange={(event) => {
+                setSeedText(event.target.value);
+                seedAuto.current = false;
+              }}
+              inputMode="numeric"
+            />
+            <button
+              type="button"
+              className="icon-button"
+              onClick={rollSeed}
+              title="Roll a random seed"
+              aria-label="Roll a random seed"
+            >
+              🎲
+            </button>
+          </span>
         </label>
         <label className="field">
           <span>Algorithm</span>
