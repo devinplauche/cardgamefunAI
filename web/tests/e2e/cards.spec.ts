@@ -155,26 +155,30 @@ async function resolveSheet(page: Page, title: string, preferNonDecline = false)
   const sheet = page.getByRole('dialog', { name: title });
   if ((await sheet.count()) === 0) return false;
   const buttons = sheet.getByRole('button').filter({ hasNotText: /^cancel$/i });
-  if (preferNonDecline) {
-    const pick = buttons.filter({ hasNotText: /decline|keep everything|stop here/i }).first();
-    if ((await pick.count()) > 0) {
-      const pickedLabel = ((await pick.textContent()) ?? '').trim().replace(/\s+/g, ' ');
-      await pick.click();
-      // Multi-pick choices (Tyrannor's "up to two") reopen the same sheet
-      // for the next pick instead of closing it; a single pick closes it.
-      // Either way the picked option is gone once the click lands - the
-      // settle loop re-resolves a reopened sheet.
-      if (pickedLabel) {
-        await expect(sheet.getByRole('button', { name: pickedLabel }))
-          .toHaveCount(0, { timeout: 10_000 })
-          .catch(() => {});
-      }
-      await page.waitForTimeout(400);
-      return true;
-    }
+  // The rig deals a Gold as fodder for exactly these sheets: spend it before
+  // any other card, so a partner's setup play never discards or sacrifices
+  // the card under test (e.g. Dark Reward's "sacrifice a card" or Elven
+  // Gift's "discard a card" would otherwise burn it and the test would time
+  // out waiting for it in hand).
+  let pick = buttons.filter({ hasText: /^gold(\s|\(|$)/i }).first();
+  if ((await pick.count()) === 0) {
+    pick = preferNonDecline
+      ? buttons.filter({ hasNotText: /decline|keep everything|stop here/i }).first()
+      : buttons.first();
   }
-  await buttons.first().click();
-  await expect(sheet).toHaveCount(0, { timeout: 10_000 });
+  if ((await pick.count()) === 0) return false;
+  const pickedLabel = ((await pick.textContent()) ?? '').trim().replace(/\s+/g, ' ');
+  await pick.click();
+  // Multi-pick choices (Tyrannor's "up to two") reopen the same sheet
+  // for the next pick instead of closing it; a single pick closes it.
+  // Either way the picked option is gone once the click lands - the
+  // settle loop re-resolves a reopened sheet.
+  if (pickedLabel) {
+    await expect(sheet.getByRole('button', { name: pickedLabel }))
+      .toHaveCount(0, { timeout: 10_000 })
+      .catch(() => {});
+  }
+  await page.waitForTimeout(400);
   return true;
 }
 

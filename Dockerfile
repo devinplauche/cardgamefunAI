@@ -27,7 +27,7 @@ COPY hero_engine.py ./
 COPY hero_weights.py ./
 COPY hero_ai.py ./
 COPY data/hero_realms_cards.json ./data/hero_realms_cards.json
-COPY web/__init__.py web/auth.py web/backend.py web/bot.py web/db.py web/games.py web/opponent_profiles.py web/session.py ./web/
+COPY web/__init__.py web/archive.py web/auth.py web/backend.py web/bot.py web/db.py web/games.py web/opponent_profiles.py web/session.py ./web/
 COPY --from=frontend /app/web/dist/ ./web/dist/
 EXPOSE 8000
 CMD ["python", "web/backend.py"]
