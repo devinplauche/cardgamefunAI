@@ -6,7 +6,9 @@ from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from unittest.mock import Mock, patch
 
-from web.backend import Handler, SESSIONS, SESSION_LOCKS
+from web.backend import Handler, SESSION_LOCKS
+from web import db as db_store
+from web import games as game_store
 from web.session import create_session
 
 
@@ -37,9 +39,10 @@ class BotStreamTests(unittest.TestCase):
         self.assertIsNone(clone._event_listener)
 
     def test_http_flushes_before_turn_finishes_and_rejects_concurrent_mutation(self):
+        db_store.init_schema()
         session = create_session(seed=7, algorithm="heuristic")
         session.end_turn()
-        SESSIONS[session.session_id] = session
+        game_store.create_bot_session(session)
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -84,7 +87,7 @@ class BotStreamTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
-            SESSIONS.pop(session.session_id, None)
+            game_store.delete_bot_session(session.session_id)
             SESSION_LOCKS.pop(session.session_id, None)
 
     def make_handler(self):

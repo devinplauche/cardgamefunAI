@@ -67,6 +67,12 @@ CREATE TABLE IF NOT EXISTS games (
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS bot_sessions (
+    session_id TEXT PRIMARY KEY,
+    state {SESSION_TYPE} NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
 """
 
 

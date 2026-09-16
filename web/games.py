@@ -102,6 +102,58 @@ def finish_game(game_id: str) -> None:
     )
 
 
+# ---- bot-match sessions -------------------------------------------------
+# Bot games live here (pickled GameSession rows keyed by session id) instead
+# of an in-memory dict, so a server restart or deploy cannot wipe a live
+# match: every request loads the session fresh from the database and saves
+# it back after mutating it.
+
+
+def create_bot_session(session) -> None:
+    now = db.now()
+    db.execute(
+        f"INSERT INTO bot_sessions (session_id, state, created_at, updated_at) "
+        f"VALUES ({db.PH}, {db.PH}, {db.PH}, {db.PH})",
+        (session.session_id, _serialize(session), now, now),
+    )
+
+
+def get_bot_session(session_id: str):
+    row = db.query_one(
+        f"SELECT * FROM bot_sessions WHERE session_id = {db.PH}", (session_id,)
+    )
+    if not row:
+        return None
+    return _deserialize(bytes(row["state"]))
+
+
+def save_bot_session(session) -> None:
+    now = db.now()
+    changed = db.execute(
+        f"UPDATE bot_sessions SET state = {db.PH}, updated_at = {db.PH} "
+        f"WHERE session_id = {db.PH}",
+        (_serialize(session), now, session.session_id),
+    )
+    if changed == 0:
+        db.execute(
+            f"INSERT INTO bot_sessions (session_id, state, created_at, updated_at) "
+            f"VALUES ({db.PH}, {db.PH}, {db.PH}, {db.PH})",
+            (session.session_id, _serialize(session), now, now),
+        )
+
+
+def delete_bot_session(session_id: str) -> None:
+    db.execute(f"DELETE FROM bot_sessions WHERE session_id = {db.PH}", (session_id,))
+
+
+def cleanup_bot_sessions(max_age_days: float = 7) -> int:
+    """Delete bot sessions untouched for longer than the TTL; returns count."""
+    cutoff = db.now() - max_age_days * 24 * 3600
+    return db.execute(
+        f"DELETE FROM bot_sessions WHERE updated_at < {db.PH}", (cutoff,)
+    )
+
+
 def participant_side(game: dict, user_id: str) -> str | None:
     """Engine side ('player' = host, 'bot' = guest) for this user, if any."""
     if user_id == game["host_id"]:

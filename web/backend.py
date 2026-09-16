@@ -20,7 +20,6 @@ from web import games as game_store
 from web.session import create_session
 
 
-SESSIONS: dict[str, object] = {}
 SESSION_LOCKS = defaultdict(Lock)
 GAME_LOCKS = defaultdict(Lock)
 COOKIE_NAME = "hr_session"
@@ -40,7 +39,9 @@ def _read_body(handler: BaseHTTPRequestHandler) -> dict:
 
 
 def _session_or_404(session_id: str):
-    session = SESSIONS.get(session_id)
+    # Bot sessions live in the database, not in process memory, so a server
+    # restart or deploy cannot wipe a live match.
+    session = game_store.get_bot_session(session_id)
     if session is None:
         return None, {"error": "Session not found"}
     return session, None
@@ -205,8 +206,15 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             state = session.run_bot_turn(on_event=lambda frame: emit({"type": "frame", "frame": frame}))
+            game_store.save_bot_session(session)
             emit({"type": "complete", "state": state})
         except Exception as exc:  # A streamed response already has its HTTP headers.
+            # Persist best-effort so a refresh recovers the finished turn;
+            # never let a save failure mask the turn's own error.
+            try:
+                game_store.save_bot_session(session)
+            except Exception:
+                pass
             emit({"type": "error", "error": str(exc), "state": session.get_state()})
 
     # ---- multiplayer game helpers ------------------------------------------
@@ -497,7 +505,13 @@ class Handler(BaseHTTPRequestHandler):
                 algorithm=body.get("algorithm", "mcts"),
                 budget_ms=int(body.get("budgetMs", 60)),
             )
-            SESSIONS[session.session_id] = session
+            game_store.create_bot_session(session)
+            # Opportunistic garbage collection of week-old abandoned matches;
+            # never let it break session creation.
+            try:
+                game_store.cleanup_bot_sessions()
+            except Exception:  # noqa: BLE001
+                pass
             self._send(200, session.get_state())
             return
 
@@ -551,6 +565,9 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(404, {"error": "Unknown action"})
                     return
+                # The session was loaded fresh from the database for this
+                # request; persist the mutation before releasing the lock.
+                game_store.save_bot_session(session)
             except Exception as exc:  # noqa: BLE001
                 self._send(400, {"error": str(exc)})
                 return

@@ -733,6 +733,10 @@ function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => v
     message: 'Ready to start a match.',
   });
   const [busy, setBusy] = useState(false);
+  // The server keeps bot matches in the database, but a lost session (e.g. a
+  // row deleted by TTL cleanup) still 404s every action: surface a recovery
+  // overlay instead of a dead table.
+  const [matchLost, setMatchLost] = useState(false);
   const playback = useBotPlayback();
   const attemptedBotTurn = useRef<string | null>(null);
 
@@ -779,6 +783,7 @@ function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => v
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       setStatus({ tone: 'error', message });
+      if (message.includes('Session not found')) setMatchLost(true);
       return null;
     } finally {
       setBusy(false);
@@ -786,6 +791,7 @@ function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => v
   }
 
   async function startNewMatch() {
+    setMatchLost(false);
     let seed: number;
     if (seedAuto.current) {
       seed = randomSeed();
@@ -880,7 +886,9 @@ function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => v
       // partially completed turn automatically. Refresh can recover a dropped stream.
       if (error instanceof BotStreamError && error.state) setSession(error.state);
       else if (playback.latest.current) setSession({ ...session, ...playback.latest.current });
-      setStatus({ tone: 'error', message: `${error instanceof Error ? error.message : 'Bot turn failed.'} Refresh to check the board.` });
+      const botMessage = error instanceof Error ? error.message : 'Bot turn failed.';
+      if (botMessage.includes('Session not found')) setMatchLost(true);
+      setStatus({ tone: 'error', message: `${botMessage} Refresh to check the board.` });
     } finally {
       setBusy(false);
     }
@@ -987,6 +995,7 @@ function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => v
   }
 
   return (
+    <>
     <GameTable
       game={{ history: session?.history }}
       state={displayState}
@@ -1030,6 +1039,20 @@ function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => v
       }
       infoExtra={botInfoExtra}
     />
+    {matchLost ? (
+      <div className="center-overlay">
+        <div className="overlay-card">
+          <h3>This match was lost</h3>
+          <p className="phase-copy">
+            The game server restarted and this match could not be recovered.
+          </p>
+          <button type="button" className="primary-button" onClick={() => void startNewMatch()}>
+            Start new match
+          </button>
+        </div>
+      </div>
+    ) : null}
+    </>
   );
 }
 

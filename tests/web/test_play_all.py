@@ -5,7 +5,9 @@ from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 
 from hero_engine import DAGGER, FIRE_GEM, GOLD, HRCard
-from web.backend import Handler, SESSIONS, SESSION_LOCKS
+from web.backend import Handler, SESSION_LOCKS
+from web import db as db_store
+from web import games as game_store
 from web.session import create_session
 
 
@@ -78,10 +80,11 @@ class HumanPlayTests(unittest.TestCase):
         self.assertIn(FIRE_GEM, s.player.discard + s.player.hand + s.player.deck)
 
     def test_http_manual_play_then_explicit_sacrifice_returns_gem_to_supply(self):
+        db_store.init_schema()
         s = self.session
         s.player.hand = [FIRE_GEM, FIRE_GEM]
         s.bot.hp = 1
-        SESSIONS[s.session_id] = s
+        game_store.create_bot_session(s)
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -113,5 +116,5 @@ class HumanPlayTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
-            SESSIONS.pop(s.session_id, None)
+            game_store.delete_bot_session(s.session_id)
             SESSION_LOCKS.pop(s.session_id, None)
