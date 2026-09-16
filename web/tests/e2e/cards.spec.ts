@@ -321,8 +321,12 @@ for (const card of CARDS) {
         await expend.click();
         await page.waitForTimeout(800);
         await settleOverlays(page);
+      } else {
+        // Disabled means already spent via auto-expend: nothing left to do,
+        // but the sheet is still open - dismiss it before moving on.
+        await page.keyboard.press('Escape');
       }
-      // Disabled means already spent via auto-expend: nothing left to do.
+      await expect(sheet, 'champion action sheet closed').toHaveCount(0, { timeout: 10_000 });
       await triggerAllyIfOffered(page);
       // Champions can also carry an ally trigger on their own sheet.
       await triggerChampionAllyIfOffered(page, card.name);
