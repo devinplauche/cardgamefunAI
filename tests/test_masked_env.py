@@ -14,6 +14,7 @@ import numpy as np
 
 from hero_rl_env_v2 import (
     ADVANCE, ATTACK_FACE, BUY_BASE, EXPEND_BASE, FIRE_GEM, N_ACTIONS, PLAY_BASE,
+    TRIGGER_BASE, TRIGGER_SLOTS,
     HeroRealmsMaskedEnv,
 )
 
@@ -91,7 +92,8 @@ class TestActionMapping(unittest.TestCase):
     def test_expend_and_attack_indices_are_disjoint(self):
         self.assertLess(EXPEND_BASE, ATTACK_FACE)
         self.assertLess(ATTACK_FACE, ADVANCE)
-        self.assertEqual(N_ACTIONS, ADVANCE + 1)
+        self.assertLess(ADVANCE, TRIGGER_BASE)
+        self.assertEqual(N_ACTIONS, TRIGGER_BASE + TRIGGER_SLOTS)
 
 
 class TestRewardAndTermination(unittest.TestCase):

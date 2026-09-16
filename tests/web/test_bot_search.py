@@ -88,7 +88,10 @@ class TestClone(unittest.TestCase):
         clone.bot.hp = 1
         self.assertEqual(session.bot.hp, 50)
 
-    def test_clone_remaps_a_pending_ally_stun_to_its_board(self):
+    def test_clone_trigger_ally_stun_uses_its_own_board(self):
+        # Ally stuns pick their target when triggered, resolved against the
+        # current board - so a clone's trigger can never hold a stale
+        # reference to the live game (the old pending_stun_targets remap).
         from hero_engine import BoardChampion
 
         session = create_session(seed=5)
@@ -100,14 +103,15 @@ class TestClone(unittest.TestCase):
         session.active_player = "bot"
         session.phase = "play"
 
-        session.play_card(death_threat.id, stun_target_index=0)
+        session.play_card(death_threat.id)
+        session.play_card(profit.id)
+        stun_actions = [a for a in session.legal_actions()
+                        if a["type"] == "trigger_ally"
+                        and a.get("stunTargetIndex") is not None]
+        self.assertTrue(stun_actions, "stun ally should enumerate targets")
+
         clone = session.clone()
-
-        pending_target = clone.bot.pending_stun_targets[0][1]
-        self.assertIs(pending_target, clone.player.board[0])
-        self.assertIsNot(pending_target, session.player.board[0])
-
-        clone.play_card(profit.id)
+        clone.trigger_ally_action(death_threat.id, stun_target_index=0)
         self.assertEqual(clone.player.board, [])
         self.assertIn(cron, clone.player.discard)
         self.assertTrue(session.player.board, "simulation must not stun the live board")

@@ -35,6 +35,7 @@ from hero_engine import (
     load_hero_cards,
     play_card,
     remove_stunned_champions,
+    trigger_ally_ability,
 )
 
 
@@ -70,6 +71,7 @@ FREEFORM_TURN = True
 #: sequence for a greedy consumer while still offering every legal action.
 _ACTION_CATEGORY_ORDER = {
     "play_card": 0,
+    "trigger_ally": 0,
     "expend_champion": 1,
     "sacrifice_played": 2,
     "buy_card": 3,
@@ -197,7 +199,7 @@ def _copy_player(player: HRPlayer, rng: random.Random) -> HRPlayer:
     # Copied, not shared: a simulated firing must not leak into the real game.
     clone.ally_used_this_turn = player.ally_used_this_turn.copy()
     clone.pending_per_champion = [dict(e) for e in player.pending_per_champion]
-    clone.pending_stun_targets = player.pending_stun_targets[:]
+    clone.available_ally_triggers = player.available_ally_triggers[:]
     clone.pending_prepares = player.pending_prepares
     # Deferred sacrifice/discard targeting. Dicts are copied, not aliased -
     # apply_choice decrements "count" in place, so a shared dict would let a
@@ -220,28 +222,6 @@ def _copy_player(player: HRPlayer, rng: random.Random) -> HRPlayer:
     # every simulated sacrifice raises.
     clone.market = getattr(player, "market", None)
     return clone
-
-
-def _remap_pending_stun_targets(player: HRPlayer, opponent: HRPlayer) -> None:
-    """Point deferred stun effects at champions in the cloned game state.
-
-    ``pending_stun_targets`` is the only player field whose payload can hold a
-    mutable game object.  A shallow tuple copy leaves it pointing at the live
-    opponent board, which makes a later ally-triggered stun silently fail in a
-    simulation because that object is not one of the clone's legal targets.
-    """
-    cloned_targets = {champion.instance_id: champion for champion in opponent.board}
-    remapped: list[tuple[HRCard, BoardChampion | None]] = []
-    for card, target in player.pending_stun_targets:
-        if target is None:
-            remapped.append((card, None))
-            continue
-        # A target normally remains on the opponent's board until its pending
-        # ally fires.  Preserve the engine's "target no longer legal" behavior
-        # if a custom state has already removed it, without retaining a live
-        # BoardChampion reference in the clone.
-        remapped.append((card, cloned_targets.get(target.instance_id, _copy_champion(target))))
-    player.pending_stun_targets = remapped
 
 
 def _copy_market(market: HRMarket, rng: random.Random) -> HRMarket:
@@ -423,8 +403,6 @@ class GameSession:
         clone.rng.setstate(self.rng.getstate())
         clone.player = _copy_player(self.player, clone.rng)
         clone.bot = _copy_player(self.bot, clone.rng)
-        _remap_pending_stun_targets(clone.player, clone.bot)
-        _remap_pending_stun_targets(clone.bot, clone.player)
         clone.market = _copy_market(self.market, clone.rng)
         # Cloned players must sacrifice into the cloned Fire Gem pile, not the
         # live one - _copy_player ran before clone.market existed.
@@ -572,9 +550,9 @@ class GameSession:
         player.actions_played = 0
         player.discard_played_cards()
         player.pending_ally.clear()
+        player.available_ally_triggers.clear()
         player.ally_used_this_turn.clear()
         player.pending_per_champion.clear()
-        player.pending_stun_targets.clear()
         player.pending_prepares = 0
         player.pending_choices.clear()
         player.cards_bought = 0
@@ -703,10 +681,106 @@ class GameSession:
         if self._event_listener is not None:
             self._event_listener(self.history[-1])
 
+    def _ally_description(self, card: HRCard) -> str:
+        """Short human-readable summary of a card's ally ability."""
+        e = card.effects
+        parts: list[str] = []
+        n = e.get("ally_draw", 0)
+        if n:
+            parts.append(f"Draw {n}" if n > 1 else "Draw a card")
+        n = e.get("ally_combat", 0)
+        if n:
+            parts.append(f"+{n} combat")
+        n = e.get("ally_gold", 0)
+        if n:
+            parts.append(f"+{n} gold")
+        n = e.get("ally_health", 0)
+        if n:
+            parts.append(f"+{n} health")
+        n = e.get("ally_per_champion_health", 0)
+        if n:
+            parts.append(f"+{n} health per champion")
+        if e.get("stun", False):
+            parts.append("Stun target champion")
+        n = e.get("ally_opponent_discard", 0)
+        if n:
+            parts.append(f"Opponent discards {n}")
+        if e.get("to_hand", False):
+            parts.append("Next acquired card goes to hand")
+        if e.get("top_of_deck", False):
+            parts.append("Next acquired card goes on top of deck")
+        if e.get("prepare", False):
+            parts.append("Prepare a champion")
+        return ", ".join(parts) or "Ally ability"
+
+    def _trigger_ally_actions(self, player, opponent) -> list[dict[str, Any]]:
+        """One action per triggerable ally ability (official-app behavior).
+
+        Ally abilities never fire on their own - each card in
+        player.available_ally_triggers is offered here for the player (or bot)
+        to fire explicitly, once per turn. Stun allies enumerate targets like
+        play/expend stun does; with no legal targets the stun simply whiffs,
+        so a single target-less action is still offered for any side effects.
+        """
+        actions: list[dict[str, Any]] = []
+        for trigger_index, card in enumerate(player.available_ally_triggers):
+            champion_id = next(
+                (str(bc.instance_id) for bc in player.board
+                 if bc.alive and bc.card is card),
+                None,
+            )
+            base = {
+                "type": "trigger_ally",
+                "cardId": card.id,
+                "championId": champion_id,
+                # Positional slot, so two copies of one card stay
+                # distinguishable - mirrors the play_card hand-slot mapping
+                # the RL envs rely on.
+                "triggerIndex": trigger_index,
+                "label": f"{card.name} - ally: {self._ally_description(card)}",
+                "priority": self._ally_priority(card, player),
+            }
+            if card.get("stun", False):
+                targets = self._attack_targets(opponent)
+                if targets:
+                    for target_index, target in enumerate(targets):
+                        actions.append({
+                            **base,
+                            "stunTargetIndex": target_index,
+                            "label": f"{card.name} - ally: Stun {target.name}",
+                        })
+                    continue
+            actions.append(base)
+        return actions
+
+    def _ally_priority(self, card: HRCard, player) -> float:
+        """Raw priority for a trigger_ally action, mirroring the engine's
+        ally valuation weights so the bot's default policy fires allies
+        it would previously have received for free."""
+        e = card.effects
+        value = (e.get("ally_draw", 0) * 5.0
+                 + e.get("ally_combat", 0) * 4.0
+                 + e.get("ally_gold", 0) * 3.0
+                 + e.get("ally_health", 0) * 3.0
+                 + e.get("ally_opponent_discard", 0) * 4.0
+                 + e.get("ally_per_champion_health", 0) * 2.0
+                 * len([c for c in player.board if c.alive]))
+        if e.get("stun", False):
+            value += 8.0
+        if e.get("to_hand", False) or e.get("top_of_deck", False):
+            value += 6.0
+        if e.get("prepare", False):
+            value += 4.0
+        return value
+
     def _play_card_actions(self, player, opponent) -> list[dict[str, Any]]:
         actions: list[dict[str, Any]] = []
         for card in player.hand:
-            needs_stun_target = card.get("stun", False)
+            # Stun targets are chosen at play time only for base-effect stuns
+            # (Fire Bomb). Ally-gated stuns (Death Threat, Hit Job) pick their
+            # target when the ally is triggered, not when the card is played.
+            needs_stun_target = (card.get("stun", False)
+                                 and not card.get("ally_faction", ""))
             stun_targets = self._attack_targets(opponent) if needs_stun_target else []
             if stun_targets:
                 for target_index, target in enumerate(stun_targets):
@@ -957,6 +1031,7 @@ class GameSession:
 
         if self.phase == MAIN_PHASE:
             actions = (self._play_card_actions(player, opponent)
+                       + self._trigger_ally_actions(player, opponent)
                        + self._expend_champion_actions(player, opponent)
                        + self._sacrifice_played_actions(player)
                        + self._buy_card_actions(player)
@@ -983,14 +1058,18 @@ class GameSession:
 
         actions = []
         if self.phase == "play":
-            actions = self._play_card_actions(player, opponent)
+            actions = (self._play_card_actions(player, opponent)
+                       + self._trigger_ally_actions(player, opponent))
         elif self.phase == "champion":
             actions = (self._expend_champion_actions(player, opponent)
+                       + self._trigger_ally_actions(player, opponent)
                        + self._sacrifice_played_actions(player))
         elif self.phase == "buy":
-            actions = self._buy_card_actions(player)
+            actions = (self._buy_card_actions(player)
+                       + self._trigger_ally_actions(player, opponent))
         elif self.phase == "combat":
-            actions = self._attack_actions(player, opponent)
+            actions = (self._attack_actions(player, opponent)
+                       + self._trigger_ally_actions(player, opponent))
 
         actions.append({"type": "advance_phase", "label": "Next Phase", "priority": -10})
         return sorted(actions, key=lambda item: item.get("priority", 0), reverse=True)
@@ -1063,7 +1142,10 @@ class GameSession:
             raise ValueError("Card not found in hand")
 
         ally_bonus = has_ally(card, player)
-        needs_stun_target = card.get("stun", False)
+        # Base-effect stuns (Fire Bomb) pick their target on play; ally-gated
+        # stuns (Death Threat, Hit Job) pick it when the ally is triggered.
+        needs_stun_target = (card.get("stun", False)
+                             and not card.get("ally_faction", ""))
         stun_target = self._stun_target(opponent, stun_target_index) if needs_stun_target else None
         play_card(player, card, self.market, ally_bonus=ally_bonus, opponent=opponent,
                   stun_target=stun_target, auto_self_sacrifice=not manual_self_sacrifice)
@@ -1123,6 +1205,37 @@ class GameSession:
         player.played_this_turn.remove(card)
         hero_engine._sacrifice_to_pile(player, card, self.market)
         self.record_event("sacrifice", f"Sacrificed {card.name} for {amount} combat")
+        self._check_winner()
+        return self.get_state()
+
+    def trigger_ally_action(self, card_id: str,
+                            stun_target_index: int | None = None) -> dict[str, Any]:
+        """Fire one user-triggered ally ability (official-app behavior).
+
+        The card must be in the current player's available_ally_triggers -
+        offered when its ally became usable and not yet fired this turn.
+        Stun allies need an explicit target chosen here; anything else in the
+        payload (draw, combat, ...) applies through the engine.
+        """
+        player = self._current()
+        opponent = self._opponent()
+        self._require_no_pending_choice(player)
+        card = next((c for c in player.available_ally_triggers if c.id == card_id), None)
+        if card is None:
+            raise ValueError("That ally ability is not available to trigger")
+        stun_target = None
+        if card.get("stun", False):
+            targets = self._attack_targets(opponent)
+            if targets:
+                stun_target = self._stun_target(opponent, stun_target_index)
+        if not trigger_ally_ability(player, card, opponent, stun_target=stun_target):
+            raise ValueError("That ally ability is not available to trigger")
+        self.record_event(
+            "ally",
+            f"Triggered {card.name} ally: {self._ally_description(card)}"
+            + (f" -> {stun_target.name}" if stun_target is not None else ""),
+        )
+        self._drain_effect_log(player, opponent)
         self._check_winner()
         return self.get_state()
 

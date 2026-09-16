@@ -24,6 +24,8 @@ from hero_engine import (
     load_hero_cards,
     play_card,
     run_main_phase,
+    trigger_ally_ability,
+    trigger_all_available_allies,
 )
 
 CARDS = load_hero_cards("data/hero_realms_cards.json")
@@ -240,20 +242,25 @@ class TestChampionAllyTiming(unittest.TestCase):
 
     def test_ally_fires_on_entering_play_with_partner(self):
         # Dire Wolf (Wild, ally +4 combat) enters play with Wolf Shaman (Wild)
-        # already in play: ally fires without expending.
+        # already in play: the ally is offered without expending, and pays on
+        # trigger.
         player, opponent = HRPlayer("P"), HRPlayer("O")
         market = _market_with(player)
         player.board.append(BoardChampion(_card("Wolf Shaman")))
         player.hand = [_card("Dire Wolf")]
-        play_card(player, player.hand[0], market, opponent=opponent)
-        self.assertEqual(player.combat, 4,
-                         f"ally should fire on entering play; combat={player.combat}")
+        wolf = player.hand[0]
+        play_card(player, wolf, market, opponent=opponent)
+        self.assertEqual(player.combat, 0, "offered, not fired")
+        self.assertEqual([c.name for c in player.available_ally_triggers], ["Dire Wolf"])
         self.assertTrue(player.board[1].exhausted is False)
+        trigger_ally_ability(player, wolf, opponent)
+        self.assertEqual(player.combat, 4,
+                         f"ally should pay on trigger; combat={player.combat}")
 
     def test_ally_fires_retroactively_when_partner_arrives_later(self):
         # Orc Grunt (Wild, ally: draw 1) played first, then Wolf Shaman: the
-        # Grunt's ally fires retroactively ("the order in which you play your
-        # cards does not matter").
+        # Grunt's ally is offered retroactively ("the order in which you play
+        # your cards does not matter") and draws on trigger.
         player, opponent = HRPlayer("P"), HRPlayer("O")
         market = _market_with(player)
         grunt = [c for c in CARDS if c.name == "Orc Grunt"][0]
@@ -262,27 +269,34 @@ class TestChampionAllyTiming(unittest.TestCase):
         player.discard = []
         play_card(player, player.hand[0], market, opponent=opponent)
         play_card(player, player.hand[0], market, opponent=opponent)
-        self.assertIn(id(grunt), player.ally_used_this_turn,
-                      "Grunt's ally should have fired when the partner arrived")
+        self.assertIn(grunt, player.available_ally_triggers,
+                      "Grunt's ally should be offered when the partner arrived")
+        self.assertEqual(len(player.hand), 0)
+        trigger_all_available_allies(player, opponent)
+        self.assertIn(id(grunt), player.ally_used_this_turn)
+        self.assertEqual(len(player.hand), 1, "ally drew on trigger")
 
     def test_ally_fires_only_once_per_turn(self):
-        # Dire Wolf expended (3 base + 4 ally = 7), prepared, expended again:
-        # the base expend works twice but the ally must not refire (10, not 14).
+        # Dire Wolf expended (3 base), trigger fired (+4 ally = 7), prepared,
+        # expended again: the base expend works twice but the ally must not
+        # re-offer (10, not 14).
         player, opponent = HRPlayer("P"), HRPlayer("O")
         _market_with(player)
         bc_wolf = BoardChampion(_card("Wolf Shaman"))
         bc_dw = BoardChampion(_card("Dire Wolf"))
         player.board.extend([bc_wolf, bc_dw])
         expend_champion(player, bc_dw, opponent)
+        self.assertEqual(player.combat, 3, "expend base only; ally only offered")
+        trigger_ally_ability(player, bc_dw.card, opponent)
         self.assertEqual(player.combat, 7)
         bc_dw.exhausted = False  # Domination-style prepare
         expend_champion(player, bc_dw, opponent)
         self.assertEqual(player.combat, 10,
-                         f"ally refired on re-expend; combat={player.combat}")
+                         f"ally re-offered on re-expend; combat={player.combat}")
 
     def test_ally_usage_resets_each_turn(self):
         # ally_used_this_turn is per-turn: after a turn boundary the same
-        # champion's ally may fire again. Orc Grunt: base 2 combat, ally draw 1.
+        # champion's ally may be offered again. Orc Grunt: base 2 combat, ally draw 1.
         player, opponent = HRPlayer("P"), HRPlayer("O")
         _market_with(player)
         grunt = [c for c in CARDS if c.name == "Orc Grunt"][0]
@@ -292,33 +306,42 @@ class TestChampionAllyTiming(unittest.TestCase):
         player.deck = [HRCard(**GOLD_DICT), HRCard(**GOLD_DICT)]
         player.discard = []
         expend_champion(player, bc, opponent)
+        self.assertEqual(player.combat, 2, "expend base only")
+        self.assertIn(grunt, player.available_ally_triggers)
+        trigger_ally_ability(player, grunt, opponent)
         self.assertIn(id(grunt), player.ally_used_this_turn)
         self.assertEqual(len(player.hand), 1, "ally drew on turn 1")
         player.ally_used_this_turn.clear()  # what take_turn does
+        player.available_ally_triggers.clear()
         player.combat = 0
         player.hand = []
         bc.exhausted = False
         expend_champion(player, bc, opponent)
         self.assertEqual(player.combat, 2, "base expend works on the new turn")
+        trigger_ally_ability(player, grunt, opponent)
         self.assertEqual(len(player.hand), 1,
-                         "ally should fire again on a new turn")
+                         "ally should be offered again on a new turn")
 
     def test_kraka_ally_heals_per_champion_on_entering_play(self):
         # Kraka, High Priest (ally: heal 2 per champion) enters play with an
-        # Imperial partner: ally_per_champion_health must apply on the play
-        # path, not just on expend.
+        # Imperial partner: ally_per_champion_health must be offered on the
+        # play path, not just on expend.
         player, opponent = HRPlayer("P"), HRPlayer("O")
         market = _market_with(player)
         player.hp = 30
         player.board.append(BoardChampion(_card("Cristov, the Just")))  # Imperial
-        player.hand = [_card("Kraka, High Priest")]
-        play_card(player, player.hand[0], market, opponent=opponent)
+        kraka = _card("Kraka, High Priest")
+        player.hand = [kraka]
+        play_card(player, kraka, market, opponent=opponent)
+        self.assertEqual(player.hp, 30, "offered, not fired")
+        self.assertIn(kraka, player.available_ally_triggers)
+        trigger_ally_ability(player, kraka, opponent)
         # 2 champions in play (Cristov + Kraka) x 2 = 4 healing.
         self.assertEqual(player.hp, 34, f"hp={player.hp}")
 
     def test_grak_ally_draw_discard_scales_on_play_path(self):
-        # Grak played with a Wild partner and nothing left to draw: the ally
-        # draws 0, so it discards 0 (partial-effects rule).
+        # Grak played with a Wild partner and nothing left to draw: on trigger
+        # the ally draws 0, so it discards 0 (partial-effects rule).
         player, opponent = HRPlayer("P"), HRPlayer("O")
         market = _market_with(player)
         player.board.append(BoardChampion(_card("Wolf Shaman")))
@@ -327,6 +350,9 @@ class TestChampionAllyTiming(unittest.TestCase):
         player.deck = []
         player.discard = []
         play_card(player, player.hand[0], market, opponent=opponent)
+        self.assertEqual(len(player.hand), 2, "play drew nothing (base has no draw)")
+        self.assertIn(grak, player.available_ally_triggers)
+        trigger_ally_ability(player, grak, opponent)
         self.assertEqual(len(player.hand), 2,
                          f"ally drew nothing, so no discard; hand={len(player.hand)}")
 
@@ -436,6 +462,7 @@ class TestSurvivingChampionAllies(unittest.TestCase):
         player.board.append(BoardChampion(_card("Dire Wolf")))  # Wild ally +4
         player.ally_used_this_turn.clear()
         player.pending_ally.clear()
+        player.available_ally_triggers.clear()
         return player, opponent
 
     def test_partner_arrival_fires_survivor_ally(self):
@@ -444,8 +471,12 @@ class TestSurvivingChampionAllies(unittest.TestCase):
         market = _market_with(player)
         player.hand.append(_card("Wolf Shaman"))  # Wild partner
         player.deck += [_card("Spark") for _ in range(5)]
-        play_card(player, player.hand[0], market, opponent=opponent)
-        # Dire Wolf's ally (+4 combat) must fire on partner arrival, no expend.
+        wolf = player.hand[0]
+        play_card(player, wolf, market, opponent=opponent)
+        # Dire Wolf's ally (+4 combat) is offered on partner arrival, no expend.
+        self.assertEqual([c.name for c in player.available_ally_triggers],
+                         ["Dire Wolf"])
+        trigger_all_available_allies(player, opponent)
         self.assertGreaterEqual(player.combat, 4,
                                  f"combat={player.combat}")
 
@@ -454,6 +485,9 @@ class TestSurvivingChampionAllies(unittest.TestCase):
         player, opponent = self._wild_pair()
         player.board.append(BoardChampion(_card("Wolf Shaman")))
         _resolve_board_allies(player, opponent)
+        self.assertEqual(player.combat, 0, "offered, not fired")
+        self.assertEqual(len(player.available_ally_triggers), 1)
+        trigger_all_available_allies(player, opponent)
         self.assertEqual(player.combat, 4, f"combat={player.combat}")
 
     def test_ally_still_once_per_turn(self):
@@ -461,15 +495,17 @@ class TestSurvivingChampionAllies(unittest.TestCase):
         player, opponent = self._wild_pair()
         player.board.append(BoardChampion(_card("Wolf Shaman")))
         _resolve_board_allies(player, opponent)
+        trigger_all_available_allies(player, opponent)
         self.assertEqual(player.combat, 4)
-        # A later expend must not fire the ally again...
+        # A later expend offers nothing new - the ally was consumed...
         wolf = next(bc for bc in player.board
                     if bc.card.name == "Dire Wolf")
         expend_champion(player, wolf, opponent)
         # ...but the expend's own base effect (+3) still applies once.
         self.assertEqual(player.combat, 7, f"combat={player.combat}")
-        # ...and a second sweep the same turn changes nothing.
+        # ...and a second sweep the same turn offers nothing.
         _resolve_board_allies(player, opponent)
+        self.assertEqual(player.available_ally_triggers, [])
         self.assertEqual(player.combat, 7, f"combat={player.combat}")
 
 

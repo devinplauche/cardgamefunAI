@@ -64,6 +64,17 @@ export async function expendChampion(
   });
 }
 
+export async function triggerAlly(
+  sessionId: string,
+  cardId: string,
+  stunTargetIndex?: number,
+): Promise<GameState> {
+  return requestJson<GameState>(`/api/sessions/${sessionId}/trigger-ally`, {
+    method: 'POST',
+    body: JSON.stringify({ cardId, stunTargetIndex }),
+  });
+}
+
 export async function buyCard(sessionId: string, marketIndex: number): Promise<GameState> {
   return requestJson<GameState>(`/api/sessions/${sessionId}/buy-card`, {
     method: 'POST',

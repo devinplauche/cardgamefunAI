@@ -239,6 +239,9 @@ class Handler(BaseHTTPRequestHandler):
                 body.get("sacrificeIndex"), body.get("sacrificeZone", "hand"))
         if route == "sacrifice-played":
             return session.sacrifice_played_action(body["cardId"])
+        if route == "trigger-ally":
+            return session.trigger_ally_action(
+                body["cardId"], body.get("stunTargetIndex"))
         if route == "resolve-choice":
             return session.resolve_choice_action(int(body["candidateIndex"]))
         if route == "buy-card":
@@ -523,6 +526,9 @@ class Handler(BaseHTTPRequestHandler):
                     payload = _debug_setup(session, body)
                 elif route == "sacrifice-played":
                     payload = session.sacrifice_played_action(body["cardId"])
+                elif route == "trigger-ally":
+                    payload = session.trigger_ally_action(
+                        body["cardId"], body.get("stunTargetIndex"))
                 elif route == "resolve-choice":
                     payload = session.resolve_choice_action(int(body["candidateIndex"]))
                 elif route == "buy-card":

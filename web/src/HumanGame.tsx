@@ -117,6 +117,9 @@ export function HumanGame({ gameId, user, onExit, onSignOut }: Props) {
   async function handlePlayAll() {
     await act('play-all', {}, 'Straightforward cards played. Optional abilities remain yours to use.');
   }
+  async function handleTriggerAlly(cardId: string, stunTargetIndex?: number) {
+    await act('trigger-ally', { cardId, stunTargetIndex });
+  }
   async function handleExpend(
     championId: string,
     stunTargetIndex?: number,
@@ -174,6 +177,7 @@ export function HumanGame({ gameId, user, onExit, onSignOut }: Props) {
           onLive={() => setReplayFrame(null)}
           onPlay={handlePlay}
           onPlayAll={handlePlayAll}
+          onTriggerAlly={handleTriggerAlly}
           onExpend={handleExpend}
           onSacrifice={handleSacrifice}
           onBuy={handleBuy}

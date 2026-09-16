@@ -7,6 +7,7 @@ from hero_engine import (
     auto_expend_all,
     expend_champion,
     play_card,
+    trigger_all_available_allies,
 )
 
 
@@ -41,6 +42,10 @@ class TestDeferredPrepare(unittest.TestCase):
         self.assertTrue(play_card(
             player, prepare, None, ally_bonus=True, opponent=opponent,
         ))
+        # The prepare ally is user-triggered now: offered on play, applied on
+        # trigger.
+        self.assertEqual([c.name for c in player.available_ally_triggers], ["Prepare"])
+        trigger_all_available_allies(player, opponent)
         self.assertEqual(player.pending_prepares, 1)
 
         self.assertTrue(expend_champion(player, champion, opponent))
@@ -79,6 +84,7 @@ class TestDeferredPrepare(unittest.TestCase):
         self.assertTrue(play_card(
             player, prepare, None, ally_bonus=True, opponent=opponent,
         ))
+        trigger_all_available_allies(player, opponent)
 
         self.assertFalse(champion.exhausted)
         self.assertEqual(player.pending_prepares, 0)

@@ -54,6 +54,7 @@ from hero_engine import (  # noqa: E402
     BoardChampion,
     HRCard,
     load_hero_cards,
+    trigger_all_available_allies,
 )
 from web.session import create_session  # noqa: E402
 
@@ -319,6 +320,7 @@ def fresh(board=(), hand=(), played=(), opp_board=None):
     me.board = [BoardChampion(c) for c in board]
     me.played_this_turn = list(played)
     me.pending_ally = []
+    me.available_ally_triggers = []
     me.pending_prepares = 0
     me.next_buy_to_hand = me.next_buy_to_top = False
     them.hp = 30
@@ -581,8 +583,17 @@ def audit_card(card: HRCard) -> list[Finding]:
                     sess = fresh(board=[card, *extra], played=played)
                     before = snapshot(sess)
                     _resolve_board_allies(sess.player, sess.bot)
+                    # Ally abilities are user-triggered: the offer above only
+                    # stages them; the audit fires them like a player would.
+                    trigger_all_available_allies(sess.player, sess.bot)
                     return delta(before, snapshot(sess))
-                return play(fresh(hand=[card], board=list(extra), played=played), card)
+                sess = fresh(hand=[card], board=list(extra), played=played)
+                before = snapshot(sess)
+                stun_index = (0 if card.get("stun", False) and sess.bot.board
+                              else None)
+                sess.play_card(card.id, stun_index)
+                trigger_all_available_allies(sess.player, sess.bot)
+                return delta(before, snapshot(sess))
 
             with_ally, without = arm(with_partner), arm(None)
             return {k: with_ally.get(k, 0) - without.get(k, 0)
@@ -642,14 +653,16 @@ def audit_card(card: HRCard) -> list[Finding]:
                 from hero_engine import _resolve_board_allies
                 sess = fresh(board=[card, partner_champ])
                 sess._start_turn(sess.player)
+                trigger_all_available_allies(sess.player, sess.bot)
                 first = snapshot(sess)
                 _resolve_board_allies(sess.player, sess.bot)
                 if delta(first, snapshot(sess)):
                     findings.append(Finding(
-                        card.name, "ally fired twice in one turn",
-                        "resolving again in the same turn changed state",
+                        card.name, "ally offered twice in one turn",
+                        "resolving again in the same turn offered a new trigger",
                     ))
                 sess._start_turn(sess.player)
+                trigger_all_available_allies(sess.player, sess.bot)
                 second = snapshot(sess)
                 if second["combat"] == 0 and by_kind["ally"].flat.get("combat"):
                     findings.append(Finding(

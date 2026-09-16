@@ -1,8 +1,14 @@
 """Regression tests for ally (faction) ability triggering.
 
-Per the official rules, an ally ability triggers "as soon as you have another
-card of that faction in play", and Actions/Items stay in play until the
-Discard Phase. has_ally only checked player.board, which holds champions
+Ally abilities are user-triggered, matching the official app rather than the
+rulebook's auto-fire: playing a card (or expending a champion) with a usable
+ally OFFERS the trigger - it lands in player.available_ally_triggers - and the
+player fires it explicitly via trigger_ally_ability(), once per turn. Nothing
+in the engine fires an ally on its own.
+
+Per the official rules, an ally ability is usable "as soon as you have
+another card of that faction in play", and Actions/Items stay in play until
+the Discard Phase. has_ally only checked player.board, which holds champions
 only, so 21 of the 36 ally cards - every non-champion one - could never
 trigger each other. Faction-stacking with actions, a core strategy, did
 nothing.
@@ -17,6 +23,8 @@ from hero_engine import (
     has_ally,
     load_hero_cards,
     play_card,
+    trigger_ally_ability,
+    trigger_all_available_allies,
 )
 
 CARDS = load_hero_cards("data/hero_realms_cards.json")
@@ -55,10 +63,15 @@ class TestActionToActionAlly(unittest.TestCase):
         play_card(player, profit, market, ally_bonus=has_ally(profit, player))
 
         self.assertTrue(has_ally(intimidation, player),
-                        "Profit is in play this turn, so Intimidation's Guild ally should trigger")
+                        "Profit is in play this turn, so Intimidation's Guild ally is usable")
         gold_before = player.gold
         play_card(player, intimidation, market, ally_bonus=has_ally(intimidation, player))
-        self.assertEqual(player.gold, gold_before + 2, "ally_gold 2 should have fired")
+        self.assertEqual(player.gold, gold_before,
+                         "ally abilities never fire on their own - the trigger is only offered")
+        self.assertEqual([c.name for c in player.available_ally_triggers],
+                         ["Profit", "Intimidation"])
+        trigger_all_available_allies(player)
+        self.assertEqual(player.gold, gold_before + 2, "ally_gold 2 fires on trigger")
 
     def test_a_lone_action_gets_no_ally_bonus(self):
         intimidation = _card("Intimidation")
@@ -66,6 +79,8 @@ class TestActionToActionAlly(unittest.TestCase):
         player.hand = [intimidation]
         play_card(player, intimidation, _fresh_market(), ally_bonus=has_ally(intimidation, player))
         self.assertEqual(player.gold, 0, "no other Guild card in play, so no ally_gold")
+        self.assertEqual(player.available_ally_triggers, [],
+                         "no partner, so no trigger is offered either")
 
     def test_different_factions_do_not_trigger_each_other(self):
         profit = _card("Profit")        # Guild
@@ -166,9 +181,15 @@ class TestRetroactiveAlly(unittest.TestCase):
         player.hand = [death_threat, profit]
         market = _fresh_market()
 
+        # The stun target is chosen when the ally is TRIGGERED, not when the
+        # card is played: Death Threat queues with no partner, Profit's
+        # arrival offers the trigger, and the trigger takes the target.
         play_card(player, death_threat, market, ally_bonus=has_ally(death_threat, player),
-                  opponent=opponent, stun_target=target)
+                  opponent=opponent)
         play_card(player, profit, market, ally_bonus=has_ally(profit, player), opponent=opponent)
+        self.assertEqual(opponent.board, [target], "nothing fired on play")
+        self.assertTrue(trigger_ally_ability(player, death_threat, opponent,
+                                             stun_target=target))
 
         self.assertEqual(opponent.board, [])
         self.assertIn(guard, opponent.discard)
@@ -194,11 +215,17 @@ class TestRetroactiveAlly(unittest.TestCase):
         self.assertEqual(player.pending_ally, [profit])
 
         play_card(player, intimidation, market, ally_bonus=has_ally(intimidation, player))
-        # Profit base 2 gold, Intimidation base 5 combat,
-        # + Profit ally_combat 4 (retroactive) + Intimidation ally_gold 2
+        # Intimidation base 5 combat only: both allies are offered, not fired.
+        self.assertEqual(player.combat, 5)
+        self.assertEqual(player.gold, 2, "Profit's base gold only")
+        self.assertEqual(player.pending_ally, [])
+        self.assertEqual([c.name for c in player.available_ally_triggers],
+                         ["Profit", "Intimidation"])
+        # Profit ally_combat 4 (retroactive) + Intimidation ally_gold 2, on trigger.
+        trigger_all_available_allies(player)
         self.assertEqual(player.combat, 9)
         self.assertEqual(player.gold, 4)
-        self.assertEqual(player.pending_ally, [])
+        self.assertEqual(player.available_ally_triggers, [])
 
     def test_a_champion_arriving_triggers_an_earlier_actions_ally(self):
         from hero_engine import BoardChampion
@@ -212,6 +239,9 @@ class TestRetroactiveAlly(unittest.TestCase):
         play_card(player, profit, market, ally_bonus=has_ally(profit, player))
         self.assertEqual(player.combat, 0)
         play_card(player, guild_champ, market, ally_bonus=has_ally(guild_champ, player))
+        self.assertEqual(player.combat, 0, "the trigger is offered, not fired")
+        self.assertIn(profit, player.available_ally_triggers)
+        trigger_all_available_allies(player)
         self.assertEqual(player.combat, 4, "the champion completed the Guild pair")
 
     def test_a_different_faction_does_not_trigger_the_pending_ally(self):
@@ -392,13 +422,17 @@ class TestChampionAllyTiming(unittest.TestCase):
         player = self._player(board=[lys], hand=[cult])
         play_card(player, cult, _fresh_market(),
                   ally_bonus=has_ally(cult, player), opponent=self.opponent)
-        self.assertEqual(player.combat, 4, "Necros ally should pay on play")
+        self.assertEqual(player.combat, 0, "the trigger is offered, not fired")
+        self.assertEqual([c.name for c in player.available_ally_triggers], ["Cult Priest"])
+        self.assertTrue(trigger_ally_ability(player, cult, self.opponent))
+        self.assertEqual(player.combat, 4, "Necros ally pays on trigger")
 
     def test_ally_does_not_require_expending(self):
         cult, lys = _card("Cult Priest"), _card("Lys, the Unseen")
         player = self._player(board=[lys], hand=[cult])
         play_card(player, cult, _fresh_market(),
                   ally_bonus=has_ally(cult, player), opponent=self.opponent)
+        trigger_ally_ability(player, cult, self.opponent)
         self.assertEqual(player.combat, 4)
         self.assertFalse(player.board[-1].exhausted,
                          "no expend was needed to collect the ally")
@@ -410,20 +444,30 @@ class TestChampionAllyTiming(unittest.TestCase):
         player = self._player(board=[lys], hand=[cult])
         play_card(player, cult, _fresh_market(),
                   ally_bonus=has_ally(cult, player), opponent=self.opponent)
+        trigger_ally_ability(player, cult, self.opponent)
         champion = player.board[-1]
         expend_champion(player, champion, self.opponent, choice="combat")
         self.assertEqual(player.combat, 5,
                          "expend adds only its own +1 combat, not the ally again")
+        self.assertEqual(player.available_ally_triggers, [],
+                         "the ally was consumed by the trigger, not re-offered")
 
     def test_ally_fires_at_most_once_per_turn(self):
-        cult = _card("Cult Priest")
-        player = self._player(board=[cult, cult])
+        first, second = _copies("Cult Priest")  # distinct instances: true partners
+        player = self._player(board=[first, second])
         from hero_engine import _resolve_board_allies
 
         _resolve_board_allies(player, self.opponent)
-        first = player.combat
+        self.assertEqual(len(player.available_ally_triggers), 2,
+                         "both copies get their own trigger")
         _resolve_board_allies(player, self.opponent)
-        self.assertEqual(player.combat, first, "must not re-trigger within a turn")
+        self.assertEqual(len(player.available_ally_triggers), 2,
+                         "must not offer duplicates within a turn")
+        trigger_all_available_allies(player, self.opponent)
+        first_combat = player.combat
+        self.assertEqual(first_combat, 8)
+        self.assertFalse(trigger_ally_ability(player, first, self.opponent),
+                         "already triggered this turn")
 
     def test_an_action_played_later_completes_the_pair_for_a_board_champion(self):
         from hero_engine import _resolve_board_allies
@@ -431,10 +475,14 @@ class TestChampionAllyTiming(unittest.TestCase):
         myros, profit = _card("Myros, Guild Mage"), _card("Profit")  # both Guild
         player = self._player(board=[myros], hand=[profit])
         # Myros has been standing since an earlier turn: turn start queues its
-        # ally, and the Guild action arriving completes the pair for both.
+        # ally, and the Guild action arriving offers both triggers.
         _resolve_board_allies(player, self.opponent)
         play_card(player, profit, _fresh_market(),
                   ally_bonus=has_ally(profit, player), opponent=self.opponent)
+        self.assertEqual(player.combat, 0, "triggers offered, not fired")
+        self.assertEqual({c.name for c in player.available_ally_triggers},
+                         {"Myros, Guild Mage", "Profit"})
+        trigger_all_available_allies(player, self.opponent)
         self.assertEqual(player.combat, 8,
                          "Myros ally 4 (partner arrived) + Profit ally 4")
 
@@ -442,10 +490,10 @@ class TestChampionAllyTiming(unittest.TestCase):
         """The trigger is the condition holding, not a card being played.
 
         Two Necros champions left on the board satisfy the ally condition
-        before the next turn's first card, so the payout repeats every turn -
-        confirmed against the printed rules. The engine briefly fired only when
-        a card entered play, which dropped it on any turn you played nothing of
-        that faction.
+        before the next turn's first card, so the trigger is offered again
+        every turn - confirmed against the printed rules. The engine briefly
+        fired only when a card entered play, which dropped it on any turn you
+        played nothing of that faction.
         """
         from web.session import create_session
 
@@ -455,11 +503,18 @@ class TestChampionAllyTiming(unittest.TestCase):
         session.player.hand = [cult]
         session.active_player = "player"
         session.play_card(cult.id)
+        self.assertEqual(session.player.combat, 0, "offered, not fired")
+        session.trigger_ally_action(cult.id)
         self.assertEqual(session.player.combat, 4, "ally on the turn it is played")
 
-        # A new turn: combat resets to 0, then the standing pair pays again
-        # without a single card being played.
+        # A new turn: combat resets to 0, then the standing pair offers the
+        # trigger again without a single card being played.
         session._start_turn(session.player)
+        self.assertEqual(session.player.combat, 0)
+        self.assertEqual([c.name for c in session.player.available_ally_triggers],
+                         ["Cult Priest"],
+                         "Lys has no ally ability of its own")
+        trigger_all_available_allies(session.player, session.bot)
         self.assertEqual(session.player.combat, 4,
                          "the standing Necros pair re-triggers on the new turn")
 
@@ -471,22 +526,25 @@ class TestChampionAllyTiming(unittest.TestCase):
         session.player.board = [BoardChampion(lys), BoardChampion(cult)]
         session.active_player = "player"
         session._start_turn(session.player)
+        trigger_all_available_allies(session.player, session.bot)
         opened_with = session.player.combat
         self.assertEqual(opened_with, 4)
 
-        # Playing another Necros card must not pay the same ally a second time.
+        # Playing another Necros card offers ITS trigger, but Cult Priest's
+        # ally was already consumed this turn and must not repeat.
         death_touch = _card("Death Touch")  # Necros action
         session.player.hand = [death_touch]
         session.play_card(death_touch.id)
+        trigger_all_available_allies(session.player, session.bot)
         self.assertEqual(
             session.player.combat,
             opened_with + death_touch.get("combat", 0) + death_touch.get("ally_combat", 0),
-            "Cult Priest's ally already paid this turn and must not repeat",
+            "Cult Priest's ally already triggered this turn and must not repeat",
         )
 
     def test_kraka_ally_survives_the_move_off_expend(self):
         """ally_per_champion_health lived only in expend_champion's ally block;
-        removing that block would have silently dropped Kraka's ally."""
+        moving ally handling to the trigger path must not drop Kraka's ally."""
         from hero_engine import _resolve_board_allies
 
         kraka, arkus = _card("Kraka, High Priest"), _card("Arkus, Imperial Dragon")
@@ -495,10 +553,16 @@ class TestChampionAllyTiming(unittest.TestCase):
         _resolve_board_allies(player, self.opponent)   # Kraka queues, no partner yet
         play_card(player, arkus, _fresh_market(),
                   ally_bonus=has_ally(arkus, player), opponent=self.opponent)
-        # Kraka: +2 health per champion (2 in play) = 4; Arkus: +6 health.
+        # Nothing fired yet: Arkus's base is combat/draw only, and both allies
+        # are merely offered.
+        self.assertEqual(player.hp, 20)
+        self.assertEqual({c.name for c in player.available_ally_triggers},
+                         {"Kraka, High Priest", "Arkus, Imperial Dragon"})
+        trigger_all_available_allies(player, self.opponent)
+        # Kraka: +2 health per champion (2 in play) = 4; Arkus ally: +6 health.
         self.assertEqual(player.hp, 30)
 
-    def test_a_clone_does_not_re_trigger_an_ally_the_real_game_paid(self):
+    def test_a_clone_does_not_consume_an_ally_the_real_game_offered(self):
         from web.session import create_session
 
         cult, lys = _card("Cult Priest"), _card("Lys, the Unseen")
@@ -509,12 +573,12 @@ class TestChampionAllyTiming(unittest.TestCase):
         session.play_card(cult.id)
 
         clone = session.clone()
-        self.assertTrue(
-            any(id(c.card) in clone.player.ally_used_this_turn
-                for c in clone.player.board),
-            "ally_used_this_turn must survive cloning or MCTS re-collects "
-            "allies the real game already paid",
-        )
+        self.assertEqual([c.id for c in clone.player.available_ally_triggers],
+                         [c.id for c in session.player.available_ally_triggers])
+        trigger_all_available_allies(clone.player, clone.bot)
+        self.assertEqual([c.id for c in session.player.available_ally_triggers],
+                         [cult.id],
+                         "triggering in the clone must not consume the real game's offer")
 
 
 if __name__ == "__main__":

@@ -26,9 +26,17 @@ class HumanPlayTests(unittest.TestCase):
         s.play_all_action()
         self.assertEqual([c.name for c in s.player.hand], ["Deception", "Cult Priest"])
         self.assertEqual(s.player.gold, 8)
+        # Dagger only: allies never fire on their own. Profit and Bribe are a
+        # Guild pair in play, so both triggers are offered for the user.
+        self.assertEqual(s.player.combat, 1)
+        offered = [a for a in s.legal_actions() if a["type"] == "trigger_ally"]
+        self.assertEqual({a["cardId"] for a in offered},
+                         {self.card("Profit").id, self.card("Bribe").id})
+        s.trigger_ally_action(self.card("Profit").id)
         self.assertEqual(s.player.combat, 5)  # Dagger + Profit's Guild ally.
-        self.assertIn(FIRE_GEM, s.player.played_this_turn)
+        s.trigger_ally_action(self.card("Bribe").id)
         self.assertTrue(s.player.next_buy_to_top_action_only)
+        self.assertIn(FIRE_GEM, s.player.played_this_turn)
         self.assertEqual(s.get_state()["autoPlayCount"], 0)
 
     def test_duplicates_are_played_once_each_and_empty_batch_is_noop(self):

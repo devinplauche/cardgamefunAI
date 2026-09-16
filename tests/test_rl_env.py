@@ -149,7 +149,8 @@ class TestTurnBoundaryCleanup(unittest.TestCase):
         env._resolve_turn()
         self.assertEqual(o.pending_ally, [],
                          "pending_ally must not leak into the next turn")
-        self.assertEqual(o.pending_stun_targets, [])
+        self.assertEqual(o.available_ally_triggers, [],
+                         "untriggered ally offers must not leak into the next turn")
         self.assertEqual(o.pending_prepares, 0)
         self.assertFalse(o.next_buy_to_hand)
         self.assertFalse(o.next_buy_to_top)

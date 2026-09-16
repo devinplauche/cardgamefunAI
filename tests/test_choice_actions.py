@@ -68,6 +68,7 @@ class TestUnanswerableChoice(unittest.TestCase):
 from hero_engine import (GOLD, DAGGER, RUBY, SHORTSWORD, HRMarket, HRPlayer,
                          apply_choice, auto_resolve_choices, choice_candidates,
                          load_hero_cards, play_card)
+from hero_rl_env_v2 import N_ACTIONS as V2_ACTIONS
 from hero_rl_env_v3 import CHOICE_BASE, CHOICE_SLOTS, N_ACTIONS, HeroRealmsChoiceEnv, distinct_candidates
 
 CARDS = load_hero_cards("data/hero_realms_cards.json")
@@ -164,8 +165,8 @@ class TestApplyChoice(unittest.TestCase):
 
 class TestChoiceEnv(unittest.TestCase):
     def test_action_space_extends_v2_without_renumbering_it(self):
-        self.assertEqual(CHOICE_BASE, 30)
-        self.assertEqual(N_ACTIONS, 40)
+        self.assertEqual(CHOICE_BASE, V2_ACTIONS)
+        self.assertEqual(N_ACTIONS, V2_ACTIONS + CHOICE_SLOTS)
 
     def test_heuristic_opponent_does_not_defer(self):
         """Nothing answers a heuristic opponent's choices, so deferring them

@@ -20,6 +20,7 @@ import {
   playAll,
   resolveChoice,
   sacrificePlayed,
+  triggerAlly,
 } from './api';
 import type {
   CardView,
@@ -818,6 +819,11 @@ function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => v
     await refreshFrom(playCard(session.sessionId, cardId, stunTargetIndex));
   }
 
+  async function handleTriggerAlly(cardId: string, stunTargetIndex?: number) {
+    if (!canMutate || !session) return;
+    await refreshFrom(triggerAlly(session.sessionId, cardId, stunTargetIndex));
+  }
+
   async function handleExpend(
     championId: string,
     stunTargetIndex?: number,
@@ -1004,6 +1010,7 @@ function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => v
       onLive={() => setReplayFrame(null)}
       onPlay={(cardId, stunTargetIndex) => void handlePlay(cardId, stunTargetIndex)}
       onPlayAll={() => void handlePlayAll()}
+      onTriggerAlly={(cardId, stunTargetIndex) => void handleTriggerAlly(cardId, stunTargetIndex)}
       onExpend={(championId, stunTargetIndex, choice, sacrificeIndex, sacrificeZone) =>
         void handleExpend(championId, stunTargetIndex, choice, sacrificeIndex, sacrificeZone)}
       onSacrifice={(cardId) => void handleSacrifice(cardId)}

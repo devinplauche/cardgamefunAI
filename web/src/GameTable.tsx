@@ -23,6 +23,7 @@ import type { HistoryFrame } from './types';
 export interface TableHandlers {
   onPlay: (cardId: string, stunTargetIndex?: number) => void;
   onPlayAll: () => void;
+  onTriggerAlly: (cardId: string, stunTargetIndex?: number) => void;
   onExpend: (
     championId: string,
     stunTargetIndex?: number,
@@ -287,10 +288,13 @@ export function GameTable(props: Props) {
   const [confirmEndTurn, setConfirmEndTurn] = useState<string[] | null>(null);
   const [warnedTurn, setWarnedTurn] = useState<string | null>(null);
   // Stun target picker: { kind, id, name } of the card/champion being
-  // played/expended. Replaces the old window.prompt number entry, which
-  // didn't work on mobile and forced a number nobody wants to type.
+  // played/expended, or of the ally trigger being fired. Replaces the old
+  // window.prompt number entry, which didn't work on mobile and forced a
+  // number nobody wants to type. Ally-gated stuns (Death Threat, Hit Job)
+  // pick their target when the ally is triggered, not when the card is
+  // played - only base-effect stuns (Fire Bomb) open this at play time.
   const [stunPicker, setStunPicker] = useState<{
-    kind: 'card' | 'champion';
+    kind: 'card' | 'champion' | 'trigger';
     id: string;
     name: string;
   } | null>(null);
@@ -320,7 +324,10 @@ export function GameTable(props: Props) {
 
   const handlePlayCard = (card: CardView) => {
     if (!canInteract || !phaseAllows(phase, 'play')) return;
-    if (card.effects.stun && stunCandidates.length > 0) {
+    // Base-effect stuns (Fire Bomb) pick a target at play time. Ally-gated
+    // stuns (Death Threat, Hit Job) carry ally_faction - their target is
+    // chosen when the ally ability itself is triggered, not here.
+    if (card.effects.stun && !card.effects.ally_faction && stunCandidates.length > 0) {
       setStunPicker({ kind: 'card', id: card.id, name: card.name });
       return;
     }
@@ -360,6 +367,23 @@ export function GameTable(props: Props) {
         warnings.push(`Stun with ${stunners.map((champion) => champion.name).join(', ')}`);
       }
     }
+    if (triggerActions.length > 0) {
+      const seen = new Set<string>();
+      const names: string[] = [];
+      for (const action of triggerActions) {
+        const champ = action.championId
+          ? me.board.find((c) => c.instanceId === action.championId)
+          : undefined;
+        const played = champ ?? me.playedThisTurn.find((c) => c.id === action.cardId);
+        const name = played?.name ?? (typeof action.cardId === 'string' ? action.cardId : 'ally');
+        if (!seen.has(name)) {
+          seen.add(name);
+          names.push(name);
+        }
+        if (names.length >= 3) break;
+      }
+      warnings.push(`Trigger ally: ${names.join(', ')}`);
+    }
     return warnings;
   };
 
@@ -379,8 +403,42 @@ export function GameTable(props: Props) {
   };
 
   // --- champion actions for the player's own board (mirrors BoardColumn) ---
+  // Ally triggers offered by the backend: one legal action per card whose
+  // ally ability is live this turn. The player fires them on their own
+  // timing - they never auto-fire on play/expend.
+  const triggerActions = useMemo(
+    () => state.legalActions.filter((a) => a.type === 'trigger_ally'),
+    [state.legalActions],
+  );
   const championActions = (champion: ChampionView): ChampionAction[] => {
     const actions: ChampionAction[] = [];
+    // Ally ability, user-triggered: the official app lets the player fire it
+    // on their own timing. Offered while legalActions carries it (main phase
+    // and all legacy phases), whether or not the champion is exhausted.
+    if (canInteract) {
+      const allyActs = triggerActions.filter(
+        (action) => action.championId === champion.instanceId,
+      );
+      if (allyActs.length > 0) {
+        const first = allyActs[0];
+        const desc = (first.label.split(' - ally: ')[1] ?? first.label).trim();
+        const needsPick = allyActs.some(
+          (action) => action.stunTargetIndex !== undefined && action.stunTargetIndex !== null,
+        );
+        actions.push({
+          key: `${champion.instanceId}-ally`,
+          label: `⚡ Ally: ${desc}`,
+          onAction: () => {
+            setSheetChampion(null);
+            if (needsPick && stunCandidates.length > 0) {
+              setStunPicker({ kind: 'trigger', id: first.cardId ?? '', name: champion.name });
+            } else {
+              props.onTriggerAlly(first.cardId ?? '');
+            }
+          },
+        });
+      }
+    }
     const canExpend = phaseAllows(phase, 'champion') && canInteract;
     const branches = orChoiceBranches(champion);
     if (branches.length > 1 && canExpend) {
@@ -399,7 +457,9 @@ export function GameTable(props: Props) {
         detail: !canExpend ? 'Not your turn or wrong phase' : champion.exhausted ? 'Already spent' : undefined,
         disabled: !canExpend || champion.exhausted,
         onAction: () => {
-          if (champion.effects.stun && stunCandidates.length > 0) {
+          // Only base-effect stuns pick a target when expended; ally-gated
+          // stuns wait for the Ally button above.
+          if (champion.effects.stun && !champion.effects.ally_faction && stunCandidates.length > 0) {
             setSheetChampion(null);
             setStunPicker({ kind: 'champion', id: champion.instanceId, name: champion.name });
             return;
@@ -501,6 +561,26 @@ export function GameTable(props: Props) {
       ),
     [me.playedThisTurn],
   );
+
+  // Ally trigger for a card in the played strip (board champions get theirs
+  // in the champion sheet). Stun allies open the target picker; the rest
+  // fire immediately.
+  const handleTriggerPlayed = (cardId: string) => {
+    const acts = triggerActions.filter(
+      (action) => action.cardId === cardId && !action.championId,
+    );
+    if (acts.length === 0) return;
+    const needsPick =
+      acts.some(
+        (action) => action.stunTargetIndex !== undefined && action.stunTargetIndex !== null,
+      ) && stunCandidates.length > 0;
+    if (needsPick) {
+      const card = me.playedThisTurn.find((c) => c.id === cardId);
+      setStunPicker({ kind: 'trigger', id: cardId, name: card?.name ?? 'Ally' });
+    } else {
+      props.onTriggerAlly(cardId);
+    }
+  };
 
   const bannerText = waiting
     ? 'Waiting for opponent'
@@ -666,20 +746,35 @@ export function GameTable(props: Props) {
             <span>Played</span>
           </div>
           <div className="played-row">
-            {me.playedThisTurn.map((card, index) => (
-              <button
-                key={`${card.id}-played-${index}`}
-                className="played-chip"
-                onClick={() => setInspectCard(card)}
-                title={card.name}
-                aria-label={`Inspect ${card.name}`}
-              >
-                <span className="played-chip-art">
-                  <CardArtwork card={card} />
-                </span>
-                <span className="played-chip-name">{card.name}</span>
-              </button>
-            ))}
+            {me.playedThisTurn.map((card, index) => {
+              const hasAlly = triggerActions.some(
+                (action) => action.cardId === card.id && !action.championId,
+              );
+              return (
+                <div key={`${card.id}-played-${index}`} className="played-chip-wrap">
+                  <button
+                    className="played-chip"
+                    onClick={() => setInspectCard(card)}
+                    title={card.name}
+                    aria-label={`Inspect ${card.name}`}
+                  >
+                    <span className="played-chip-art">
+                      <CardArtwork card={card} />
+                    </span>
+                    <span className="played-chip-name">{card.name}</span>
+                  </button>
+                  {hasAlly && canInteract ? (
+                    <button
+                      className="played-chip-ally"
+                      onClick={() => handleTriggerPlayed(card.id)}
+                      aria-label={`Trigger ${card.name} ally ability`}
+                    >
+                      ⚡ Ally
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         </section>
       ) : null}
@@ -783,7 +878,8 @@ export function GameTable(props: Props) {
               const target = stunPicker;
               setStunPicker(null);
               if (target.kind === 'card') props.onPlay(target.id, index);
-              else props.onExpend(target.id, index);
+              else if (target.kind === 'champion') props.onExpend(target.id, index);
+              else props.onTriggerAlly(target.id, index);
             },
           }))}
           onClose={() => setStunPicker(null)}

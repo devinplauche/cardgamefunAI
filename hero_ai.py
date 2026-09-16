@@ -1,6 +1,6 @@
 """AI strategies for Hero Realms."""
 
-from hero_engine import HRPlayer, HRMarket, HRCard, play_card, buy_card, has_ally, auto_expend_all, remove_stunned_champions
+from hero_engine import HRPlayer, HRMarket, HRCard, play_card, buy_card, has_ally, auto_expend_all, remove_stunned_champions, trigger_all_available_allies
 
 
 # --- Play strategies ---
@@ -43,6 +43,9 @@ def play_all_playable(player: HRPlayer, opponent: HRPlayer, market: HRMarket):
                 best_score = s
         if best:
             play_card(player, best, market, ally_bonus=has_ally(best, player), opponent=opponent)
+            # Ally abilities are user-triggered now; the automated strategy
+            # fires them immediately to keep its old always-fire behavior.
+            trigger_all_available_allies(player, opponent)
         else:
             break
 
@@ -55,9 +58,11 @@ def play_only_gold_and_combat(player: HRPlayer, opponent: HRPlayer, market: HRMa
             if c.id in ("gold", "shortsword", "dagger", "ruby") or c.get("gold", 0) or c.get("combat", 0):
                 if c.card_type == "action" or c.id == "gold":
                     play_card(player, c, market, ally_bonus=has_ally(c, player), opponent=opponent)
+                    trigger_all_available_allies(player, opponent)
                     played = True
             elif c.card_type == "champion":
                 play_card(player, c, market, ally_bonus=has_ally(c, player), opponent=opponent)
+                trigger_all_available_allies(player, opponent)
                 played = True
         if not played:
             break

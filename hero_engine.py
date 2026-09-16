@@ -176,6 +176,14 @@ class HRPlayer:
         # are retroactive, so these are re-checked whenever a faction card
         # enters play.
         self.pending_ally: list[HRCard] = []
+        # Cards whose ally ability is currently triggerable by the owning
+        # player. Ally abilities are user-triggered (official-app behavior),
+        # not auto-fired: when a card's ally becomes usable - on entering
+        # play with a partner present, retroactively when a partner arrives,
+        # or on expend - it is offered here instead of firing. The player
+        # triggers it via trigger_ally_ability(); once offered it stays
+        # available for the rest of the turn even if the partner leaves play.
+        self.available_ally_triggers: list[HRCard] = []
         # Card ids whose ally ability already fired this turn. Ally abilities
         # are usable "as soon as you have another card of that faction in
         # play" but each only once per turn - so a champion played with a
@@ -186,7 +194,6 @@ class HRPlayer:
         # champion enters play later the same turn - see
         # _apply_per_champion_bonus / _resolve_pending_per_champion.
         self.pending_per_champion: list[dict] = []
-        self.pending_stun_targets: list[tuple[HRCard, Optional[BoardChampion]]] = []
         # The UI/AI phase model plays all actions before champions can be
         # expended. Prepare effects are therefore queued and applied to the
         # first champion the player subsequently chooses to expend.
@@ -822,9 +829,9 @@ class HRGame:
         player.actions_played = 0
         player.discard_played_cards()
         player.pending_ally.clear()
+        player.available_ally_triggers.clear()
         player.ally_used_this_turn.clear()
         player.pending_per_champion.clear()
-        player.pending_stun_targets.clear()
         player.pending_prepares = 0
         # Deferred choices reference cards/zones from last turn; like the web
         # session's _start_turn, drop them at the boundary rather than leaking.
@@ -938,18 +945,16 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
     player.hand.remove(card)
 
     # Champions go to board without applying base effects (those are
-    # expend-only) - but their ally ability fires on entering play if a
-    # faction partner is already in play, else queues retroactively, exactly
-    # like an action's ally.
+    # expend-only) - but their ally ability becomes triggerable on entering
+    # play if a faction partner is already in play, else queues retroactively,
+    # exactly like an action's ally. Ally abilities never fire on their own:
+    # the player triggers each offered one explicitly (official-app behavior).
     if card.card_type == "champion":
         bc = BoardChampion(card)
         player.board.append(bc)
-        if has_ally(card, player):
-            _apply_ally_effects(player, card, opponent, stun_target=stun_target)
-        elif _has_ally_payload(card):
-            player.pending_ally.append(card)
-            if card.get("stun", False):
-                player.pending_stun_targets.append((card, stun_target))
+        if not _offer_ally_trigger(player, card) and _has_ally_payload(card):
+            if not any(p is card for p in player.pending_ally):
+                player.pending_ally.append(card)
         # A champion entering play can complete a faction pair for an action
         # played earlier this turn (or a surviving champion's ally), and tops
         # up any queued per-champion bonus.
@@ -993,21 +998,24 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
     _apply_per_champion_bonus(player, card, "per_champion_health", "health")
 
     # ---- Ally bonus ----
-    # Applied now if a partner is already in play, otherwise queued: the ally
-    # fires retroactively the moment a second card of the faction arrives.
+    # Never fired automatically: if a partner is already in play the ally is
+    # offered as a user-triggerable action, otherwise it queues and is
+    # offered retroactively the moment a second card of the faction arrives.
+    # (official-app behavior; the rulebook's auto-fire is not followed.)
     if ally_bonus:
-        _apply_ally_effects(player, card, opponent, stun_target=stun_target)
+        _offer_ally_trigger(player, card)
     elif _has_ally_payload(card):
-        player.pending_ally.append(card)
-        if card.get("stun", False):
-            player.pending_stun_targets.append((card, stun_target))
+        if not any(p is card for p in player.pending_ally):
+            player.pending_ally.append(card)
 
     # actual_base_draws: what this card's own draw effects really produced.
     # "Discard that many cards" (Rampage) and "if you do, discard a card"
     # (Elven Gift) only discard cards that actually arrived - the rulebook's
     # partial-effects rule ("just do as much as you can") covers short decks.
     actual_base_draws = actual_draws + actual_draw_up_to
-    total_base_draws = draws + draw_up_to + (card.get("ally_draw", 0) if ally_bonus else 0)
+    # Ally draws are user-triggered now, so they are never in hand yet at
+    # this point - only the card's own draws count toward "discard that many".
+    total_base_draws = draws + draw_up_to
 
     # ---- Self-discard (draw then discard) ----
     discard_n = card.get("discard", 0)
@@ -1340,40 +1348,11 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
             player.note(f"Reanimated {best.name} to top of deck")
 
     # ---- Ally effects on expend ----
-    # Once per turn: if the ally already fired on entering play (or via an
-    # earlier expend before a prepare), the expend still works - only the
-    # ally does not fire again.
-    if has_ally(card, player) and id(card) not in player.ally_used_this_turn:
-        player.combat += card.get("ally_combat", 0)
-        player.gold += card.get("ally_gold", 0)
-        ally_heal = card.get("ally_health", 0)
-        if ally_heal:
-            player.hp += ally_heal
-        ally_per_champion_health = card.get("ally_per_champion_health", 0)
-        if ally_per_champion_health:
-            champion_count = len([c for c in player.board if c.alive])
-            heal = ally_per_champion_health * champion_count
-            if heal:
-                player.hp += heal
-        ally_draw = card.get("ally_draw", 0)
-        if ally_draw:
-            # Grak ally: "Draw a card, then discard a card." - discard only
-            # what the draw actually produced.
-            actual_ally_draw = len(player.draw(ally_draw))
-            if card.get("ally_discard_drawn", False):
-                _discard_from_hand(player, actual_ally_draw, opponent, source=card.name)
-
-        # Champion ally top_of_deck (Rasmus: next bought card goes on top; Bribe: action only)
-        if card.get("top_of_deck", False):
-            player.next_buy_to_top = True
-            if card.get("top_of_deck_action_only", False):
-                player.next_buy_to_top_action_only = True
-
-        # Champion ally opponent discard (Broelyn)
-        ally_od = card.get("ally_opponent_discard", 0)
-        if ally_od > 0 and opponent:
-            _force_opponent_discard(opponent, ally_od, player)
-        player.ally_used_this_turn.add(id(card))
+    # Once per turn: if the ally was already triggered this turn (e.g. on
+    # entering play), the expend still works - only the ally is not offered
+    # again. The trigger itself is user-fired via trigger_ally_ability(),
+    # which applies the full ally payload through _apply_ally_effects.
+    _offer_ally_trigger(player, card)
 
     if player.pending_prepares > 0 and bc.alive and bc.exhausted:
         bc.exhausted = False
@@ -1383,7 +1362,9 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
 
 
 def auto_expend_all(player: HRPlayer, opponent: HRPlayer = None):
-    """Expend every ready champion on the board."""
+    """Expend every ready champion on the board, triggering ally abilities as
+    they become available (automated callers keep the old always-fire
+    behavior through the new manual-trigger mechanism)."""
     while True:
         ready = next(
             (bc for bc in player.board if bc.alive and not bc.exhausted),
@@ -1392,6 +1373,7 @@ def auto_expend_all(player: HRPlayer, opponent: HRPlayer = None):
         if ready is None:
             break
         expend_champion(player, ready, opponent)
+        trigger_all_available_allies(player, opponent)
 
 
 def buy_card(player: HRPlayer, market: HRMarket, index: int) -> bool:
@@ -1450,6 +1432,45 @@ def _has_ally_payload(card: HRCard) -> bool:
     if not card.effects.get("ally_faction", ""):
         return False
     return any(card.effects.get(k) for k in _ALLY_EFFECT_KEYS)
+
+
+def _offer_ally_trigger(player: HRPlayer, card: HRCard) -> bool:
+    """Offer a card's ally ability as a user-triggerable action.
+
+    Returns True when the trigger became (or already was) available. Ally
+    abilities follow the official app, not the rulebook: they never fire on
+    their own - the player triggers each one explicitly, once per turn.
+    """
+    if (id(card) in player.ally_used_this_turn
+            or not _has_ally_payload(card)
+            or not has_ally(card, player)):
+        return any(c is card for c in player.available_ally_triggers)
+    if not any(c is card for c in player.available_ally_triggers):
+        player.available_ally_triggers.append(card)
+    return True
+
+
+def trigger_ally_ability(player: HRPlayer, card: HRCard,
+                         opponent: Optional[HRPlayer] = None,
+                         stun_target: Optional[BoardChampion] = None) -> bool:
+    """Fire one offered ally trigger. Returns False if it isn't available."""
+    if not any(c is card for c in player.available_ally_triggers):
+        return False
+    _apply_ally_effects(player, card, opponent, stun_target=stun_target)
+    player.available_ally_triggers = [
+        c for c in player.available_ally_triggers if c is not card]
+    return True
+
+
+def trigger_all_available_allies(player: HRPlayer,
+                                 opponent: Optional[HRPlayer] = None) -> int:
+    """Fire every offered ally trigger. For automated callers (simple AI,
+    training envs) that want the old always-fire behavior in one call."""
+    count = 0
+    for card in list(player.available_ally_triggers):
+        if trigger_ally_ability(player, card, opponent):
+            count += 1
+    return count
 
 
 def _apply_ally_effects(player: HRPlayer, card: HRCard, opponent: Optional[HRPlayer] = None,
@@ -1582,29 +1603,23 @@ def _resolve_pending_allies(player: HRPlayer, opponent: Optional[HRPlayer] = Non
     have a partner at the time but do now.
 
     Per the official rules: "The order in which you play your cards does not
-    matter. As soon as you have two or more cards of the same faction in play,
+    matter. As soon as you have two or more cards of that faction in play,
     you may trigger all relevant Ally Abilities." The engine used to evaluate
     ally_bonus once, at play time, and never revisit it - so playing a lone
     Guild card and then a second Guild card fired only the second one's ally.
+    Offered triggers are user-fired; they are never applied here.
     """
     if not player.pending_ally:
         return
     still_pending = []
     for pending in player.pending_ally:
-        if has_ally(pending, player):
-            stun_target = next((target for card, target in player.pending_stun_targets
-                                if card is pending), None)
-            _apply_ally_effects(player, pending, opponent, stun_target=stun_target)
-            player.pending_stun_targets = [
-                (card, target) for card, target in player.pending_stun_targets if card is not pending
-            ]
-        else:
+        if not _offer_ally_trigger(player, pending):
             still_pending.append(pending)
     player.pending_ally = still_pending
 
 
 def _resolve_board_allies(player: HRPlayer, opponent: Optional[HRPlayer] = None) -> None:
-    """Fire or queue standing champions' ally abilities at the start of a turn.
+    """Offer or queue standing champions' ally abilities at the start of a turn.
 
     A champion's ally is usable "as soon as you have another card of that
     faction in play", and that condition can already hold before the turn's
@@ -1614,9 +1629,10 @@ def _resolve_board_allies(player: HRPlayer, opponent: Optional[HRPlayer] = None)
     card *entering* play, so without this a standing pair paid nothing on any
     such turn.
 
-    Champions whose partner is already out fire now; the rest queue into
-    pending_ally and fire retroactively the moment a partner arrives - the same
-    path an action's ally takes. ally_used_this_turn keeps it to once a turn.
+    Champions whose partner is already out get their trigger offered now;
+    the rest queue into pending_ally and are offered retroactively the moment
+    a partner arrives - the same path an action's ally takes.
+    ally_used_this_turn keeps it to once a turn.
     """
     for bc in list(player.board):
         card = bc.card
@@ -1624,10 +1640,9 @@ def _resolve_board_allies(player: HRPlayer, opponent: Optional[HRPlayer] = None)
             continue
         if id(card) in player.ally_used_this_turn:
             continue
-        if has_ally(card, player):
-            _apply_ally_effects(player, card, opponent)
-        elif not any(pending is card for pending in player.pending_ally):
-            player.pending_ally.append(card)
+        if not _offer_ally_trigger(player, card):
+            if not any(pending is card for pending in player.pending_ally):
+                player.pending_ally.append(card)
 
 
 def has_ally(card: HRCard, player: HRPlayer) -> bool:

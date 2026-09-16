@@ -147,9 +147,9 @@ class HeroRealmsEnv(gym.Env):
         opp.actions_played = 0
         opp.discard_played_cards()
         opp.pending_ally.clear()
+        opp.available_ally_triggers.clear()
         opp.ally_used_this_turn.clear()
         opp.pending_per_champion.clear()
-        opp.pending_stun_targets.clear()
         opp.pending_prepares = 0
         opp.pending_choices.clear()
         opp.next_buy_to_hand = False
@@ -218,9 +218,9 @@ class HeroRealmsEnv(gym.Env):
         p.actions_played = 0
         p.discard_played_cards()
         p.pending_ally.clear()
+        p.available_ally_triggers.clear()
         p.ally_used_this_turn.clear()
         p.pending_per_champion.clear()
-        p.pending_stun_targets.clear()
         p.pending_prepares = 0
         p.pending_choices.clear()
         p.next_buy_to_hand = False

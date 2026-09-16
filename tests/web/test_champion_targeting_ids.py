@@ -149,6 +149,9 @@ class TestMainPhaseRestoresAcquireToHand(unittest.TestCase):
 
         session.play_card(cards["Profit"].id)      # Guild card in play -> ally live
         session.play_card(cards["Deception"].id)
+        self.assertFalse(session.player.next_buy_to_hand,
+                         "ally abilities never fire on their own - trigger is only offered")
+        session.trigger_ally_action(cards["Deception"].id)
         self.assertTrue(session.player.next_buy_to_hand, "Guild ally should arm to_hand")
 
         session.player.gold = 9

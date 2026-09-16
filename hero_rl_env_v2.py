@@ -49,7 +49,12 @@ EXPEND_BASE = FIRE_GEM + 1                   # 16
 ATTACK_BASE = EXPEND_BASE + CHAMPION_SLOTS   # 22
 ATTACK_FACE = ATTACK_BASE + TARGET_SLOTS     # 28
 ADVANCE = ATTACK_FACE + 1                    # 29
-N_ACTIONS = ADVANCE + 1                      # 30
+#: Trigger slots: one per offered ally ability, positional by
+#: available_ally_triggers order so duplicate copies stay distinguishable.
+#: Ten is generous - a turn can only offer one trigger per ally card in play.
+TRIGGER_SLOTS = 10
+TRIGGER_BASE = ADVANCE + 1                   # 30
+N_ACTIONS = TRIGGER_BASE + TRIGGER_SLOTS     # 40
 
 FACTIONS = ("guild", "imperial", "necros", "wild")
 
@@ -221,6 +226,13 @@ class HeroRealmsMaskedEnv(gym.Env):
                         idx = ATTACK_BASE + targets.index(cid)
             elif t == "advance_phase":
                 idx = ADVANCE
+            elif t == "trigger_ally":
+                # Several legal actions can share a trigger (a stun ally with
+                # multiple targets); the highest-priority variant wins, the
+                # same rule _action_table's docstring states for stuns.
+                ti = a.get("triggerIndex", 0)
+                if 0 <= ti < TRIGGER_SLOTS:
+                    idx = TRIGGER_BASE + ti
             if idx is not None and idx not in table:
                 table[idx] = a
         return table
