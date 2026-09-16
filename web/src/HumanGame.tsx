@@ -1,15 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { HistoryFrame, HumanGameState, User } from './types';
 import { gameAction, loadGame } from './api';
-import {
-  BoardColumn,
-  HistoryInspector,
-  LogList,
-  MarketColumn,
-  PHASE_COPY,
-  Panel,
-  Stat,
-} from './App';
+import { GameTable } from './GameTable';
 
 const POLL_MS = 2500;
 
@@ -17,9 +9,10 @@ interface Props {
   gameId: string;
   user: User;
   onExit: () => void;
+  onSignOut: () => void;
 }
 
-export function HumanGame({ gameId, user, onExit }: Props) {
+export function HumanGame({ gameId, user, onExit, onSignOut }: Props) {
   const [game, setGame] = useState<HumanGameState | null>(null);
   const [replayFrame, setReplayFrame] = useState<HistoryFrame | null>(null);
   const [busy, setBusy] = useState(false);
@@ -30,6 +23,14 @@ export function HumanGame({ gameId, user, onExit }: Props) {
 
   const yourSide = game?.yourSide ?? 'player';
   const opponentName = yourSide === 'player' ? game?.guestName : game?.hostName;
+  // The engine keys the guest off the "bot" seat; show real names instead.
+  const seatNames = useMemo(
+    () => ({
+      player: game?.hostName ?? 'Host',
+      bot: game?.guestName ?? 'Guest',
+    }),
+    [game?.hostName, game?.guestName],
+  );
   const waiting = game?.gameStatus === 'waiting';
   const winner = game?.winner ?? null;
   const isMyTurn = !!game && !waiting && !winner && game.activePlayer === yourSide;
@@ -145,166 +146,48 @@ export function HumanGame({ gameId, user, onExit }: Props) {
   const actionLabel = phase === 'combat' || phase === 'main' ? 'End Turn' : 'Next Phase';
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div>
-          <div className="eyebrow">
-            <span className="brand-mark" aria-hidden="true">♜</span> HERO REALMS{' '}
-            <span className="lab-badge">VS HUMAN</span>
-          </div>
-          <h1>{waiting ? 'Waiting for your opponent.' : isMyTurn ? 'Your move.' : `Waiting on ${opponentName ?? 'opponent'}.`}</h1>
-        </div>
-        <div className="topbar-controls">
-          <button className="secondary-button" onClick={onExit}>
-            Lobby
-          </button>
-          <button className="secondary-button" onClick={handleRefresh} disabled={busy}>
-            Refresh
-          </button>
-          <button
-            className="primary-button"
-            onClick={() => (phase === 'combat' || phase === 'main' ? void handleEndTurn() : void handleAdvance())}
-            disabled={!canMutate || busy || winner !== null || !isMyTurn}
-          >
-            {actionLabel}
-          </button>
-        </div>
-      </header>
-
-      <main className="layout" id="battlefield">
-        <div className="arena-heading">
-          <span>BATTLEFIELD</span>
-          <span>
-            {isReplayMode ? 'REPLAY' : 'LIVE MATCH'}
-            <i aria-hidden="true" />
-            {displayState ? `TURN ${displayState.turnNumber}` : 'CONNECTING'}
-          </span>
-        </div>
-
-        {winnerCopy ? (
-          <section className={`winner-banner ${winner === yourSide ? 'won' : 'lost'}`}>
-            <strong>{winnerCopy}</strong>
-            <button className="secondary-button" onClick={onExit}>
-              Back to Lobby
-            </button>
-          </section>
-        ) : null}
-
-        {waiting && game ? (
-          <section className="winner-banner">
-            <strong>Share this invite code: {game.inviteCode}</strong>
-            <span className="phase-copy">Your opponent joins from the lobby with this code.</span>
-          </section>
-        ) : null}
-
-        <section className="hero-strip">
-          <div role="status" aria-live="polite" className={`status-chip ${status.tone}`}>
-            {isReplayMode ? 'Replay mode' : status.message}
-          </div>
-          <div className="phase-block">
-            <span className="phase-label">{phaseLabel}</span>
-            <span className="phase-copy">
-              {!displayState
-                ? 'Connecting to the match.'
-                : winner && !isReplayMode
-                  ? 'The match is over.'
-                  : waiting
-                    ? 'The game starts when your opponent joins.'
-                    : PHASE_COPY[phase]}
-            </span>
-          </div>
-          <div className="insight">
-            <span>Opponent</span>
-            <strong>{opponentName ?? '—'}</strong>
-          </div>
-        </section>
-
-        <div className="board-grid">
-          <div className="side-stack">
-            {displayState ? (
-              <BoardColumn
-                title="Your realm"
-                player={displayState.player}
-                phase={phase}
-                activePlayer={activePlayer}
-                perspective={yourSide}
-                onPlay={handlePlay}
-                onPlayAll={handlePlayAll}
-                autoPlayCount={displayState.autoPlayCount ?? 0}
-                onExpend={handleExpend}
-                onSacrifice={handleSacrifice}
-                onAttack={handleAttack}
-                stunTargets={displayState.bot.board}
-                legalActions={displayState.legalActions}
-                role="player"
-                live={canMutate && !winner}
-              />
-            ) : null}
-          </div>
-
-          <div className="center-stack">
-            {displayState ? (
-              <>
-                <MarketColumn
-                  market={displayState.market}
-                  phase={phase}
-                  canInteract={canMutate && isMyTurn && !winner}
-                  playerGold={displayState.player.gold}
-                  onBuy={handleBuy}
-                />
-                <Panel title="Battle notes" subtitle="Match info.">
-                  <div className="battle-summary">
-                    <Stat label="Turn" value={displayState.turnNumber} />
-                    <Stat label="Active" value={isMyTurn ? 'You' : opponentName ?? 'Opponent'} />
-                    <Stat label="Winner" value={displayState.winner ?? 'None'} />
-                  </div>
-                </Panel>
-              </>
-            ) : null}
-          </div>
-
-          <div className="side-stack">
-            {displayState ? (
-              <BoardColumn
-                title={opponentName ?? 'Opponent'}
-                player={displayState.bot}
-                phase={phase}
-                activePlayer={activePlayer}
-                perspective={yourSide}
-                hiddenHand
-                onAttack={handleAttack}
-                stunTargets={[]}
-                role="bot"
-                attackingCombat={displayState.player.combat}
-                legalActions={displayState.legalActions}
-                live={canMutate && !winner}
-              />
-            ) : null}
-
-            {displayState ? (
-              <Panel className="log-panel" title="Decision log" subtitle="Latest moves from both sides.">
-                <LogList entries={displayState.log} />
-              </Panel>
-            ) : null}
-
-            {game ? (
-              <HistoryInspector
-                disabled={busy}
-                history={game.history ?? []}
-                selectedFrame={replayFrame}
-                onSelectFrame={setReplayFrame}
-                onLive={() => setReplayFrame(null)}
-              />
-            ) : null}
+    <div className="game-table-loading">
+      {displayState && game ? (
+        <GameTable
+          game={game}
+          state={displayState}
+          yourSide={yourSide}
+          opponentName={opponentName ?? 'Opponent'}
+          seatNames={seatNames}
+          isMyTurn={isMyTurn}
+          canMutate={canMutate}
+          busy={busy}
+          waiting={waiting}
+          winner={winner}
+          winnerCopy={winnerCopy}
+          isReplayMode={isReplayMode}
+          phase={phase}
+          phaseLabel={phaseLabel}
+          status={status}
+          actionLabel={actionLabel}
+          autoPlayCount={displayState.autoPlayCount ?? 0}
+          replayFrame={replayFrame}
+          onSelectFrame={setReplayFrame}
+          onLive={() => setReplayFrame(null)}
+          onPlay={handlePlay}
+          onPlayAll={handlePlayAll}
+          onExpend={handleExpend}
+          onSacrifice={handleSacrifice}
+          onBuy={handleBuy}
+          onAttack={handleAttack}
+          onEndTurn={handleEndTurn}
+          onAdvance={handleAdvance}
+          onExit={onExit}
+          onRefresh={handleRefresh}
+          onSignOut={onSignOut}
+        />
+      ) : (
+        <div className="center-overlay">
+          <div className="overlay-card">
+            <h3>{status.message}</h3>
           </div>
         </div>
-      </main>
-      <footer className="app-footer">
-        <span>HERO REALMS / ML LAB</span>
-        <a href="https://www.herorealms.com/card-gallery/" target="_blank" rel="noreferrer">
-          Card artwork © Wise Wizard Games
-        </a>
-      </footer>
+      )}
     </div>
   );
 }
