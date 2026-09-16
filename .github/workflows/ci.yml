@@ -39,24 +39,3 @@ jobs:
       - name: Build
         working-directory: web
         run: npm run build
-
-  deploy:
-    needs: [python-tests, frontend]
-    # Only deploy merged pushes to main, never PRs.
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: projects/836373077810/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-          service_account: github-deployer@hero-realms-game.iam.gserviceaccount.com
-      - uses: google-github-actions/setup-gcloud@v2
-      - name: Deploy to Cloud Run
-        run: >
-          gcloud run deploy hero-realms --source . --region=us-central1
-          --project=hero-realms-game --allow-unauthenticated
-          --memory 512Mi --cpu 1 --max-instances 3 --quiet
