@@ -125,6 +125,8 @@ export interface LegalAction {
   kind?: string;
   /** On `resolve_choice`: the card whose effect created the choice. */
   source?: string | null;
+  /** On `resolve_choice`: picks still needed (Tyrannor's "up to two"). */
+  remaining?: number;
   [key: string]: unknown;
 }
 

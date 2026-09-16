@@ -127,3 +127,66 @@ def test_bot_can_play_a_whole_turn_with_targeting_on(agent_targets):
     assert seen, "the bot never faced the decision; this test proved nothing"
     assert not session.bot.pending_choices, "bot left a choice unresolved"
     assert session.active_player == "player"
+
+
+def test_tyrannor_sacrifice_is_a_two_pick_player_choice(agent_targets):
+    """Tyrannor's "you may sacrifice up to two" enqueues one choice answered
+    twice; declining stops early. The source names the card for the sheet."""
+    session = _session(["Tyrannor, the Devourer"])
+    session.player.hand += [GOLD, SHORTSWORD]
+    session.player.discard = [GOLD]
+    session.play_card(session.player.hand[0].id)
+
+    champion = session.player.board[-1]
+    session.expend_champion_action(str(champion.instance_id))
+
+    assert len(session.player.pending_choices) == 1
+    choice = session.player.pending_choices[0]
+    assert choice["kind"] == "sacrifice" and choice["count"] == 2
+    assert choice["zone"] == "hand_or_discard"
+    assert choice["source"] == "Tyrannor, the Devourer"
+    assert not session.player.banish, "nothing sacrificed until the player picks"
+
+    actions = session.legal_actions()
+    assert {a["type"] for a in actions} == {"resolve_choice"}, \
+        "a half-resolved effect must block everything else"
+    assert all(a.get("remaining") == 2 for a in actions)
+    assert any(a["candidateIndex"] < 0 for a in actions), "'you may' is declinable"
+
+    first = next(a for a in actions if a["candidateIndex"] >= 0)
+    session.resolve_choice_action(first["candidateIndex"])
+    assert len(session.player.pending_choices) == 1, "one pick left"
+    assert len(session.player.banish) == 1
+
+    actions = session.legal_actions()
+    assert all(a.get("remaining") == 1 for a in actions), \
+        "the sheet must know one pick is left"
+
+    decline = next(a for a in actions if a["candidateIndex"] < 0)
+    session.resolve_choice_action(decline["candidateIndex"])
+    assert not session.player.pending_choices
+    assert len(session.player.banish) == 1, "declining stops at one"
+
+
+def test_bot_answers_a_multi_pick_sacrifice(agent_targets):
+    """Tyrannor through the bot's own turn: it sacrifices the junk, declines
+    the rest, and never leaves the choice hanging."""
+    from hero_engine import BoardChampion
+    session = GameSession(seed=4, algorithm="heuristic", budget_ms=20)
+    by_name = {c.name: c for c in session.cards}
+    good = next(c for c in session.cards if c.get("gold", 0) > 0 and c.cost >= 2)
+    session.bot.hand = []
+    session.bot.discard = [GOLD, SHORTSWORD, good]
+    champion = BoardChampion(by_name["Tyrannor, the Devourer"])
+    session.bot.board.append(champion)
+    session.active_player = "bot"
+
+    session.expend_champion_action(str(champion.instance_id))
+    assert session.bot.pending_choices, "expected the two-pick choice"
+
+    session.run_bot_turn()
+
+    assert not session.bot.pending_choices, "bot left a choice unresolved"
+    assert len(session.bot.banish) == 2, \
+        f"bot should thin exactly the junk, banished {[c.name for c in session.bot.banish]}"
+    assert good in session.bot.discard, "the good card must survive"

@@ -9,6 +9,7 @@ forced to burn something actually useful. That is a rules deviation affecting
 every game simulated with this engine, not merely an AI valuation nuance.
 """
 
+import random
 import unittest
 
 from hero_engine import (
@@ -19,6 +20,9 @@ from hero_engine import (
     HRPlayer,
     RUBY,
     SHORTSWORD,
+    apply_choice,
+    auto_resolve_choices,
+    choice_candidates,
     expend_champion,
     load_hero_cards,
     play_card,
@@ -190,6 +194,109 @@ class TestExpendSacrifice(unittest.TestCase):
 
         self.assertEqual(len(player.banish), 2)
         self.assertIn(GOOD_CARD, player.hand)
+
+
+class TestTyrannorPlayerChoice(unittest.TestCase):
+    """Tyrannor's "you may sacrifice up to two cards in your hand and/or
+    discard pile" is the player's pick, not the engine's.
+
+    With defer_choices the expend enqueues one multi-count pending choice
+    instead of resolving inline; the engine's junk-threshold pick survives
+    only as the automated fallback (auto_resolve_choices), which must stay
+    identical to the inline path - the equivalence test pins that.
+    """
+
+    def _deferred_tyrannor(self, hand, discard=()):
+        player = _player_with_hand()
+        player.defer_choices = True
+        player.hand = list(hand)
+        player.discard = list(discard)
+        from hero_engine import BoardChampion
+        bc = BoardChampion(TYRANNOR)
+        player.board.append(bc)
+        expend_champion(player, bc, opponent=None)
+        return player
+
+    def test_expend_enqueues_a_two_pick_sacrifice_choice(self):
+        player = self._deferred_tyrannor([GOLD, DAGGER], [RUBY])
+
+        self.assertEqual(len(player.pending_choices), 1)
+        choice = player.pending_choices[0]
+        self.assertEqual(choice["kind"], "sacrifice")
+        self.assertEqual(choice["count"], 2)
+        self.assertEqual(choice["zone"], "hand_or_discard")
+        self.assertEqual(choice["source"], "Tyrannor, the Devourer")
+        self.assertEqual(player.banish, [],
+                         "nothing is sacrificed until the player picks")
+
+    def test_choice_count_caps_at_available_cards(self):
+        player = self._deferred_tyrannor([GOLD])
+        self.assertEqual(player.pending_choices[0]["count"], 1)
+
+    def test_no_choice_when_nothing_to_sacrifice(self):
+        player = self._deferred_tyrannor([], [])
+        self.assertEqual(player.pending_choices, [])
+
+    def test_answering_twice_sacrifices_two_cards(self):
+        player = self._deferred_tyrannor([GOLD, DAGGER, GOOD_CARD])
+        choice = player.pending_choices[0]
+
+        apply_choice(player, choice, choice_candidates(player, choice).index(GOLD))
+        self.assertEqual(len(player.pending_choices), 1, "one pick left")
+        self.assertEqual(choice["count"], 1)
+
+        apply_choice(player, choice, choice_candidates(player, choice).index(DAGGER))
+        self.assertEqual(player.pending_choices, [])
+        self.assertIn(GOLD, player.banish)
+        self.assertIn(DAGGER, player.banish)
+        self.assertIn(GOOD_CARD, player.hand)
+
+    def test_declining_stops_the_effect_early(self):
+        # The session answers Decline by dropping the choice; the engine only
+        # needs the choice to be removable mid-count.
+        player = self._deferred_tyrannor([GOLD, DAGGER])
+        choice = player.pending_choices[0]
+
+        apply_choice(player, choice, choice_candidates(player, choice).index(GOLD))
+        player.pending_choices.remove(choice)
+
+        self.assertEqual(list(player.banish), [GOLD])
+        self.assertIn(DAGGER, player.hand)
+
+    def test_deferred_plus_auto_resolve_matches_inline(self):
+        """The automated fallback must equal the inline behaviour it replaced,
+        across junk/good mixes in both zones."""
+        pool = [GOLD, DAGGER, RUBY, SHORTSWORD, GOOD_CARD, FIRE_GEM_CARD]
+        mismatches = []
+        for seed in range(40):
+            rng = random.Random(seed)
+            hand = [rng.choice(pool) for _ in range(rng.randint(0, 5))]
+            discard = [rng.choice(pool) for _ in range(rng.randint(0, 4))]
+
+            from hero_engine import BoardChampion
+            a = _player_with_hand()
+            a.hand = list(hand)
+            a.discard = list(discard)
+            a.board.append(BoardChampion(TYRANNOR))
+            b = _player_with_hand()
+            b.defer_choices = True
+            b.hand = list(hand)
+            b.discard = list(discard)
+            b.board.append(BoardChampion(TYRANNOR))
+
+            expend_champion(a, a.board[0], opponent=None)
+            expend_champion(b, b.board[0], opponent=None)
+            auto_resolve_choices(b, None)
+
+            def snap(p):
+                return (sorted(c.name for c in p.banish),
+                        sorted(c.name for c in p.hand),
+                        sorted(c.name for c in p.discard),
+                        p.combat)
+            if snap(a) != snap(b):
+                mismatches.append(seed)
+        self.assertEqual(mismatches, [],
+                         f"deferred path diverged on seeds {mismatches[:5]}")
 
 
 if __name__ == "__main__":

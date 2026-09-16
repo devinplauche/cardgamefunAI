@@ -22,7 +22,12 @@ would split the policy's probability mass across identical outcomes.
 
 import numpy as np
 
-from hero_engine import apply_choice, choice_candidates, choice_candidates_zoned
+from hero_engine import (
+    _worth_sacrificing,
+    apply_choice,
+    choice_candidates,
+    choice_candidates_zoned,
+)
 from hero_rl_env_v2 import N_ACTIONS as V2_ACTIONS
 from hero_rl_env_v2 import HeroRealmsMaskedEnv
 
@@ -86,10 +91,21 @@ class HeroRealmsChoiceEnv(HeroRealmsMaskedEnv):
         action table. It is latent in v3, which V19 and V20 both trained on -
         with the 4-profile mixture it is rare enough to have gone unnoticed.
         """
-        me, _ = self._seats(side)
+        me, foe = self._seats(side)
         while me.pending_choices:
             choice = me.pending_choices[0]
             if distinct_candidates(me, choice):
+                # "You may sacrifice" is declinable: the engine's inline path
+                # and auto_resolve_choices both drop the choice when nothing
+                # left qualifies as junk. Without this the agent was forced
+                # to burn a good card - the one case the old behaviour never
+                # allowed. Tyrannor's "up to two" is what made this live.
+                if choice["kind"] == "sacrifice" and not any(
+                    _worth_sacrificing(c, me, foe)
+                    for c in choice_candidates(me, choice)
+                ):
+                    me.pending_choices.pop(0)
+                    continue
                 return choice
             me.pending_choices.pop(0)
         return None

@@ -988,6 +988,10 @@ class GameSession:
                 # (and MCTS's rollout policy) byte-identical to the old path.
                 "priority": -hero_engine._contextual_card_value(
                     card, player, self._opponent()),
+                # How many picks this choice still needs (Tyrannor's "up to
+                # two" re-opens the sheet after each pick); the UI phrases
+                # its hint from it.
+                "remaining": choice["count"],
             })
         # "You may sacrifice" is declinable; a forced discard is not.
         if kind == "sacrifice":
@@ -995,6 +999,7 @@ class GameSession:
                 "type": "resolve_choice", "candidateIndex": -1,
                 "kind": kind, "source": source,
                 "label": "Decline sacrifice", "priority": 0,
+                "remaining": choice["count"],
             })
         return actions
 

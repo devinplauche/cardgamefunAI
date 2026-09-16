@@ -243,28 +243,38 @@ function ActionSheet({
   );
 }
 
-function ChoiceSheet({ actions, kind, source, onResolve }: {
+function ChoiceSheet({ actions, kind, source, remaining, onResolve }: {
   actions: LegalAction[];
   kind: string;
   source?: string | null;
+  remaining?: number;
   onResolve: (candidateIndex: number) => void;
 }) {
   // A pending card-effect choice must be answered before anything else can
   // happen: no scrim dismiss, no cancel button. The backend enforces the
   // same lock, so there is no path that silently swallows the choice.
   const isDiscard = kind === 'discard';
+  // Multi-pick choices (Tyrannor's "up to two") reopen this sheet after each
+  // pick, so say how many are left; declining stops early.
+  const picksLeft = typeof remaining === 'number' ? remaining : 1;
   return (
     <ActionSheet
       title={isDiscard ? 'Discard a card' : 'Sacrifice a card'}
       subtitle={
         isDiscard
           ? `${source ? `${source}: ` : ''}choose a card from your hand to discard.`
-          : `${source ? `${source}: ` : ''}you may sacrifice a card from your hand or discard pile.`
+          : `${source ? `${source}: ` : ''}${
+              picksLeft > 1
+                ? `you may sacrifice up to ${picksLeft} cards from your hand or discard pile.`
+                : 'you may sacrifice a card from your hand or discard pile.'
+            }`
       }
       actions={actions.map((action) => ({
         key: `choice-${String(action.candidateIndex)}`,
         label: action.label,
-        detail: action.candidateIndex === -1 ? 'Keep everything' : undefined,
+        detail: action.candidateIndex === -1
+          ? (picksLeft > 1 ? 'Stop here' : 'Keep everything')
+          : undefined,
         onAction: () => onResolve(Number(action.candidateIndex)),
       }))}
       onClose={() => {}}
@@ -843,6 +853,7 @@ export function GameTable(props: Props) {
           actions={choiceActions}
           kind={pendingChoice.kind ?? ''}
           source={pendingChoice.source}
+          remaining={typeof pendingChoice.remaining === 'number' ? pendingChoice.remaining : 1}
           onResolve={(candidateIndex) => props.onResolveChoice(candidateIndex)}
         />
       ) : null}

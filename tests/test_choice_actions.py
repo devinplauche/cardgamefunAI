@@ -209,6 +209,39 @@ class TestChoiceEnv(unittest.TestCase):
         self.assertTrue(all(k >= CHOICE_BASE for k in table),
                         "a pending choice must be answered before anything else")
 
+    def test_sacrifice_choice_with_no_junk_is_declined_not_forced(self):
+        """'You may sacrifice' with nothing worth sacrificing must not force
+        the agent to burn a good card - the engine's inline path and
+        auto_resolve_choices both decline it. Tyrannor's 'up to two' is what
+        made this live: without the drop, a thinned deck was punished for
+        expending it."""
+        env = HeroRealmsChoiceEnv(opponent_profile="balanced")
+        env.reset(seed=0)
+        good = next(c for c in CARDS
+                    if c.get("gold", 0) > 0 and c.cost >= 2
+                    and c.name != "Fire Gem")
+        env.me.hand = [good]
+        env.me.discard = []
+        env.me.pending_choices = [{"kind": "sacrifice", "count": 2,
+                                   "zone": "hand_or_discard"}]
+        table = env._action_table()
+        self.assertEqual(env.me.pending_choices, [],
+                         "nothing junk: the choice must be dropped, not offered")
+        self.assertTrue(all(k < CHOICE_BASE for k in table),
+                        "no choice slots may be offered for a declined effect")
+        self.assertEqual(env.me.banish, [])
+
+    def test_sacrifice_choice_with_junk_is_still_offered(self):
+        """The decline must not eat choices that do have a junk candidate."""
+        env = HeroRealmsChoiceEnv(opponent_profile="balanced")
+        env.reset(seed=0)
+        env.me.hand = [GOLD, DAGGER]
+        env.me.pending_choices = [{"kind": "sacrifice", "count": 2,
+                                   "zone": "hand_or_discard"}]
+        table = env._action_table()
+        self.assertEqual(len(env.me.pending_choices), 1)
+        self.assertTrue(any(k >= CHOICE_BASE for k in table))
+
     def test_candidates_are_deduplicated_by_card(self):
         """Sacrificing one Gold is the same decision as sacrificing another."""
         p = HRPlayer("P")

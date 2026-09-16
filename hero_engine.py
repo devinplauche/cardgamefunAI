@@ -1293,32 +1293,38 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
                     f"for {sac_for_combat} combat")
 
     # ---- Sacrifice up to X cards from hand/discard (Tyrannor) ----
-    # "You may sacrifice up to two cards" - stops as soon as nothing left
-    # qualifies as junk, rather than always forcing all X.
-    # NOT gated on AGENT_CHOOSES_SACRIFICE, deliberately. "You may sacrifice
-    # up to two cards" is a multi-card selection, and one expend action cannot
-    # express it the way `sacrifice_for_combat`'s single victim can. Gating it
-    # without an action to replace it made Tyrannor's ability do nothing at all
-    # - a dead ability is strictly worse than one the engine resolves. Handing
-    # this one to the agent needs the pending_choices queue plumbed through
-    # session and bot; until then the engine keeps deciding, and says so.
+    # "You may sacrifice up to two cards in your hand and/or discard pile" -
+    # the player chooses the cards AND the zones, and may stop early or
+    # decline entirely, so with defer_choices this becomes a pending
+    # multi-choice (one resolve_choice per pick, then Decline to stop). The
+    # automated fallback keeps the engine's old pick: the worst overall
+    # across hand and discard, stopping as soon as nothing left qualifies as
+    # junk - deferred + auto_resolve_choices is byte-identical to the inline
+    # path below, which is what the equivalence test pins.
     sacrifice_up_to = card.get("sacrifice_up_to", 0)
     if sacrifice_up_to > 0:
-        for _ in range(sacrifice_up_to):
-            source = None
-            if player.hand:
-                source = player.hand
-            elif player.discard:
-                source = player.discard
-            if not source:
-                break
-            idx = _find_worst_idx(source, player, opponent)
-            if not _worth_sacrificing(source[idx], player, opponent):
-                break
-            zone = "hand" if source is player.hand else "discard"
-            victim = source.pop(idx)
-            _sacrifice_to_pile(player, victim)
-            player.note(f"Sacrificed {victim.name} from {zone}")
+        if player.defer_choices:
+            available = len(player.hand) + len(player.discard)
+            if available:
+                _enqueue_choice(player, "sacrifice",
+                                min(sacrifice_up_to, available),
+                                "hand_or_discard", source=card.name)
+        else:
+            for _ in range(sacrifice_up_to):
+                candidates = list(player.hand) + list(player.discard)
+                if not candidates:
+                    break
+                idx = _find_worst_idx(candidates, player, opponent)
+                if not _worth_sacrificing(candidates[idx], player, opponent):
+                    break
+                victim = candidates[idx]
+                zone = candidate_zone(player, victim)
+                if zone == "hand":
+                    player.hand.remove(victim)
+                else:
+                    player.discard.remove(victim)
+                _sacrifice_to_pile(player, victim)
+                player.note(f"Sacrificed {victim.name} from {zone}")
 
     # ---- Stun on expend (Rake, Master Assassin) ----
     if card.get("stun", False) and opponent:
