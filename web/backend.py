@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import hmac
 from collections import defaultdict
 from threading import Lock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from hero_engine import BoardChampion, DAGGER, FIRE_GEM, GOLD, RUBY, SHORTSWORD
+from web import archive as archive_store
 from web import auth as auth_store
 from web import db as db_store
 from web import games as game_store
@@ -575,6 +577,28 @@ class Handler(BaseHTTPRequestHandler):
                 lock.release()
 
             self._send(200, payload)
+            return
+
+        if parsed.path == "/api/admin/archive":
+            # Cloud Scheduler's nightly sweep. Fail closed: a missing
+            # HR_ARCHIVE_SECRET or any mismatch is a 403, never a sweep.
+            expected = os.environ.get("HR_ARCHIVE_SECRET", "")
+            provided = self.headers.get("X-Archive-Secret", "")
+            try:
+                authorized = bool(expected) and hmac.compare_digest(
+                    provided, expected
+                )
+            except TypeError:
+                authorized = False  # non-ASCII secret header: deny
+            if not authorized:
+                self._send(403, {"error": "Forbidden"})
+                return
+            try:
+                result = archive_store.sweep()
+            except Exception as exc:  # noqa: BLE001
+                self._send(500, {"error": str(exc)})
+                return
+            self._send(200, result)
             return
 
         self._send(404, {"error": "Not found"})
