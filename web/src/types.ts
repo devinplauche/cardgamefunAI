@@ -45,6 +45,8 @@ export interface PlayerView {
   nextBuyToTop: boolean;
   nextBuyToTopActionOnly: boolean;
   hand: CardView[];
+  /** Face-up discard pile - public information for both seats. */
+  discard: CardView[];
   /** Non-champion cards in play this turn (face-up for both seats). */
   playedThisTurn: CardView[];
   board: ChampionView[];

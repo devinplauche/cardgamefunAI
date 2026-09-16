@@ -243,6 +243,43 @@ function ActionSheet({
   );
 }
 
+function DiscardSheet({ title, cards, onInspect, onClose }: {
+  title: string;
+  cards: CardView[];
+  onInspect: (card: CardView) => void;
+  onClose: () => void;
+}) {
+  // Most recently discarded first - the top of the pile is what matters.
+  const ordered = [...cards].reverse();
+  return (
+    <div className="sheet-scrim" onClick={onClose}>
+      <div className="discard-sheet" onClick={(e) => e.stopPropagation()} role="dialog" aria-label={title}>
+        <div className="sheet-handle" aria-hidden="true" />
+        <h3>{title} ({cards.length})</h3>
+        {ordered.length === 0 ? (
+          <div className="empty-note">Nothing discarded yet.</div>
+        ) : (
+          <div className="discard-list">
+            {ordered.map((card) => (
+              <button
+                key={card.id}
+                className="discard-row"
+                onClick={() => onInspect(card)}
+                aria-label={`Inspect ${card.name}`}
+              >
+                <span className="discard-row-art"><CardArtwork card={card} compact /></span>
+                <span className="discard-row-name">{card.name}</span>
+                <span className="discard-row-cost">{card.cost}●</span>
+              </button>
+            ))}
+          </div>
+        )}
+        <button className="secondary-button" onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+}
+
 function ChoiceSheet({ actions, kind, source, remaining, onResolve }: {
   actions: LegalAction[];
   kind: string;
@@ -299,6 +336,8 @@ export function GameTable(props: Props) {
   const [inspectCard, setInspectCard] = useState<CardView | null>(null);
   const [sheetChampion, setSheetChampion] = useState<ChampionView | null>(null);
   const [infoOpen, setInfoOpen] = useState(false);
+  // Discard pile viewer: { title, cards } for your pile or the opponent's.
+  const [discardView, setDiscardView] = useState<{ title: string; cards: CardView[] } | null>(null);
   // End-turn confirmation: warnings shown once per turn, then it goes through.
   const [confirmEndTurn, setConfirmEndTurn] = useState<string[] | null>(null);
   const [warnedTurn, setWarnedTurn] = useState<string | null>(null);
@@ -318,17 +357,19 @@ export function GameTable(props: Props) {
   const [attackPicker, setAttackPicker] = useState(false);
 
   // Escape dismisses the topmost overlay (action sheet, then card inspect,
-  // then the info sheet) - the scrims otherwise leave no keyboard path out.
+  // then the discard viewer, then the info sheet) - the scrims otherwise
+  // leave no keyboard path out.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       if (sheetChampion) setSheetChampion(null);
       else if (inspectCard) setInspectCard(null);
+      else if (discardView) setDiscardView(null);
       else if (infoOpen) setInfoOpen(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [sheetChampion, inspectCard, infoOpen]);
+  }, [sheetChampion, inspectCard, discardView, infoOpen]);
 
   // Backend contract: state["player"] is ALWAYS your own seat and
   // state["bot"] is ALWAYS the opponent, for both host and guest
@@ -641,6 +682,14 @@ export function GameTable(props: Props) {
           </button>
           <span className="deck-pip" title="Deck">🂠 {foe.deckCount}</span>
           <span className="deck-pip" title="Hand">🂡 {foe.handCount}</span>
+          <button
+            className="deck-pip as-button"
+            title="View discard pile"
+            aria-label={`View ${opponentName}'s discard pile (${foe.discardCount} cards)`}
+            onClick={() => setDiscardView({ title: `${opponentName}'s discard pile`, cards: foe.discard })}
+          >
+            🗑 {foe.discardCount}
+          </button>
         </div>
         <div className="champ-strip">
           {foe.board.length === 0 ? (
@@ -820,6 +869,14 @@ export function GameTable(props: Props) {
         <span className="avatar" aria-hidden="true">{me.name.slice(0, 1).toUpperCase()}</span>
         <span className="hp-pill mine">♥ {me.hp}</span>
         <span className="deck-pip" title="Deck">🂠 {me.deckCount}</span>
+        <button
+          className="deck-pip as-button"
+          title="View your discard pile"
+          aria-label={`View your discard pile (${me.discardCount} cards)`}
+          onClick={() => setDiscardView({ title: 'Your discard pile', cards: me.discard })}
+        >
+          🗑 {me.discardCount}
+        </button>
         <div className="player-bar-actions">
           <button
             className="table-button"
@@ -934,6 +991,15 @@ export function GameTable(props: Props) {
           art={sheetChampion}
           actions={championActions(sheetChampion)}
           onClose={() => setSheetChampion(null)}
+        />
+      ) : null}
+
+      {discardView ? (
+        <DiscardSheet
+          title={discardView.title}
+          cards={discardView.cards}
+          onInspect={(card) => setInspectCard(card)}
+          onClose={() => setDiscardView(null)}
         />
       ) : null}
 

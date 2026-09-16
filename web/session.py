@@ -278,6 +278,9 @@ def _player_view(player: HRPlayer, reveal_hand: bool) -> dict[str, Any]:
         "nextBuyToTop": player.next_buy_to_top,
         "nextBuyToTopActionOnly": player.next_buy_to_top_action_only,
         "hand": [_card_view(card) for card in player.hand] if reveal_hand else [],
+        # Discard piles are face-up public information in Hero Realms, so both
+        # seats see the full list (unlike the hand). Powers the discard viewer.
+        "discard": [_card_view(card) for card in player.discard],
         # Non-champion cards still in play this turn. Needed by the UI to offer
         # a card's own "Sacrifice this card:" bonus, which is optional and the
         # player's to take - Fire Gem gives 2 gold on play and *may then* be
