@@ -53,7 +53,7 @@ export function AuthScreen({ onAuth }: { onAuth: (user: User) => void }) {
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 autoComplete="username"
-                maxLength={24}
+                maxLength={64}
                 required
               />
             </label>
