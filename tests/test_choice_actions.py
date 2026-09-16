@@ -66,8 +66,9 @@ class TestUnanswerableChoice(unittest.TestCase):
                 obs, _, done, truncated, _ = env.step(action)
 
 from hero_engine import (GOLD, DAGGER, RUBY, SHORTSWORD, HRMarket, HRPlayer,
-                         apply_choice, auto_resolve_choices, choice_candidates,
-                         load_hero_cards, play_card)
+                         BoardChampion, apply_choice, auto_resolve_choices,
+                         choice_candidates, choice_candidates_zoned,
+                         expend_champion, load_hero_cards, play_card)
 from hero_rl_env_v2 import N_ACTIONS as V2_ACTIONS
 from hero_rl_env_v3 import CHOICE_BASE, CHOICE_SLOTS, N_ACTIONS, HeroRealmsChoiceEnv, distinct_candidates
 
@@ -302,6 +303,133 @@ class TestChoiceEnv(unittest.TestCase):
             _, _, done, trunc, _ = env.step(max(table, key=lambda k: table[k].get("priority", 0)))
             if done or trunc:
                 break
+
+
+class TestReanimateRecycleChoices(unittest.TestCase):
+    """Varrick (reanimate) and Smash and Grab (recycle) used to be engine
+    auto-picks. Now the player chooses through the deferred-choice queue;
+    the old best-pick survives only as the automated fallback."""
+
+    VARRICK = next(c for c in CARDS if c.name == "Varrick, the Necromancer")
+    SMASH = next(c for c in CARDS if c.name == "Smash and Grab")
+    ALL_CHAMPS = [c for c in CARDS if c.card_type == "champion"]
+
+    def _varrick_pair(self, seed):
+        """Two identical seats; b defers, a resolves inline (the old way)."""
+        rng = random.Random(seed)
+        discards = [GOLD, DAGGER] + rng.sample(self.ALL_CHAMPS, 3)
+        a, oa = HRPlayer("A"), HRPlayer("OA")
+        b, ob = HRPlayer("B"), HRPlayer("OB")
+        a.discard = list(discards)
+        b.discard = list(discards)
+        a.board = [BoardChampion(self.VARRICK)]
+        b.board = [BoardChampion(self.VARRICK)]
+        b.defer_choices = True
+        return (a, oa), (b, ob)
+
+    def test_varrick_enqueues_champion_only_choice(self):
+        (a, oa), (b, ob) = self._varrick_pair(0)
+        self.assertTrue(expend_champion(b, b.board[0], ob))
+        self.assertEqual(len(b.pending_choices), 1)
+        choice = b.pending_choices[0]
+        self.assertEqual(choice["kind"], "reanimate")
+        self.assertEqual(choice["source"], "Varrick, the Necromancer")
+        cands = choice_candidates(b, choice)
+        self.assertEqual(len(cands), 3)
+        self.assertTrue(all(c.card_type == "champion" for c in cands),
+                        "Gold/Dagger must not be reanimate candidates")
+
+    def test_varrick_apply_choice_puts_picked_champion_on_top(self):
+        (a, oa), (b, ob) = self._varrick_pair(1)
+        expend_champion(b, b.board[0], ob)
+        choice = b.pending_choices[0]
+        cands = choice_candidates(b, choice)
+        # Take the last candidate, not the engine's best, to prove the
+        # player's pick - not the heuristic - decides.
+        picked = cands[-1]
+        apply_choice(b, choice, len(cands) - 1)
+        self.assertIs(b.deck[0], picked)
+        self.assertNotIn(picked, b.discard)
+        self.assertEqual(b.pending_choices, [])
+
+    def test_varrick_no_champions_no_choice(self):
+        p, o = HRPlayer("P"), HRPlayer("O")
+        p.defer_choices = True
+        p.discard = [GOLD, DAGGER]
+        p.board = [BoardChampion(self.VARRICK)]
+        expend_champion(p, p.board[0], o)
+        self.assertEqual(p.pending_choices, [])
+
+    def test_varrick_auto_resolve_matches_old_inline(self):
+        for seed in range(20):
+            (a, oa), (b, ob) = self._varrick_pair(seed)
+            expend_champion(a, a.board[0], oa)
+            expend_champion(b, b.board[0], ob)
+            auto_resolve_choices(b, ob)
+            self.assertEqual([c.name for c in a.deck],
+                             [c.name for c in b.deck])
+            self.assertEqual(sorted(c.name for c in a.discard),
+                             sorted(c.name for c in b.discard))
+
+    def _smash_pair(self, seed):
+        rng = random.Random(seed + 1000)
+        discards = [rng.choice(POOL) for _ in range(4)]
+        a, oa = HRPlayer("A"), HRPlayer("OA")
+        b, ob = HRPlayer("B"), HRPlayer("OB")
+        a.hand = [self.SMASH]
+        b.hand = [self.SMASH]
+        a.discard = list(discards)
+        b.discard = list(discards)
+        a.deck = [GOLD]
+        b.deck = [GOLD]
+        b.defer_choices = True
+        market = lambda: HRMarket(CARDS, random.Random(seed))
+        return (a, oa, market()), (b, ob, market())
+
+    def test_smash_grab_enqueues_recycle_choice(self):
+        (a, oa, ma), (b, ob, mb) = self._smash_pair(0)
+        play_card(b, self.SMASH, mb, opponent=ob)
+        self.assertEqual(len(b.pending_choices), 1)
+        choice = b.pending_choices[0]
+        self.assertEqual(choice["kind"], "recycle")
+        self.assertEqual(choice["source"], "Smash and Grab")
+        self.assertEqual(len(choice_candidates(b, choice)), 4)
+
+    def test_smash_grab_apply_choice_recycles_picked_card(self):
+        (a, oa, ma), (b, ob, mb) = self._smash_pair(1)
+        play_card(b, self.SMASH, mb, opponent=ob)
+        choice = b.pending_choices[0]
+        cands = choice_candidates(b, choice)
+        picked = cands[0]
+        n_discard = len(b.discard)
+        apply_choice(b, choice, 0)
+        self.assertIs(b.deck[0], picked)
+        # Identical copies are interchangeable, so assert the pile shrank
+        # rather than identity-absence.
+        self.assertEqual(len(b.discard), n_discard - 1)
+        self.assertEqual(b.pending_choices, [])
+
+    def test_smash_grab_auto_resolve_matches_old_inline(self):
+        for seed in range(20):
+            (a, oa, ma), (b, ob, mb) = self._smash_pair(seed)
+            play_card(a, self.SMASH, ma, opponent=oa)
+            play_card(b, self.SMASH, mb, opponent=ob)
+            auto_resolve_choices(b, ob)
+            self.assertEqual([c.name for c in a.deck],
+                             [c.name for c in b.deck])
+            self.assertEqual(sorted(c.name for c in a.discard),
+                             sorted(c.name for c in b.discard))
+
+    def test_zoned_candidates_do_not_mislabel_discard_zone(self):
+        """choice_candidates_zoned used to label the first len(hand)
+        candidates 'hand' positionally - for a pure-discard choice every
+        candidate must say discard."""
+        p = HRPlayer("P")
+        p.hand = [GOLD, GOLD]
+        p.discard = [DAGGER]
+        choice = {"kind": "recycle", "count": 1, "zone": "discard"}
+        self.assertEqual(choice_candidates_zoned(p, choice),
+                         [(DAGGER, "discard")])
 
 
 if __name__ == "__main__":

@@ -253,22 +253,27 @@ function ChoiceSheet({ actions, kind, source, remaining, onResolve }: {
   // A pending card-effect choice must be answered before anything else can
   // happen: no scrim dismiss, no cancel button. The backend enforces the
   // same lock, so there is no path that silently swallows the choice.
-  const isDiscard = kind === 'discard';
+  const title =
+    kind === 'discard' ? 'Discard a card'
+    : kind === 'reanimate' ? 'Reanimate a champion'
+    : kind === 'recycle' ? 'Recycle a card'
+    : 'Sacrifice a card';
   // Multi-pick choices (Tyrannor's "up to two") reopen this sheet after each
   // pick, so say how many are left; declining stops early.
   const picksLeft = typeof remaining === 'number' ? remaining : 1;
+  const hint =
+    kind === 'discard' ? 'choose a card from your hand to discard.'
+    : kind === 'reanimate'
+      ? 'choose a champion from your discard pile to put on top of your deck.'
+    : kind === 'recycle'
+      ? 'you may put a card from your discard pile on top of your deck.'
+    : picksLeft > 1
+      ? `you may sacrifice up to ${picksLeft} cards from your hand or discard pile.`
+      : 'you may sacrifice a card from your hand or discard pile.';
   return (
     <ActionSheet
-      title={isDiscard ? 'Discard a card' : 'Sacrifice a card'}
-      subtitle={
-        isDiscard
-          ? `${source ? `${source}: ` : ''}choose a card from your hand to discard.`
-          : `${source ? `${source}: ` : ''}${
-              picksLeft > 1
-                ? `you may sacrifice up to ${picksLeft} cards from your hand or discard pile.`
-                : 'you may sacrifice a card from your hand or discard pile.'
-            }`
-      }
+      title={title}
+      subtitle={`${source ? `${source}: ` : ''}${hint}`}
       actions={actions.map((action) => ({
         key: `choice-${String(action.candidateIndex)}`,
         label: action.label,

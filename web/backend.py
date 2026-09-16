@@ -572,6 +572,16 @@ def main() -> None:
     # the engine default (see AGENT_CHOOSES_SACRIFICE in hero_engine.py).
     import hero_engine
     hero_engine.AGENT_CHOOSES_SACRIFICE = True
+    # Sacrifice/discard/reanimate/recycle targeting is a real decision, not
+    # something _find_worst_idx settles inline: the human picks from the
+    # choice sheets web/session.py offers via legal_actions, and the web bot
+    # picks from the same legal actions (it answers resolve_choice through
+    # its search - see test_bot_can_play_a_whole_turn_with_targeting_on).
+    # Without this the whole pending-choice UI (The Rot, Elven Gift,
+    # Varrick, Smash and Grab) never fires in the web game. Scoped to the
+    # server entry point so research harnesses importing web.session keep
+    # the engine default.
+    hero_engine.AGENT_CHOOSES_TARGETS = True
     # PORT is what Render/Railway/Fly inject; HR_BACKEND_PORT stays the local
     # override so .claude/launch.json and the dev proxy are unaffected.
     port = int(os.environ.get("HR_BACKEND_PORT") or os.environ.get("PORT") or "8000")

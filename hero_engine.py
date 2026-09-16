@@ -612,6 +612,9 @@ def choice_candidates(player: HRPlayer, choice: dict) -> list[HRCard]:
     """The cards a pending choice may legally select from."""
     if choice["kind"] == "discard":
         return list(player.hand)
+    if choice["kind"] == "reanimate":
+        # Varrick: only champions can be reanimated.
+        return [c for c in player.discard if c.card_type == "champion"]
     zone = choice.get("zone", "hand")
     # "You may sacrifice a card in your hand or discard pile": the player
     # chooses the card AND the zone, so both are offered together.
@@ -631,6 +634,13 @@ def choice_candidates_zoned(player: HRPlayer, choice: dict) -> list[tuple[HRCard
     """
     cands = choice_candidates(player, choice)
     if choice.get("kind") == "discard":
+        return [(c, "hand") for c in cands]
+    zone = choice.get("zone", "hand")
+    if zone == "discard":
+        # Recycle / reanimate draw only from the discard pile - the old
+        # positional split mislabeled the first len(hand) of them "hand".
+        return [(c, "discard") for c in cands]
+    if zone == "hand":
         return [(c, "hand") for c in cands]
     nhand = len(player.hand)
     return [(c, "hand" if i < nhand else "discard") for i, c in enumerate(cands)]
@@ -673,7 +683,18 @@ def apply_choice(player: HRPlayer, choice: dict, index: int) -> Optional[HRCard]
     if not candidates or not (0 <= index < len(candidates)):
         return None
     card = candidates[index]
-    if choice["kind"] == "discard":
+    if choice["kind"] == "reanimate":
+        # Varrick: the chosen champion goes on top of the deck, not to play.
+        player.discard.remove(card)
+        player.deck.insert(0, card)
+        player.note(f"Reanimated {card.name} to top of deck")
+    elif choice["kind"] == "recycle":
+        # Smash and Grab: "you may put a card from your discard pile on top
+        # of your deck" - the chosen card, not the engine's best.
+        player.discard.remove(card)
+        player.deck.insert(0, card)
+        player.note(f"Recycled {card.name} to top of deck")
+    elif choice["kind"] == "discard":
         player.hand.pop(index)
         player.discard.append(card)
     else:
@@ -708,7 +729,12 @@ def auto_resolve_choices(player: HRPlayer, opponent: Optional[HRPlayer] = None):
         if not candidates:
             player.pending_choices.remove(choice)
             continue
-        idx = _find_worst_idx(candidates, player, opponent)
+        # Reanimate and recycle take the BEST card (the engine's old inline
+        # pick); sacrifice and discard shed the worst.
+        if choice["kind"] in ("reanimate", "recycle"):
+            idx = _find_best_idx(candidates, player, opponent)
+        else:
+            idx = _find_worst_idx(candidates, player, opponent)
         if choice["kind"] == "sacrifice" and not _worth_sacrificing(
                 candidates[idx], player, opponent):
             player.pending_choices.remove(choice)
@@ -1103,11 +1129,18 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
     # ---- Non-ally effects (always apply) ----
 
     # Recycle (discard to top of deck) (Smash and Grab - no ally needed)
+    # "You MAY put a card from your discard pile on top of your deck" - the
+    # player chooses the card and may decline; the engine's best-pick is only
+    # the automated fallback.
     if card.get("recycle", False) and player.discard:
-        idx = _find_best_idx(player.discard, player, opponent)
-        recycled = player.discard.pop(idx)
-        player.deck.insert(0, recycled)
-        player.note(f"Recycled {recycled.name} from discard to top of deck")
+        if player.defer_choices:
+            _enqueue_choice(player, "recycle", 1, zone="discard",
+                            source=card.name)
+        else:
+            idx = _find_best_idx(player.discard, player, opponent)
+            recycled = player.discard.pop(idx)
+            player.deck.insert(0, recycled)
+            player.note(f"Recycled {recycled.name} from discard to top of deck")
 
     # ---- A self-sacrificed card leaves play immediately; every other
     # non-champion remains in played_this_turn until the Discard Phase. ----
@@ -1339,19 +1372,21 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
         _force_opponent_discard(opponent, od, player)
 
     # ---- Reanimate on expend (Varrick): take a champion from discard to the
-    # top of the deck. This effect only exists on a champion (Varrick himself,
-    # per "reanimate" only appearing on his card), and used to live inside
-    # play_card - which returns immediately for any card_type == "champion"
-    # before reaching that code. It had never fired in any game this engine
-    # has simulated. Picks the best champion via the same contextual
-    # valuation recycle already uses, not the first one in discard order. ----
+    # top of the deck. The player chooses which champion; the engine's
+    # best-pick only fires for automated callers (and as the auto_resolve
+    # fallback). Not declinable - the card has no "may".
     if card.get("reanimate", False):
         champions = [c for c in player.discard if c.card_type == "champion"]
         if champions:
-            best = max(champions, key=lambda c: _contextual_card_value(c, player, opponent))
-            player.discard.remove(best)
-            player.deck.insert(0, best)
-            player.note(f"Reanimated {best.name} to top of deck")
+            if player.defer_choices:
+                _enqueue_choice(player, "reanimate", 1, zone="discard",
+                                source=card.name)
+            else:
+                best = max(champions,
+                           key=lambda c: _contextual_card_value(c, player, opponent))
+                player.discard.remove(best)
+                player.deck.insert(0, best)
+                player.note(f"Reanimated {best.name} to top of deck")
 
     # ---- Ally effects on expend ----
     # Once per turn: if the ally was already triggered this turn (e.g. on

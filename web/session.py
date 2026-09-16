@@ -962,6 +962,11 @@ class GameSession:
         choice = player.pending_choices[0]
         kind = choice["kind"]
         source = choice.get("source")
+        # Reanimate / recycle take the BEST candidate (the engine's old
+        # inline pick); sacrifice / discard shed the worst. Ordering the
+        # offered actions the way the heuristic would have keeps a greedy
+        # consumer (and MCTS's rollout policy) aligned with the old path.
+        best_first = kind in ("reanimate", "recycle")
         actions: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
         for index, (card, zone) in enumerate(choice_candidates_zoned(player, choice)):
@@ -978,27 +983,25 @@ class GameSession:
             label = f"{kind.capitalize()} {card.name}"
             if kind == "sacrifice" and zone == "discard":
                 label = f"{label} (discard pile)"
+            value = hero_engine._contextual_card_value(
+                card, player, self._opponent())
             actions.append({
                 "type": "resolve_choice", "candidateIndex": index,
                 "kind": kind, "source": source,
                 "label": label,
-                # Negated: the engine's own inline resolution picked the
-                # *lowest* contextual value, so this orders the choices the
-                # way the heuristic would have, keeping a greedy consumer
-                # (and MCTS's rollout policy) byte-identical to the old path.
-                "priority": -hero_engine._contextual_card_value(
-                    card, player, self._opponent()),
+                "priority": value if best_first else -value,
                 # How many picks this choice still needs (Tyrannor's "up to
                 # two" re-opens the sheet after each pick); the UI phrases
                 # its hint from it.
                 "remaining": choice["count"],
             })
-        # "You may sacrifice" is declinable; a forced discard is not.
-        if kind == "sacrifice":
+        # "You may sacrifice" / "you may put a card..." are declinable; a
+        # forced discard and Varrick's mandatory reanimate are not.
+        if kind in ("sacrifice", "recycle"):
             actions.append({
                 "type": "resolve_choice", "candidateIndex": -1,
                 "kind": kind, "source": source,
-                "label": "Decline sacrifice", "priority": 0,
+                "label": f"Decline {kind}", "priority": 0,
                 "remaining": choice["count"],
             })
         return actions
@@ -1009,10 +1012,10 @@ class GameSession:
             raise ValueError("No pending choice")
         choice = player.pending_choices[0]
         if candidate_index < 0:
-            if choice["kind"] != "sacrifice":
+            if choice["kind"] not in ("sacrifice", "recycle"):
                 raise ValueError("This choice cannot be declined")
             player.pending_choices.remove(choice)
-            self.record_event("effect", f"{player.name}: declined the sacrifice")
+            self.record_event("effect", f"{player.name}: declined the {choice['kind']}")
             return self.get_state()
         card = apply_choice(player, choice, candidate_index)
         if card is None:
