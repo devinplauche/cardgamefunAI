@@ -448,7 +448,7 @@ class Handler(BaseHTTPRequestHandler):
             user = self._require_user()
             if user is None:
                 return
-            session = create_session()
+            session = create_session(bot_is_human=True)
             session.player.name = user["username"]
             created = game_store.create_game(user["id"], session)
             self._send(200, created)
@@ -558,6 +558,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    # In the web game the acting agent chooses Lys/Krythos sacrifices: the
+    # human picks from the per-card buttons web/session.py offers via
+    # legal_actions (the engine no longer auto-sacrifices with no prompt),
+    # and the web bot picks from the same legal actions. Scoped to the
+    # server entry point so research harnesses importing web.session keep
+    # the engine default (see AGENT_CHOOSES_SACRIFICE in hero_engine.py).
+    import hero_engine
+    hero_engine.AGENT_CHOOSES_SACRIFICE = True
     # PORT is what Render/Railway/Fly inject; HR_BACKEND_PORT stays the local
     # override so .claude/launch.json and the dev proxy are unaffected.
     port = int(os.environ.get("HR_BACKEND_PORT") or os.environ.get("PORT") or "8000")
