@@ -259,6 +259,9 @@ export function GameTable(props: Props) {
     id: string;
     name: string;
   } | null>(null);
+  // Attack target picker: opened by the Attack button when face isn't legal
+  // and more than one guard can be killed (single guard / face = one tap).
+  const [attackPicker, setAttackPicker] = useState(false);
 
   // Escape dismisses the topmost overlay (action sheet, then card inspect,
   // then the info sheet) - the scrims otherwise leave no keyboard path out.
@@ -429,6 +432,23 @@ export function GameTable(props: Props) {
 
   const canAttackNow = canInteract && phaseAllows(phase, 'combat') && me.combat > 0;
 
+  // Attack button: face when legal, otherwise the guard. One tap for the
+  // common cases; a picker only when several guards could be killed.
+  const canAttackButton = canAttackNow && attackInfo.canAttack;
+  const handleAttackButton = () => {
+    if (!canAttackButton) return;
+    if (attackInfo.faceLegal) {
+      props.onAttack('player');
+      return;
+    }
+    const killable = foe.board.filter((c) => attackInfo.ids.has(c.instanceId));
+    if (killable.length === 1) {
+      props.onAttack('champion', killable[0].instanceId);
+      return;
+    }
+    setAttackPicker(true);
+  };
+
   const sacrificeables = useMemo(
     () =>
       me.playedThisTurn.filter(
@@ -593,6 +613,32 @@ export function GameTable(props: Props) {
         ) : null}
       </section>
 
+      {/* cards played this turn: kept visible so the player can see
+          what's already been committed (tapping one inspects it) */}
+      {me.playedThisTurn.length > 0 ? (
+        <section className="played-zone" aria-label="Cards you have played">
+          <div className="zone-label">
+            <span>Played</span>
+          </div>
+          <div className="played-row">
+            {me.playedThisTurn.map((card, index) => (
+              <button
+                key={`${card.id}-played-${index}`}
+                className="played-chip"
+                onClick={() => setInspectCard(card)}
+                title={card.name}
+                aria-label={`Inspect ${card.name}`}
+              >
+                <span className="played-chip-art">
+                  <CardArtwork card={card} />
+                </span>
+                <span className="played-chip-name">{card.name}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {/* hand */}
       <section className="hand-zone" aria-label="Your hand">
         <div className="hand-fan">
@@ -620,6 +666,18 @@ export function GameTable(props: Props) {
         <span className="hp-pill mine">♥ {me.hp}</span>
         <span className="deck-pip" title="Deck">🂠 {me.deckCount}</span>
         <div className="player-bar-actions">
+          <button
+            className="table-button"
+            disabled={!canAttackButton}
+            onClick={handleAttackButton}
+            title={
+              canAttackButton
+                ? `Attack for ${me.combat}⚔`
+                : 'No attacks available'
+            }
+          >
+            ⚔ Attack
+          </button>
           {autoPlayCount > 0 ? (
             <button
               className="table-button"
@@ -640,6 +698,25 @@ export function GameTable(props: Props) {
       </footer>
 
       {/* overlays */}
+      {attackPicker ? (
+        <ActionSheet
+          title="Attack which guard?"
+          subtitle="Guards must be destroyed before you can attack face:"
+          actions={foe.board
+            .filter((c) => attackInfo.ids.has(c.instanceId))
+            .map((c) => ({
+              key: c.instanceId,
+              label: `Attack ${c.name}`,
+              detail: `${c.currentHealth}❤ · your ${me.combat}⚔ is lethal`,
+              onAction: () => {
+                setAttackPicker(false);
+                props.onAttack('champion', c.instanceId);
+              },
+            }))}
+          onClose={() => setAttackPicker(false)}
+        />
+      ) : null}
+
       {stunPicker ? (
         <ActionSheet
           title={`Stun with ${stunPicker.name}`}
