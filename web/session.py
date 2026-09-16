@@ -341,6 +341,10 @@ class GameSession:
     last_bot_insight: dict[str, Any] | None = field(default=None)
     opponent_purchase_observations: tuple[PublicOpponentPurchase, ...] = ()
     record_history: bool = field(default=True)
+    # True when the "bot" seat is actually a second human (multiplayer).
+    # The engine still keys the guest off the "bot" seat internally, but
+    # human-only affordances (Play all, starting hand size) apply to them.
+    bot_is_human: bool = False
     _event_listener: Callable[[dict[str, Any]], None] | None = field(default=None, repr=False)
     rng: random.Random = field(init=False, repr=False)
     _normal_market_cards: tuple[HRCard, ...] = field(init=False, repr=False)
@@ -374,7 +378,9 @@ class GameSession:
         self.player.setup_starting_deck()
         self.bot.setup_starting_deck()
         self.player.draw(3)
-        self.bot.draw(5)
+        # A human guest starts exactly like the host; the AI seat keeps its
+        # deeper opening hand.
+        self.bot.draw(3 if self.bot_is_human else 5)
         self.market = HRMarket(self.cards, self.rng)
         # Back-reference so sacrifice routing can return Fire Gems to the
         # pile (mirrors HRGame); expend_champion's sacrifice paths call
@@ -427,6 +433,7 @@ class GameSession:
         clone.active_player = self.active_player
         clone.phase = self.phase
         clone.winner = self.winner
+        clone.bot_is_human = self.bot_is_human
         clone.log = []
         clone.history = []
         clone.history_sequence = self.history_sequence
@@ -983,17 +990,19 @@ class GameSession:
         Self-sacrifice combat is deferred by the human play path. Unknown
         effects are excluded, including choice-triggering ally abilities.
         """
-        if (self.active_player != "player" or self.winner
-                or self.phase not in ("play", MAIN_PHASE) or self.player.pending_choices):
+        current = self._current()
+        if (self.winner or self.phase not in ("play", MAIN_PHASE)
+                or current.pending_choices
+                or (self.active_player == "bot" and not self.bot_is_human)):
             return []
         safe = {"gold", "combat", "health", "ally_faction", "ally_gold", "ally_combat",
                 "ally_health", "ally_per_champion_health", "per_champion_combat",
                 "per_champion_health", "per_other_champion_combat", "per_other_guard_combat",
                 "per_other_wild_combat", "top_of_deck", "top_of_deck_action_only",
                 "to_hand", "sacrifice_combat"}
-        in_play = self.player.played_this_turn + [c.card for c in self.player.board if c.alive]
+        in_play = current.played_this_turn + [c.card for c in current.board if c.alive]
         result = []
-        for card in self.player.hand:
+        for card in current.hand:
             if card.card_type == "champion" or any(k not in safe and v for k, v in card.effects.items()):
                 continue
             if card.faction and any(
@@ -1007,7 +1016,8 @@ class GameSession:
         return result
 
     def play_all_action(self) -> dict[str, Any]:
-        if self.active_player != "player" or self.winner or self.phase not in ("play", MAIN_PHASE):
+        if ((self.active_player == "bot" and not self.bot_is_human)
+                or self.winner or self.phase not in ("play", MAIN_PHASE)):
             raise ValueError("Play all is only available during your play phase")
         while cards := self._auto_play_cards():
             self.play_card(cards[0].id, manual_self_sacrifice=True)
@@ -1207,6 +1217,11 @@ class GameSession:
         for card in list(current.hand):
             current.discard.append(card)
         current.hand.clear()
+        # Unspent gold and combat never carry over: clear them on the seat
+        # ending its turn so the stored state (and the opponent's view of it)
+        # never shows stale leftovers.
+        current.gold = 0
+        current.combat = 0
         # Discard Phase: "Prepare all of your Champions."
         for champion in current.board:
             champion.exhausted = False
@@ -1269,5 +1284,7 @@ class GameSession:
         return state
 
 
-def create_session(seed: int | None = None, algorithm: str = "mcts", budget_ms: int = 60) -> GameSession:
-    return GameSession(seed=seed, algorithm=algorithm, budget_ms=budget_ms)
+def create_session(seed: int | None = None, algorithm: str = "mcts", budget_ms: int = 60,
+                   bot_is_human: bool = False) -> GameSession:
+    return GameSession(seed=seed, algorithm=algorithm, budget_ms=budget_ms,
+                       bot_is_human=bot_is_human)
