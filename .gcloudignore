@@ -14,7 +14,7 @@ models_value/
 !CLOUD_RUN.md
 web/node_modules/
 web/dist/
-web/public/cards/*.jpg
+# Card art IS needed: the frontend serves it from /cards/. (2.5MB total.)
 hero_realms_gui.py
 hero_rl_*.py
 hero_selfplay.py
