@@ -60,3 +60,50 @@ jobs:
           gcloud run deploy hero-realms --source . --region=us-central1
           --project=hero-realms-game --allow-unauthenticated
           --memory 512Mi --cpu 1 --max-instances 3 --quiet
+
+  e2e:
+    # Live-site GUI suite (all 55 cards). Runs ONLY after a real deployment:
+    # each run is genuine user traffic against Cloud Run, so it never runs on
+    # PRs or per-push. The card rig deals hands through the backend's
+    # debug-setup endpoint, so the job enables HR_DEBUG_SETUP=1 and pins
+    # max-instances=1 for the test window (in-memory sessions need a single
+    # instance), then reverts both even if the tests fail.
+    needs: [deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/836373077810/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-deployer@hero-realms-game.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Enable e2e rig on Cloud Run
+        run: >
+          gcloud run services update hero-realms --region=us-central1
+          --project=hero-realms-game --update-env-vars HR_DEBUG_SETUP=1
+          --max-instances 1 --quiet
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+      - name: Install Playwright Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Run card GUI suite
+        working-directory: web
+        run: npx playwright test
+        env:
+          E2E_BASE_URL: https://hero-realms-yokyhjajxq-uc.a.run.app
+      - name: Disable e2e rig on Cloud Run
+        if: always()
+        run: >
+          gcloud run services update hero-realms --region=us-central1
+          --project=hero-realms-game --remove-env-vars HR_DEBUG_SETUP
+          --max-instances 3 --quiet

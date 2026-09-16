@@ -1,0 +1,3 @@
+# Playwright e2e output (regenerable; never commit)
+/test-results/
+/playwright-report/
