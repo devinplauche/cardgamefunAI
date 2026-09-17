@@ -8,12 +8,50 @@ PostgreSQL uses BYTEA for the session blob where SQLite uses BLOB.
 from __future__ import annotations
 
 import os
+import queue
 import sqlite3
 import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SQLITE_PATH = REPO_ROOT / "web" / "data" / "app.db"
+
+#: Global Postgres connection pool. Every API request was opening 3-4 fresh
+#: TCP+TLS+Postgres handshakes to Neon (~200-300ms each), stacking to 1s+ on
+#: every tap. Pooling reuses connections across requests. Max 20: the
+#: ThreadingHTTPServer handles each request in its own thread, and 20 is
+#: plenty for this app's traffic while bounding server-side connections.
+_pg_pool: queue.Queue = queue.Queue(maxsize=20)
+
+
+class _PooledPgConn:
+    """Wraps a psycopg connection; close() returns it to the pool.
+
+    Call sites use connect() ... conn.close() in try/finally. The wrapper
+    makes close() return the connection to the pool instead of actually
+    closing the TCP connection, so the next request reuses it.
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def close(self):
+        try:
+            # Reset any aborted transaction state before reuse.
+            self._conn.rollback()
+        except Exception:
+            pass
+        try:
+            _pg_pool.put_nowait(self._conn)
+        except queue.Full:
+            # Pool is full; actually close this one.
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
 
 
 def is_postgres() -> bool:
@@ -34,7 +72,22 @@ def connect():
                 "DATABASE_URL is set but psycopg is not installed; "
                 "pip install 'psycopg[binary]'"
             ) from exc
-        return psycopg.connect(os.environ["DATABASE_URL"])
+        # Try to reuse a pooled connection. Validate it's still alive
+        # because Neon closes idle connections server-side.
+        try:
+            conn = _pg_pool.get_nowait()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                return _PooledPgConn(conn)
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except queue.Empty:
+            pass
+        return _PooledPgConn(psycopg.connect(os.environ["DATABASE_URL"]))
     SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(SQLITE_PATH))
     conn.row_factory = sqlite3.Row
