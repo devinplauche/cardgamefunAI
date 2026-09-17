@@ -321,7 +321,6 @@ for (const card of CARDS) {
         await expend.click();
         await page.waitForTimeout(800);
         await settleOverlays(page);
-<<<<<<< HEAD
       } else {
         // Disabled means already spent via auto-expend: nothing left to do,
         // but the sheet is still open - dismiss it before moving on.
