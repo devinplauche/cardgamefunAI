@@ -650,7 +650,6 @@ class Handler(BaseHTTPRequestHandler):
             # never let it break session creation.
             try:
                 game_store.cleanup_bot_sessions()
-                db_store.cleanup_idempotency_keys()
             except Exception:  # noqa: BLE001
                 pass
             self._send(200, session.get_state())
