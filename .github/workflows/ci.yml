@@ -127,14 +127,21 @@ jobs:
       - name: Wait for e2e rig revision
         # The tagged revision needs a minute to roll out; fail fast here with
         # a clear line instead of letting every spec time out one by one.
+        # 10-minute timeout: Cloud Run can be slow to provision a new revision
+        # with a fresh tag, especially under load.
         run: |
-          for i in $(seq 1 36); do
+          for i in $(seq 1 60); do
             CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
               https://e2e---hero-realms-yokyhjajxq-uc.a.run.app/api/health || true)
             if [ "$CODE" = "200" ]; then echo "rig revision serving"; exit 0; fi
+            if [ $((i % 6)) -eq 0 ]; then echo "waiting for rig... attempt $i/60 (last HTTP $CODE)"; fi
             sleep 10
           done
-          echo "e2e rig revision never became ready" >&2
+          echo "e2e rig revision never became ready after 10 minutes" >&2
+          echo "--- revision status ---" >&2
+          gcloud run revisions list --service=hero-realms --region=us-central1 \
+            --project=hero-realms-game --limit=3 \
+            --format="table(name,creationTimestamp)" >&2 || true
           exit 1
       - name: Run card GUI suite
         working-directory: web
