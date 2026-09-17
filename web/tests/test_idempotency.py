@@ -151,8 +151,17 @@ def test_idempotency_ttl_expiry_and_cleanup(db):
     )
     # A stale record is treated as a miss...
     assert db.idempotency_get("scope-old", "k") is None
-    # ...and the next save sweeps it away.
+    # ...and a plain save no longer sweeps it (that sweep cost a DELETE on
+    # every mutation, part of the per-tap lag). The periodic cleanup does.
     db.idempotency_put("scope-new", "k", "{}")
+    assert (
+        db.query_one(
+            f"SELECT * FROM idempotency_keys WHERE scope_id = {db.PH}",
+            ("scope-old",),
+        )
+        is not None
+    )
+    assert db.cleanup_idempotency_keys() == 1
     assert (
         db.query_one(
             f"SELECT * FROM idempotency_keys WHERE scope_id = {db.PH}",
@@ -160,3 +169,23 @@ def test_idempotency_ttl_expiry_and_cleanup(db):
         )
         is None
     )
+    # Fresh rows survive the sweep.
+    assert db.idempotency_get("scope-new", "k") == "{}"
+
+
+def test_sqlite_pragmas_cut_fsyncs(db):
+    """WAL + synchronous=NORMAL is what makes the per-tap commits cheap."""
+    conn = db.connect()
+    try:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        sync = conn.execute("PRAGMA synchronous").fetchone()[0]
+    finally:
+        conn.close()
+    assert mode.lower() == "wal", mode
+    assert sync == 1, f"synchronous=NORMAL is 1, got {sync}"
+
+
+def test_cleanup_keeps_fresh_rows(db):
+    db.idempotency_put("scope-fresh", "k", '{"ok":true}')
+    assert db.cleanup_idempotency_keys() == 0
+    assert db.idempotency_get("scope-fresh", "k") == '{"ok":true}'

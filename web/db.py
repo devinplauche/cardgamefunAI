@@ -38,6 +38,15 @@ def connect():
     SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(SQLITE_PATH))
     conn.row_factory = sqlite3.Row
+    # Lag fix (2026-09-17): every bot tap commits 2-3 times, and on Cloud
+    # Run's overlayfs each fsync costs ~50-150ms, which stacked up to the
+    # ~300-500ms players felt on every tap. WAL + synchronous=NORMAL cuts
+    # the fsyncs per commit without risking corruption (a crash can only
+    # lose the tail transaction, which the client retries idempotently).
+    # journal_mode is sticky per database file; setting it here is cheap
+    # and keeps fresh dev/test databases identical to production.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 
@@ -169,8 +178,11 @@ def idempotency_get(scope_id: str, key: str) -> str | None:
 def idempotency_put(scope_id: str, key: str, response: str) -> None:
     """Cache the JSON response body under (scope, key).
 
-    Upserts, so a (scope, key) pair keeps only its latest response. Rows
-    older than IDEMPOTENCY_TTL are deleted opportunistically on each save.
+    Upserts, so a (scope, key) pair keeps only its latest response.
+    Stale rows are swept by cleanup_idempotency_keys(), which runs on the
+    same rare cadence as cleanup_bot_sessions - sweeping them here used to
+    add a full-table DELETE to every single mutation, which was a
+    measurable part of the per-tap lag on Cloud Run's slow filesystem.
     """
     ts = now()
     conn = connect()
@@ -189,10 +201,15 @@ def idempotency_put(scope_id: str, key: str, response: str) -> None:
                 "(scope_id, idem_key, response, created_at) VALUES (?, ?, ?, ?)",
                 (scope_id, key, response, ts),
             )
-        conn.execute(
-            f"DELETE FROM idempotency_keys WHERE created_at < {PH}",
-            (ts - IDEMPOTENCY_TTL,),
-        )
         conn.commit()
     finally:
         conn.close()
+
+
+def cleanup_idempotency_keys(max_age_seconds: float = IDEMPOTENCY_TTL) -> int:
+    """Delete idempotency rows older than the TTL; returns the row count."""
+    cutoff = now() - max_age_seconds
+    return execute(
+        f"DELETE FROM idempotency_keys WHERE created_at < {PH}",
+        (cutoff,),
+    )
