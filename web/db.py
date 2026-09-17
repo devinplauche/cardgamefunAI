@@ -74,6 +74,13 @@ CREATE TABLE IF NOT EXISTS bot_sessions (
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    scope_id TEXT NOT NULL,
+    idem_key TEXT NOT NULL,
+    response TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (scope_id, idem_key)
+);
 """
 
 
@@ -131,5 +138,61 @@ def execute(query: str, params=()) -> int:
         cur = conn.execute(query, params)
         conn.commit()
         return cur.rowcount
+    finally:
+        conn.close()
+
+
+#: How long an idempotency record is honored: a retried mutation replays the
+#: cached JSON response instead of re-running for ~24h.
+IDEMPOTENCY_TTL = 24 * 3600
+
+
+def idempotency_get(scope_id: str, key: str) -> str | None:
+    """Return the cached JSON response body for a (scope, key) pair.
+
+    Returns None when the key was never seen for this scope, or when the
+    record is older than IDEMPOTENCY_TTL (a stale record is simply replaced
+    on the next save).
+    """
+    row = query_one(
+        f"SELECT response, created_at FROM idempotency_keys "
+        f"WHERE scope_id = {PH} AND idem_key = {PH}",
+        (scope_id, key),
+    )
+    if row is None:
+        return None
+    if now() - row["created_at"] > IDEMPOTENCY_TTL:
+        return None
+    return row["response"]
+
+
+def idempotency_put(scope_id: str, key: str, response: str) -> None:
+    """Cache the JSON response body under (scope, key).
+
+    Upserts, so a (scope, key) pair keeps only its latest response. Rows
+    older than IDEMPOTENCY_TTL are deleted opportunistically on each save.
+    """
+    ts = now()
+    conn = connect()
+    try:
+        if is_postgres():
+            conn.execute(
+                "INSERT INTO idempotency_keys (scope_id, idem_key, response, created_at) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (scope_id, idem_key) DO UPDATE SET "
+                "response = EXCLUDED.response, created_at = EXCLUDED.created_at",
+                (scope_id, key, response, ts),
+            )
+        else:
+            conn.execute(
+                "INSERT OR REPLACE INTO idempotency_keys "
+                "(scope_id, idem_key, response, created_at) VALUES (?, ?, ?, ?)",
+                (scope_id, key, response, ts),
+            )
+        conn.execute(
+            f"DELETE FROM idempotency_keys WHERE created_at < {PH}",
+            (ts - IDEMPOTENCY_TTL,),
+        )
+        conn.commit()
     finally:
         conn.close()

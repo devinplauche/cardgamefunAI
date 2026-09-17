@@ -119,15 +119,60 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "HeroRealmsML/0.1"
 
     def _send(self, status: int, payload: dict) -> None:
-        data = _json_bytes(payload)
+        self._send_raw(status, _json_bytes(payload))
+
+    def _send_raw(self, status: int, data: bytes) -> None:
+        """Send a pre-serialized JSON body (used to replay cached responses)."""
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header(
+            "Access-Control-Allow-Headers", "Content-Type, X-Idempotency-Key"
+        )
         self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
         self.end_headers()
         self.wfile.write(data)
+
+    # ---- idempotency helpers ---------------------------------------------
+
+    def _idempotency_key(self) -> str | None:
+        """The client's retry key for this request, if it sent one."""
+        key = (self.headers.get("X-Idempotency-Key") or "").strip()
+        return key or None
+
+    def _idempotent_replay(self, scope_id: str) -> bool:
+        """Replay the cached response when this request's key was seen before.
+
+        Returns True when a cached response was sent (the caller must return
+        immediately). Only successful mutations are ever cached, so a replay
+        means the first delivery already applied. Never raises: a cache
+        failure degrades to running the handler normally.
+        """
+        key = self._idempotency_key()
+        if not key:
+            return False
+        try:
+            cached = db_store.idempotency_get(scope_id, key)
+        except Exception:  # noqa: BLE001
+            return False
+        if cached is None:
+            return False
+        self._send_raw(200, cached.encode("utf-8"))
+        return True
+
+    def _idempotent_store(self, scope_id: str, payload: dict) -> None:
+        """Cache a successful mutation's JSON response under the request's key."""
+        key = self._idempotency_key()
+        if not key:
+            return
+        try:
+            db_store.idempotency_put(
+                scope_id, key, _json_bytes(payload).decode("utf-8")
+            )
+        except Exception:  # noqa: BLE001
+            # Caching must never break the response that was just produced.
+            pass
 
     # ---- auth helpers ----------------------------------------------------
 
@@ -265,6 +310,9 @@ class Handler(BaseHTTPRequestHandler):
         raise ValueError(f"Unknown action: {route}")
 
     def _handle_game_action(self, game_id: str, user: dict, body: dict) -> None:
+        # A retried mutation replays its first response without re-running.
+        if self._idempotent_replay(game_id):
+            return
         lock = GAME_LOCKS[game_id]
         if not lock.acquire(blocking=False):
             self._send(409, {"error": "An action is already resolving."})
@@ -297,9 +345,11 @@ class Handler(BaseHTTPRequestHandler):
                 game_store.finish_game(game_id)
             game_store.save_game(game_id, session, bump_turn=True)
             game = game_store.get_game(game_id)
-            self._send(200, self._game_state_for(game, side))
+            payload = self._game_state_for(game, side)
         finally:
             lock.release()
+        self._idempotent_store(game_id, payload)
+        self._send(200, payload)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A003
         return
@@ -568,6 +618,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             route = parts[3]
+            # Streaming bot turns cannot be replayed from a JSON cache; every
+            # other player-state mutation honors the client's retry key.
+            if route != "bot-turn-stream" and self._idempotent_replay(
+                session.session_id
+            ):
+                return
             lock = SESSION_LOCKS[session.session_id]
             if not lock.acquire(blocking=False):
                 self._send(409, {"error": "A turn is already running. Refresh when it finishes."})
@@ -620,6 +676,8 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 lock.release()
 
+            if route != "bot-turn-stream":
+                self._idempotent_store(session.session_id, payload)
             self._send(200, payload)
             return
 
