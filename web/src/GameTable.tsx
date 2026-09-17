@@ -967,6 +967,11 @@ export function GameTable(props: Props) {
         </div>
       </header>
 
+      {/* table-mid: portrait renders this (and the panes) as display:contents,
+          so the column layout is unchanged; short landscape turns it into a
+          two-pane row so the hand and action bar stay on screen. */}
+      <div className="table-mid">
+        <div className="table-pane pane-board">
       {/* opponent zone */}
       <section className="opp-zone" aria-label="Opponent">
         <div className="player-strip">
@@ -1077,6 +1082,8 @@ export function GameTable(props: Props) {
           <span className="pool gold" title="Gold">● {me.gold}</span>
         </span>
       </div>
+        </div>
+        <div className="table-pane pane-hand">
       {moment ? (
         <div key={moment.id} className={`juice-banner juice-${moment.kind}`} aria-live="polite">
           <div className="juice-title">{moment.title}</div>
@@ -1205,6 +1212,8 @@ export function GameTable(props: Props) {
         </div>
       </section>
 
+        </div>
+      </div>
       {/* player bar */}
       <footer className="player-bar">
         <span className="avatar" aria-hidden="true">{me.name.slice(0, 1).toUpperCase()}</span>
