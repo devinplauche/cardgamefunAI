@@ -6,6 +6,9 @@ import pickle
 import secrets
 import string
 import uuid
+from copy import deepcopy
+
+from hero_engine import HRCard, BoardChampion
 
 from web import auth, db
 
@@ -184,3 +187,262 @@ def list_for_user(user_id: str) -> list[dict]:
             }
         )
     return out
+
+
+# ---- single-step Undo: pre-action snapshots -------------------------------
+# Pure snapshot/restore for one level of Undo. The integration owner calls
+# snapshot() before each player mutation and keeps the most recent dict;
+# POST /api/games/{id}/undo calls restore() with it. Snapshots are plain
+# JSON-serializable dicts (never pickle) so they can be persisted in a TEXT
+# column or round-tripped through the client. restore() rebuilds the mutable
+# state in place, so the same session object keeps working afterwards.
+#
+# Captured: everything a player mutation can change - both seats' zones
+# (deck, hand, discard, banish, board, played_this_turn, pending ally
+# queues), gold/combat/hp, the market (pool, row, Fire Gem pile), turn
+# number, active player, phase, winner, per-turn flags, pending choices, the
+# RNG state, and the log/history the mutation appended to.
+# Deliberately NOT captured: read-only card definitions (session.cards),
+# construction constants (session_id, seed, ...), the bot pipeline's private
+# search state (last_bot_insight, opponent_purchase_observations - written
+# only by bot turns, never by a player action), and the live event listener
+# (a callable, never persisted - see _serialize).
+
+
+def _snapshot_card(card: HRCard) -> dict:
+    # Full per-copy serialisation, uid included: two copies of one card share
+    # card.id but are distinct physical cards (ally_used_this_turn is keyed
+    # by uid), so id-keyed lookup would collapse them.
+    return {
+        "id": card.id,
+        "name": card.name,
+        "cost": card.cost,
+        "faction": card.faction,
+        "card_type": card.card_type,
+        "subtypes": deepcopy(card.subtypes),
+        "guard": card.guard,
+        "health": card.health,
+        "effects": deepcopy(card.effects),
+        "text": card.text,
+        "uid": card.uid,
+    }
+
+
+def _restore_card(data: dict, memo: dict) -> HRCard:
+    """Rebuild one HRCard, memoised by uid so shared references stay shared.
+
+    One physical card can appear in several captured places at once (e.g.
+    the played card referenced by a pending_per_champion entry). Rebuilding
+    a single object per uid preserves those identity relationships exactly.
+    """
+    uid = data["uid"]
+    card = memo.get(uid)
+    if card is None:
+        card = HRCard(
+            id=data["id"],
+            name=data["name"],
+            cost=data["cost"],
+            faction=data["faction"],
+            card_type=data["card_type"],
+            subtypes=deepcopy(data["subtypes"]),
+            guard=data["guard"],
+            health=data["health"],
+            effects=deepcopy(data["effects"]),
+            text=data["text"],
+            uid=uid,
+        )
+        memo[uid] = card
+    return card
+
+
+def _snapshot_champion(champion: BoardChampion) -> dict:
+    return {
+        "card": _snapshot_card(champion.card),
+        "current_health": champion.current_health,
+        "exhausted": champion.exhausted,
+        "guard": champion.guard,
+        "instance_id": champion.instance_id,
+    }
+
+
+def _restore_champion(data: dict, memo: dict) -> BoardChampion:
+    champion = BoardChampion.__new__(BoardChampion)
+    champion.card = _restore_card(data["card"], memo)
+    champion.current_health = data["current_health"]
+    champion.exhausted = data["exhausted"]
+    champion.guard = data["guard"]
+    # Preserved, not regenerated: the UI addresses champions by instance_id,
+    # and the process-global counter only moves forward, so a restored id
+    # can never collide with a later one (mirrors _copy_champion).
+    champion.instance_id = data["instance_id"]
+    return champion
+
+
+def _snapshot_rng(rng) -> dict:
+    version, ints, gauss = rng.getstate()
+    return {"version": version, "ints": list(ints), "gauss": gauss}
+
+
+def _restore_rng(rng, data: dict) -> None:
+    rng.setstate((data["version"], tuple(data["ints"]), data["gauss"]))
+
+
+def _snapshot_player(player) -> dict:
+    return {
+        "hp": player.hp,
+        "gold": player.gold,
+        "combat": player.combat,
+        "deck": [_snapshot_card(c) for c in player.deck],
+        "hand": [_snapshot_card(c) for c in player.hand],
+        "discard": [_snapshot_card(c) for c in player.discard],
+        "banish": [_snapshot_card(c) for c in player.banish],
+        "board": [_snapshot_champion(c) for c in player.board],
+        "played_this_turn": [_snapshot_card(c) for c in player.played_this_turn],
+        "pending_ally": [_snapshot_card(c) for c in player.pending_ally],
+        "available_ally_triggers": [
+            _snapshot_card(c) for c in player.available_ally_triggers
+        ],
+        "ally_used_this_turn": sorted(player.ally_used_this_turn),
+        "pending_per_champion": [
+            {
+                "card": _snapshot_card(e["card"]),
+                "resource": e["resource"],
+                "per_unit": e["per_unit"],
+                "credited": e["credited"],
+            }
+            for e in player.pending_per_champion
+        ],
+        "pending_prepares": player.pending_prepares,
+        "pending_choices": deepcopy(player.pending_choices),
+        "actions_played": player.actions_played,
+        "cards_bought": player.cards_bought,
+        "next_buy_to_hand": player.next_buy_to_hand,
+        "next_buy_to_top": player.next_buy_to_top,
+        "next_buy_to_top_action_only": player.next_buy_to_top_action_only,
+        "defer_choices": player.defer_choices,
+        "log_effects": player.log_effects,
+        "effect_log": list(player.effect_log),
+    }
+
+
+def _restore_player(player, data: dict, memo: dict, rng) -> None:
+    player.hp = data["hp"]
+    player.gold = data["gold"]
+    player.combat = data["combat"]
+    player.deck = [_restore_card(c, memo) for c in data["deck"]]
+    player.hand = [_restore_card(c, memo) for c in data["hand"]]
+    player.discard = [_restore_card(c, memo) for c in data["discard"]]
+    player.banish = [_restore_card(c, memo) for c in data["banish"]]
+    player.board = [_restore_champion(c, memo) for c in data["board"]]
+    player.played_this_turn = [_restore_card(c, memo) for c in data["played_this_turn"]]
+    player.pending_ally = [_restore_card(c, memo) for c in data["pending_ally"]]
+    player.available_ally_triggers = [
+        _restore_card(c, memo) for c in data["available_ally_triggers"]
+    ]
+    player.ally_used_this_turn = set(data["ally_used_this_turn"])
+    player.pending_per_champion = [
+        {
+            "card": _restore_card(e["card"], memo),
+            "resource": e["resource"],
+            "per_unit": e["per_unit"],
+            "credited": e["credited"],
+        }
+        for e in data["pending_per_champion"]
+    ]
+    player.pending_prepares = data["pending_prepares"]
+    player.pending_choices = deepcopy(data["pending_choices"])
+    player.actions_played = data["actions_played"]
+    player.cards_bought = data["cards_bought"]
+    player.next_buy_to_hand = data["next_buy_to_hand"]
+    player.next_buy_to_top = data["next_buy_to_top"]
+    player.next_buy_to_top_action_only = data["next_buy_to_top_action_only"]
+    player.defer_choices = data["defer_choices"]
+    player.log_effects = data["log_effects"]
+    player.effect_log = list(data["effect_log"])
+    player._rng = rng
+
+
+def _snapshot_market(market) -> dict:
+    return {
+        "pool": [_snapshot_card(c) for c in market.pool],
+        "row": [_snapshot_card(c) if c is not None else None for c in market.row],
+        "fire_gems_remaining": market.fire_gems_remaining,
+    }
+
+
+def _restore_market(market, data: dict, memo: dict) -> None:
+    market.pool = [_restore_card(c, memo) for c in data["pool"]]
+    market.row = [
+        _restore_card(c, memo) if c is not None else None for c in data["row"]
+    ]
+    market.fire_gems_remaining = data["fire_gems_remaining"]
+
+
+def _unique_rngs(session) -> tuple[list, dict[int, int]]:
+    """RNG objects in discovery order, deduped: the two seats normally share
+    the session RNG, so there is usually exactly one."""
+    rngs: list = []
+    index: dict[int, int] = {}
+    for holder in (session.rng, session.player._rng, session.bot._rng):
+        key = id(holder)
+        if key not in index:
+            index[key] = len(rngs)
+            rngs.append(holder)
+    return rngs, index
+
+
+def snapshot(session) -> dict:
+    """Capture the full mutable game state as a plain JSON-serializable dict.
+
+    Call before each player mutation; hand the dict to restore() to undo.
+    """
+    rngs, rng_index = _unique_rngs(session)
+    return {
+        "turn_number": session.turn_number,
+        "active_player": session.active_player,
+        "phase": session.phase,
+        "winner": session.winner,
+        "history_sequence": session.history_sequence,
+        "bot_is_human": session.bot_is_human,
+        "record_history": session.record_history,
+        "rngs": [_snapshot_rng(r) for r in rngs],
+        "player_rng": rng_index[id(session.player._rng)],
+        "bot_rng": rng_index[id(session.bot._rng)],
+        "player": _snapshot_player(session.player),
+        "bot": _snapshot_player(session.bot),
+        "market": _snapshot_market(session.market),
+        "log": deepcopy(session.log),
+        "history": deepcopy(session.history),
+    }
+
+
+def restore(session, snap: dict):
+    """Restore the mutable game state from snapshot() in place.
+
+    Rebuilds every zone from the snapshot so the session is byte-equivalent
+    to the captured state (a fresh snapshot() afterwards compares equal).
+    Returns the session for chaining.
+    """
+    memo: dict[str, HRCard] = {}
+    live_rngs, _ = _unique_rngs(session)
+    for holder, state in zip(live_rngs, snap["rngs"]):
+        _restore_rng(holder, state)
+    session.turn_number = snap["turn_number"]
+    session.active_player = snap["active_player"]
+    session.phase = snap["phase"]
+    session.winner = snap["winner"]
+    session.history_sequence = snap["history_sequence"]
+    session.bot_is_human = snap["bot_is_human"]
+    session.record_history = snap["record_history"]
+    _restore_market(session.market, snap["market"], memo)
+    _restore_player(
+        session.player, snap["player"], memo, live_rngs[snap["player_rng"]]
+    )
+    _restore_player(session.bot, snap["bot"], memo, live_rngs[snap["bot_rng"]])
+    # Keep the engine's back-references consistent: sacrifice routing sends
+    # Fire Gems to the live market pile, and players draw from the live RNG.
+    session.player.market = session.market
+    session.bot.market = session.market
+    session.log = deepcopy(snap["log"])
+    session.history = deepcopy(snap["history"])
+    return session
