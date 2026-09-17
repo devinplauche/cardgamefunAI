@@ -130,6 +130,21 @@ export type SoundName =
   | 'turn'
   | 'click';
 
+/**
+ * Haptic feedback for rewarding moments. navigator.vibrate exists on
+ * Android Chrome and a few others; iOS Safari silently ignores it.
+ * Always a safe no-op where unsupported - haptics must never break the game.
+ */
+export function buzz(pattern: number | number[]): void {
+  try {
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      navigator.vibrate(pattern);
+    }
+  } catch {
+    /* haptics must never break the game */
+  }
+}
+
 export function playSound(name: SoundName, opt?: { combo?: number }): void {
   if (muted) return;
   const c = ac();

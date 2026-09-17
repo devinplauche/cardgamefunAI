@@ -9,7 +9,7 @@ import type {
   PlayerView,
 } from './types';
 import { CardArtwork } from './CardArtwork';
-import { playSound, unlockAudio, isMuted, setMuted } from './juice';
+import { playSound, unlockAudio, isMuted, setMuted, buzz } from './juice';
 import {
   HistoryInspector,
   LogList,
@@ -45,7 +45,7 @@ export interface TableHandlers {
 
 interface Props extends TableHandlers {
   /** Live game meta the table needs: history for replay, invite code for the waiting room. */
-  game: { history?: HistoryFrame[]; inviteCode?: string };
+  game: { history?: HistoryFrame[]; inviteCode?: string; gameId?: string };
   /** What's on screen: the live game or a history replay frame. */
   state: GameStateCore;
   yourSide: 'player' | 'bot';
@@ -526,12 +526,66 @@ export function GameTable(props: Props) {
   useEffect(() => {
     if (isMyTurn && !prevMyTurn.current && !winner) playSound('turn');
     prevMyTurn.current = isMyTurn;
-    if (winner && !prevWinnerRef.current && winner === yourSide) playSound('win');
+    if (winner && !prevWinnerRef.current && winner === yourSide) {
+      playSound('win');
+      buzz([70, 90, 70, 90, 140]);
+    }
     prevWinnerRef.current = winner;
   }, [isMyTurn, winner, yourSide]);
+  // Connectivity: the net module dispatches `hr:net` with
+  // { online: boolean }; the top-bar dot mirrors it. Taps that need the
+  // network check needOnline() first so a dead radio surfaces a plain-words
+  // notice instead of spinning until the request times out.
+  const [online, setOnline] = useState(
+    () => typeof navigator === 'undefined' || navigator.onLine,
+  );
+  const onlineRef = useRef(online);
+  useEffect(() => {
+    const onNet = (event: Event) => {
+      const detail = (event as CustomEvent<{ online?: boolean }>).detail;
+      const next = typeof detail?.online === 'boolean' ? detail.online : true;
+      onlineRef.current = next;
+      setOnline(next);
+    };
+    window.addEventListener('hr:net', onNet);
+    return () => window.removeEventListener('hr:net', onNet);
+  }, []);
+  const offlineNotice = () => {
+    fireMoment('notice', "You're offline", 'Check your connection — nothing was sent');
+  };
+  const needOnline = (): boolean => {
+    if (!onlineRef.current) {
+      offlineNotice();
+      return false;
+    }
+    return true;
+  };
+
+  // Loading skeleton: a refresh that takes longer than ~1s shouldn't read
+  // as a frozen board. Cover the table with pulsing placeholders until the
+  // new state lands. Skipped while the bot streams its turn - the action
+  // banners already narrate that busy state.
+  const skeletonArmed = busy && !props.botBanner;
+  const [showSkeleton, setShowSkeleton] = useState(false);
+  useEffect(() => {
+    if (!skeletonArmed) {
+      setShowSkeleton(false);
+      return;
+    }
+    const t = window.setTimeout(() => setShowSkeleton(true), 1000);
+    return () => window.clearTimeout(t);
+  }, [skeletonArmed]);
+
+  // Undo is multiplayer-only: POST /api/games/{gameId}/undo. The game prop
+  // carries gameId for human games; bot mode passes a bare { history },
+  // so the button hides there.
+  const gameId = game.gameId ?? null;
+  const [undoing, setUndoing] = useState(false);
+
   const canInteract = canMutate && isMyTurn && !winner && !busy;
 
   const handlePlayCard = (card: CardView) => {
+    if (!needOnline()) return;
     if (!canInteract || !phaseAllows(phase, 'play')) return;
     // Base-effect stuns (Fire Bomb) pick a target at play time. Ally-gated
     // stuns (Death Threat, Hit Job) carry ally_faction - their target is
@@ -544,6 +598,7 @@ export function GameTable(props: Props) {
   };
 
   const handleBuyCard = (index: number, cost: number) => {
+    if (!needOnline()) return;
     if (!canInteract || !phaseAllows(phase, 'buy') || cost > me.gold) return;
     // Optimistic juice: the tap is the reward. Legality is already gated
     // above, so a false fanfare is all but impossible.
@@ -551,6 +606,7 @@ export function GameTable(props: Props) {
     if (card && cost >= 5) {
       fireMoment('bigbuy', `🔥 ${card.name} recruited!`, `${cost} gold of pure power`);
       playSound('bigbuy');
+      buzz([20, 60, 40]);
       setShake('soft');
     } else {
       playSound('buy');
@@ -607,6 +663,7 @@ export function GameTable(props: Props) {
   };
 
   const handlePrimary = () => {
+    if (!needOnline()) return;
     if (!(phase === 'combat' || phase === 'main')) {
       props.onAdvance();
       return;
@@ -619,6 +676,33 @@ export function GameTable(props: Props) {
     }
     setConfirmEndTurn(null);
     props.onEndTurn();
+  };
+
+  // api.undo is the sibling agent's contract: POST /api/games/{gameId}/undo,
+  // resolving to the post-undo game state. Dynamically imported so this
+  // module also compiles before that export lands; a missing export
+  // degrades to the same plain-words notice as any other undo failure.
+  async function undoGame(gid: string): Promise<GameStateCore> {
+    const api = await import('./api');
+    const undo = (api as unknown as { undo?: (gameId: string) => Promise<GameStateCore> }).undo;
+    if (typeof undo !== 'function') throw new Error('Undo is not available in this build.');
+    return undo(gid);
+  }
+
+  const handleUndo = () => {
+    if (!gameId || undoing) return;
+    if (!needOnline()) return;
+    setUndoing(true);
+    void undoGame(gameId)
+      .then(() => {
+        // The undo response is the post-undo state; pull it through the
+        // standard refresh path so the owner applies it authoritatively.
+        props.onRefresh();
+      })
+      .catch((error: unknown) => {
+        fireMoment('notice', 'Undo failed', error instanceof Error ? error.message : 'Nothing to undo.');
+      })
+      .finally(() => setUndoing(false));
   };
 
   // --- champion actions for the player's own board (mirrors BoardColumn) ---
@@ -666,7 +750,10 @@ export function GameTable(props: Props) {
           key: `${champion.instanceId}-${kind}`,
           label: `Expend: ${OR_CHOICE_LABEL[kind] ?? kind}`,
           disabled: champion.exhausted,
-          onAction: () => props.onExpend(champion.instanceId, undefined, kind),
+          onAction: () => {
+            if (!needOnline()) return;
+            props.onExpend(champion.instanceId, undefined, kind);
+          },
         });
       }
     } else {
@@ -676,6 +763,7 @@ export function GameTable(props: Props) {
         detail: !canExpend ? 'Not your turn or wrong phase' : champion.exhausted ? 'Already spent' : undefined,
         disabled: !canExpend || champion.exhausted,
         onAction: () => {
+          if (!needOnline()) return;
           // Only base-effect stuns pick a target when expended; ally-gated
           // stuns wait for the Ally button above.
           if (champion.effects.stun && !champion.effects.ally_faction && stunCandidates.length > 0) {
@@ -701,14 +789,16 @@ export function GameTable(props: Props) {
           key: `${champion.instanceId}-sac-${action.sacrificeZone}-${action.sacrificeIndex}`,
           label: action.label,
           disabled: champion.exhausted,
-          onAction: () =>
+          onAction: () => {
+            if (!needOnline()) return;
             props.onExpend(
               champion.instanceId,
               undefined,
               undefined,
               (action.sacrificeIndex as number | undefined) ?? undefined,
               (action.sacrificeZone as string | undefined) ?? 'hand',
-            ),
+            );
+          },
         });
       }
     }
@@ -759,6 +849,7 @@ export function GameTable(props: Props) {
   // Attack with impact: face hits get a damage floater, shake and thud;
   // champion kills are celebrated by the board-diff effect above.
   const juicyAttack = (target: 'player' | 'champion', championId?: string) => {
+    if (!needOnline()) return;
     if (target === 'player') {
       addFloater(`−${me.combat}`);
       setShake('soft');
@@ -799,6 +890,7 @@ export function GameTable(props: Props) {
   // fire immediately.
   // Ally trigger with the dopamine hit: banner + zap sound, then the action.
   const juicyTriggerAlly = (cardId: string, stunTargetIndex?: number) => {
+    if (!needOnline()) return;
     const card =
       me.playedThisTurn.find((c) => c.id === cardId) ??
       me.board.find((c) => c.id === cardId) ??
@@ -806,6 +898,7 @@ export function GameTable(props: Props) {
     const name = card?.name ?? 'Ally';
     fireMoment('ally', `⚡ ${name}!`, 'Ally ability triggered');
     playSound('ally');
+    buzz([25, 40, 25]);
     props.onTriggerAlly(cardId, stunTargetIndex);
   };
 
@@ -845,6 +938,12 @@ export function GameTable(props: Props) {
         )}
         <span className="table-title"><span aria-hidden="true">♜</span> Hero Realms</span>
         <div className="table-top-actions">
+          <span
+            className={`net-dot${online ? ' is-online' : ' is-offline'}`}
+            role="status"
+            aria-label={online ? 'Connected' : 'Offline'}
+            title={online ? 'Connected' : 'Offline — game actions need a connection'}
+          />
           <button
             className="icon-button"
             onClick={() => {
@@ -986,6 +1085,29 @@ export function GameTable(props: Props) {
       ) : null}
       {props.botBanner}
 
+      {/* slow-refresh skeleton: pulsing placeholders so a >1s load never
+          reads as a frozen board */}
+      {showSkeleton ? (
+        <div className="skeleton-overlay" aria-hidden="true">
+          <div className="skel skel-bar" />
+          <div className="skel-row">
+            <span className="skel skel-card" />
+            <span className="skel skel-card" />
+            <span className="skel skel-card" />
+            <span className="skel skel-card" />
+            <span className="skel skel-card" />
+          </div>
+          <div className="skel skel-banner" />
+          <div className="skel-row">
+            <span className="skel skel-card" />
+            <span className="skel skel-card" />
+            <span className="skel skel-card" />
+            <span className="skel skel-card" />
+          </div>
+          <div className="skel skel-bar" />
+        </div>
+      ) : null}
+
       {/* player champions */}
       <section className="player-champs" aria-label="Your champions">
         <div className="champ-strip">
@@ -1010,7 +1132,9 @@ export function GameTable(props: Props) {
                 key={`${card.id}-sac-${i}`}
                 className="sac-chip"
                 disabled={!canInteract}
-                onClick={() => props.onSacrifice(card.id)}
+                onClick={() => {
+                  if (needOnline()) props.onSacrifice(card.id);
+                }}
               >
                 Sac {card.name} +{card.effects.sacrifice_combat as number}⚔
               </button>
@@ -1095,6 +1219,17 @@ export function GameTable(props: Props) {
           🗑 {me.discardCount}
         </button>
         <div className="player-bar-actions">
+          {gameId ? (
+            <button
+              className="table-button undo-button"
+              disabled={!canInteract || undoing}
+              onClick={handleUndo}
+              title="Undo your last action"
+              aria-label="Undo your last action"
+            >
+              ↩ Undo
+            </button>
+          ) : null}
           <button
             className="table-button"
             disabled={!canAttackButton}
@@ -1111,7 +1246,9 @@ export function GameTable(props: Props) {
             <button
               className="table-button"
               disabled={!canInteract || !phaseAllows(phase, 'play')}
-              onClick={props.onPlayAll}
+              onClick={() => {
+                if (needOnline()) props.onPlayAll();
+              }}
             >
               Play all ({autoPlayCount})
             </button>
@@ -1133,7 +1270,9 @@ export function GameTable(props: Props) {
           kind={pendingChoice.kind ?? ''}
           source={pendingChoice.source}
           remaining={typeof pendingChoice.remaining === 'number' ? pendingChoice.remaining : 1}
-          onResolve={(candidateIndex) => props.onResolveChoice(candidateIndex)}
+          onResolve={(candidateIndex) => {
+            if (needOnline()) props.onResolveChoice(candidateIndex);
+          }}
         />
       ) : null}
 
@@ -1167,6 +1306,7 @@ export function GameTable(props: Props) {
             onAction: () => {
               const target = stunPicker;
               setStunPicker(null);
+              if (!needOnline()) return;
               if (target.kind === 'card') props.onPlay(target.id, index);
               else if (target.kind === 'champion') props.onExpend(target.id, index);
               else juicyTriggerAlly(target.id, index);
@@ -1191,6 +1331,7 @@ export function GameTable(props: Props) {
               key: 'end-anyway',
               label: 'End turn anyway',
               onAction: () => {
+                if (!needOnline()) return;
                 setWarnedTurn(`${state.turnNumber}:${yourSide}`);
                 props.onEndTurn();
               },
@@ -1232,7 +1373,7 @@ export function GameTable(props: Props) {
             <p className={`status-chip ${status.tone}`}>{isReplayMode ? 'Replay mode' : status.message}</p>
             <p className="phase-copy">{phaseLabel}</p>
             <div className="info-actions">
-              <button className="secondary-button" onClick={() => { setInfoOpen(false); props.onRefresh(); }} disabled={busy}>Refresh</button>
+              <button className="secondary-button" onClick={() => { if (!needOnline()) return; setInfoOpen(false); props.onRefresh(); }} disabled={busy}>Refresh</button>
               {props.onExit ? (
                 <button className="secondary-button" onClick={() => { setInfoOpen(false); props.onExit?.(); }}>Lobby</button>
               ) : null}

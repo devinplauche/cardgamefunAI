@@ -1874,3 +1874,57 @@ button:not(:disabled):active {
   text-overflow: ellipsis;
   color: rgba(240, 232, 216, 0.75);
 }
+
+/* ---- UX robustness: connection dot, notices, skeletons, undo ---- */
+
+/* top-bar connectivity dot: green when online, blinking red when offline */
+.net-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  align-self: center; flex: none;
+  background: #8fd694;
+  box-shadow: 0 0 6px rgba(143, 214, 148, 0.8);
+}
+.net-dot.is-offline {
+  background: #ef476f;
+  box-shadow: 0 0 6px rgba(239, 71, 111, 0.8);
+  animation: net-blink 1.2s ease-in-out infinite;
+}
+@keyframes net-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* plain-words notices reuse the juice banner hook, with quieter styling */
+.juice-notice .juice-title { font-size: 17px; font-weight: 700; }
+.juice-notice .juice-sub { font-size: 12px; }
+
+/* loading skeleton: pulsing placeholders while a refresh takes >1s, so
+   a slow load never reads as a frozen board */
+.skeleton-overlay {
+  position: absolute; inset: 0; z-index: 45;
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 64px 14px 14px;
+  background: rgba(18, 14, 28, 0.9);
+  pointer-events: none;
+}
+.skel {
+  border-radius: 8px;
+  background: linear-gradient(100deg, rgba(255, 255, 255, 0.05) 40%, rgba(255, 255, 255, 0.13) 50%, rgba(255, 255, 255, 0.05) 60%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s linear infinite;
+}
+@keyframes skel-shimmer {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
+}
+.skel-row { display: flex; gap: 8px; justify-content: center; }
+.skel-card { width: clamp(56px, 15.5vw, 74px); aspect-ratio: 5 / 7; }
+.skel-bar { height: 40px; }
+.skel-banner { height: 26px; width: 64%; margin: 0 auto; }
+
+/* undo stays compact so it fits the existing no-scroll player bar */
+.table-button.undo-button { padding: 10px 10px; font-size: 13px; }
+@media (max-width: 380px) {
+  .table-button { padding: 10px 10px; font-size: 13px; }
+  .table-button.undo-button { padding: 10px 8px; font-size: 12px; }
+}
