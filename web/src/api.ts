@@ -4,21 +4,48 @@ import { readBotStream } from './botStream';
 
 const API_BASE = '';
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-    ...init,
-  });
+// A response lost in transit (dead phone radio, dropped connection) must
+// never hang the UI: every game action sets `busy`, which gates all input,
+// so a hung fetch looks exactly like a frozen game. 30s is generous for a
+// Cloud Run cold start. The bot-turn stream uses its own fetch/signal and
+// is unaffected.
+const REQUEST_TIMEOUT_MS = 30_000;
 
-  const payload = await response.json().catch(() => null);
-  if (!response.ok) {
-    const message = payload && typeof payload.error === 'string' ? payload.error : response.statusText;
-    throw new Error(message || 'Request failed');
+async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
+  // A caller-provided signal still aborts the request.
+  const callerSignal = init?.signal;
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort();
+    else callerSignal.addEventListener('abort', () => controller.abort(), { once: true });
   }
-  return payload as T;
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+      ...init,
+      signal: controller.signal,
+    });
+
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      const message = payload && typeof payload.error === 'string' ? payload.error : response.statusText;
+      throw new Error(message || 'Request failed');
+    }
+    return payload as T;
+  } catch (error) {
+    if (timedOut) throw new Error('The request timed out. Check your connection and try again.');
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 export async function createSession(input: { seed: number; algorithm: string; budgetMs: number }): Promise<GameState> {
