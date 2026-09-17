@@ -50,6 +50,10 @@ export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: false,
   workers: 1,
+  // Pre-suite health check: verifies the backend's debug-setup rig endpoint
+  // is alive before any test runs. A dead/misconfigured backend aborts the
+  // whole run with one clear line instead of every test timing out.
+  globalSetup: './tests/e2e/global-setup.ts',
   timeout: 60_000,
   expect: { timeout: 10_000 },
   reporter: [['list'], ['json', { outputFile: 'tests/e2e/results.json' }]],

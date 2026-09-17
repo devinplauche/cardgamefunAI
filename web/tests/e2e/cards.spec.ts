@@ -50,8 +50,11 @@ const USER = `e2ecards_${Date.now().toString(36)}`;
 const PASS = 'e2e-cards-pass';
 
 async function api<T>(p: string, init?: RequestInit, cookie?: string): Promise<{ status: number; body: T }> {
+  // Fail fast: a hung backend must surface as an error now, not as a
+  // 60s test timeout later.
   const res = await fetch(`${BASE}${p}`, {
     ...init,
+    signal: AbortSignal.timeout(30_000),
     headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}), ...(init?.headers ?? {}) },
   });
   const body = (await res.json().catch(() => null)) as T;
@@ -115,7 +118,15 @@ async function riggedSessionState(cardName: string): Promise<any> {
   return setup.body;
 }
 
-async function installRig(page: Page, cardName: string) {
+// Fail-fast rig handle: the route handler below runs detached from the
+// test, so a throw inside it can't reach the test directly. The handler
+// records the REAL rig error here (instead of swallowing it behind a
+// generic 500), and the test rethrows it right after the session request
+// resolves — no test ever runs against an un-rigged backend.
+type Rig = { error: Error | null };
+
+async function installRig(page: Page, cardName: string): Promise<Rig> {
+  const rig: Rig = { error: null };
   await page.route('**/api/sessions', async (route: Route) => {
     if (route.request().method() !== 'POST') {
       await route.continue();
@@ -125,13 +136,17 @@ async function installRig(page: Page, cardName: string) {
       const state = await riggedSessionState(cardName);
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(state) });
     } catch (err) {
+      rig.error = err instanceof Error ? err : new Error(String(err));
+      // Fulfill (don't hang) so the page's request resolves; the test
+      // throws rig.error immediately instead of timing out on locators.
       await route.fulfill({
         status: 500,
         contentType: 'application/json',
-        body: JSON.stringify({ error: `rig failed: ${err}` }),
+        body: JSON.stringify({ error: rig.error.message }),
       });
     }
   });
+  return rig;
 }
 
 type ConsoleIssue = string;
@@ -268,12 +283,22 @@ for (const card of CARDS) {
   test(`${card.name} — GUI smoke`, async ({ page }) => {
     const { issues } = watchConsole(page);
     await plantAuthCookie(page);
-    await installRig(page, card.name);
+    const rig = await installRig(page, card.name);
 
     await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+    // Wait for the rigged session request BEFORE clicking: waitForResponse
+    // only sees responses that arrive after it starts listening.
+    const sessionResp = page.waitForResponse(
+      (r) => r.url().includes('/api/sessions') && r.request().method() === 'POST',
+      { timeout: 30_000 },
+    );
     // Lobby -> Vs Bot tab. The bot game auto-starts a match, which our
     // route interception fulfills with the rigged session.
     await page.getByRole('button', { name: 'Vs Bot' }).click();
+    await sessionResp.catch(() => {});
+    // Fail fast with the REAL rig error (e.g. "debug-setup failed: ...")
+    // instead of burning 20s timeouts on the card locators below.
+    if (rig.error) throw rig.error;
 
     const handCard = page.locator('.hand-zone').getByRole('button', { name: card.name, exact: true });
     await expect(handCard, `card "${card.name}" dealt to hand`).toBeVisible({ timeout: 20_000 });
