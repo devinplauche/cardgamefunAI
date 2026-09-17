@@ -24,6 +24,10 @@ from web.session import create_session
 
 SESSION_LOCKS = defaultdict(Lock)
 GAME_LOCKS = defaultdict(Lock)
+# Single-step Undo: game_id -> pre-action snapshot dict (JSON-serializable).
+# Set before each player mutation, cleared when the turn ends (end-turn
+# commits the turn) and consumed by POST /api/games/<id>/undo.
+UNDO_SNAPSHOTS: dict[str, dict] = {}
 COOKIE_NAME = "hr_session"
 REGISTER_ENABLED = os.environ.get("HR_REGISTER_ENABLED", "1") == "1"
 
@@ -336,11 +340,25 @@ class Handler(BaseHTTPRequestHandler):
             if session.winner or session.active_player != side:
                 self._send(400, {"error": "It is not your turn."})
                 return
-            try:
-                self._apply_game_action(session, body.get("action", ""), body)
-            except Exception as exc:  # noqa: BLE001
-                self._send(400, {"error": str(exc)})
-                return
+            action = body.get("action", "")
+            if action == "undo":
+                snap = UNDO_SNAPSHOTS.pop(game_id, None)
+                if snap is None:
+                    self._send(409, {"error": "Nothing to undo."})
+                    return
+                game_store.restore(session, snap)
+            else:
+                snap = game_store.snapshot(session)
+                try:
+                    self._apply_game_action(session, action, body)
+                except Exception as exc:  # noqa: BLE001
+                    self._send(400, {"error": str(exc)})
+                    return
+                # Ending the turn commits it: no undo across turns.
+                if action == "end-turn":
+                    UNDO_SNAPSHOTS.pop(game_id, None)
+                else:
+                    UNDO_SNAPSHOTS[game_id] = snap
             if session.winner:
                 game_store.finish_game(game_id)
             game_store.save_game(game_id, session, bump_turn=True)
@@ -582,6 +600,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "That game already started."})
                 return
             self._send(200, {"id": game["id"], "inviteCode": game["invite_code"]})
+            return
+
+        if (
+            len(parts) == 4
+            and parts[:2] == ["api", "games"]
+            and parts[3] == "undo"
+        ):
+            user = self._require_user()
+            if user is None:
+                return
+            body["action"] = "undo"
+            self._handle_game_action(parts[2], user, body)
             return
 
         if (
