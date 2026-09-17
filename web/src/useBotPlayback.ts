@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { streamBotTurn } from "./api";
+import { isAbortError, loadSession, streamBotTurn } from "./api";
 import type { GameState, GameStateCore, HistoryFrame } from "./types";
 
 export interface BotActionFrame {
@@ -43,35 +43,58 @@ export function useBotPlayback() {
     let before: GameStateCore = session;
     let number = 0;
     try {
-      return await streamBotTurn(
-        session.sessionId,
-        algorithm,
-        budget,
-        async (frame) => {
-          if (abort.signal.aborted)
-            throw new DOMException("Aborted", "AbortError");
-          latest.current = frame.state;
-          setAction({ frame, before, number: ++number });
-          before = frame.state;
-          // Readable pacing is independent of the bot's search budget. The stream
-          // continues arriving while these presentation frames are displayed.
-          if (!skipRef.current) {
-            await new Promise<void>((resolve) => {
-              const finish = () => {
-                window.clearTimeout(timer);
-                release.current = null;
-                resolve();
-              };
-              const timer = window.setTimeout(
-                finish,
-                frame.kind === "turn" ? 300 : 1000,
-              );
-              release.current = finish;
-            });
+      try {
+        return await streamBotTurn(
+          session.sessionId,
+          algorithm,
+          budget,
+          async (frame) => {
+            if (abort.signal.aborted)
+              throw new DOMException("Aborted", "AbortError");
+            latest.current = frame.state;
+            setAction({ frame, before, number: ++number });
+            before = frame.state;
+            // Readable pacing is independent of the bot's search budget. The stream
+            // continues arriving while these presentation frames are displayed.
+            if (!skipRef.current) {
+              await new Promise<void>((resolve) => {
+                const finish = () => {
+                  window.clearTimeout(timer);
+                  release.current = null;
+                  resolve();
+                };
+                const timer = window.setTimeout(
+                  finish,
+                  frame.kind === "turn" ? 300 : 1000,
+                );
+                release.current = finish;
+              });
+            }
+          },
+          abort.signal,
+        );
+      } catch (error) {
+        // The backend finishes a committed bot turn even if its viewer
+        // disconnects, and persists it. If the stream broke mid-turn,
+        // re-fetch: when the turn completed server-side, continue with the
+        // fresh state instead of leaving a half-played turn stalled.
+        if (!abort.signal.aborted && !isAbortError(error)) {
+          try {
+            const fresh = await loadSession(session.sessionId);
+            latest.current = fresh;
+            if (
+              fresh.winner ||
+              fresh.activePlayer !== "bot" ||
+              fresh.turnNumber !== session.turnNumber
+            ) {
+              return fresh;
+            }
+          } catch {
+            // The resume fetch failed too; surface the original stream error.
           }
-        },
-        abort.signal,
-      );
+        }
+        throw error;
+      }
     } finally {
       controller.current = null;
       if (!abort.signal.aborted) {
