@@ -212,6 +212,9 @@ def _copy_player(player: HRPlayer, rng: random.Random) -> HRPlayer:
     # built and discarded.
     clone.effect_log = []
     clone.log_effects = False
+    # A new HRPlayer attribute has to be copied here explicitly - see the
+    # market back-reference comment below. Clones simulate, never ask.
+    clone.is_human = player.is_human
     clone.actions_played = player.actions_played
     clone.cards_bought = player.cards_bought
     clone.next_buy_to_hand = player.next_buy_to_hand
@@ -358,6 +361,10 @@ class GameSession:
             card.id for card in self._normal_market_cards
         )
         self.rng = random.Random(self.seed)
+        # Incremented each time a bot turn pauses for a human choice (a
+        # forced discard the victim must answer). Surfaced as botPauseCount
+        # so the client resumes the turn after the choice is answered.
+        self.bot_pause_count = 0
         self.player = HRPlayer("Player", self.rng)
         self.bot = HRPlayer("Bot", self.rng)
         self.player.setup_starting_deck()
@@ -370,6 +377,12 @@ class GameSession:
         # Back-reference so sacrifice routing can return Fire Gems to the
         # pile (mirrors HRGame); expend_champion's sacrifice paths call
         # _sacrifice_to_pile without an explicit market.
+        # The player seat is always human; the bot seat is human only in
+        # multiplayer, where a second person drives it through the web UI.
+        # _force_opponent_discard reads this to decide whether a forced
+        # discard becomes a pending choice the victim answers.
+        self.player.is_human = True
+        self.bot.is_human = self.bot_is_human
         self.player.market = self.market
         self.bot.market = self.market
         # Sacrifice/discard targeting becomes a real decision rather than
@@ -417,6 +430,7 @@ class GameSession:
         clone.phase = self.phase
         clone.winner = self.winner
         clone.bot_is_human = self.bot_is_human
+        clone.bot_pause_count = getattr(self, "bot_pause_count", 0)
         clone.log = []
         clone.history = []
         clone.history_sequence = self.history_sequence
@@ -653,7 +667,18 @@ class GameSession:
             "market": _market_view(self.market),
             "legalActions": self.legal_actions()
             if (for_side is None or self.active_player == for_side)
-            else [],
+            # The seat that does NOT hold the turn gets only its own pending
+            # choices (a forced discard it must answer): everything else is
+            # suppressed, and a resolve_choice names only its own hand cards,
+            # so nothing leaks.
+            else self._pending_choice_actions(
+                self.bot if for_side == "bot" else self.player),
+            # True when the seat NOT holding the turn owes a choice. The
+            # active seat's client polls on this to refresh once answered.
+            "choicePending": bool(self._opponent().pending_choices),
+            # Incremented each time a bot turn pauses for a human choice, so
+            # the client can tell a resumed turn apart from a finished one.
+            "botPauseCount": getattr(self, "bot_pause_count", 0),
             "autoPlayCount": len(self._auto_play_cards())
             if (for_side is None or self.active_player == for_side)
             else 0,
@@ -1017,7 +1042,13 @@ class GameSession:
         return actions
 
     def resolve_choice_action(self, candidate_index: int) -> dict[str, Any]:
+        # The choice OWNER answers, which is not always the active player: a
+        # forced discard lands on the victim in the middle of the attacker's
+        # turn (Spark played by the bot pauses the bot's turn; in
+        # multiplayer the guest answers from their own seat).
         player = self._current()
+        if not player.pending_choices:
+            player = self._opponent()
         if not player.pending_choices:
             raise ValueError("No pending choice")
         choice = player.pending_choices[0]
@@ -1046,6 +1077,17 @@ class GameSession:
         pending = self._pending_choice_actions(player)
         if pending:
             return pending
+
+        # A choice owed by the OTHER seat pauses this one: the card effect
+        # has not finished resolving (a forced discard on a human victim).
+        # In bot mode the human owns that choice, so it is offered here and
+        # the bot's turn resumes once answered; in multiplayer the other
+        # human answers on their own seat and nothing is legal here.
+        opp_pending = self._pending_choice_actions(opponent)
+        if opp_pending:
+            if not self.bot_is_human and opponent is self.player:
+                return opp_pending
+            return []
 
         if self.phase == MAIN_PHASE:
             actions = (self._play_card_actions(player, opponent)
@@ -1134,6 +1176,11 @@ class GameSession:
         """
         if player.pending_choices:
             raise ValueError("Resolve the pending choice first")
+        # The other seat's unanswered choice pauses this seat too: the card
+        # effect that created it has not finished resolving (a forced
+        # discard the victim has not answered yet).
+        if self._opponent().pending_choices:
+            raise ValueError("Waiting for the other player to choose")
 
     def play_all_action(self) -> dict[str, Any]:
         if ((self.active_player == "bot" and not self.bot_is_human)

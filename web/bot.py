@@ -2106,6 +2106,13 @@ def run_bot_turn(session, budget_ms: int = 60, algorithm: str = "mcts") -> dict[
     start = perf_counter()
 
     while session.active_player == "bot" and not session.winner:
+        # A forced discard can land on the human mid-bot-turn (Spark and
+        # friends defer to a pending choice the victim answers). Pause the
+        # turn here: the client surfaces the choice, and the turn resumes
+        # when it is answered. The bot never answers for the human.
+        if session.player.pending_choices:
+            session.bot_pause_count = getattr(session, "bot_pause_count", 0) + 1
+            break
         actions = legal_actions(session)
         if not actions:
             session.end_turn()
@@ -2137,7 +2144,10 @@ def run_bot_turn(session, budget_ms: int = 60, algorithm: str = "mcts") -> dict[
         if len(actions_taken) > 20:
             break
 
-    if session.active_player == "bot" and not session.winner:
+    # A paused turn (human choice pending) must NOT end: ending it would
+    # discard the human's hand and pass the turn with the choice unanswered.
+    if (session.active_player == "bot" and not session.winner
+            and not session.player.pending_choices):
         session.end_turn()
 
     total_elapsed = int((perf_counter() - start) * 1000)

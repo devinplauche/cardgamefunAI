@@ -844,7 +844,10 @@ export function GameTable(props: Props) {
     () => state.legalActions.filter((a) => a.type === 'resolve_choice'),
     [state.legalActions],
   );
-  const pendingChoice = canInteract && choiceActions.length > 0 ? choiceActions[0] : null;
+  const pendingChoice = choiceActions.length > 0 ? choiceActions[0] : null;
+  // The server only offers resolve_choice actions to the choice's owner,
+  // so the sheet is safe to show regardless of whose turn the UI thinks it
+  // is: a forced discard arrives mid-attacker's-turn, not on your turn.
 
   // Attack with impact: face hits get a damage floater, shake and thud;
   // champion kills are celebrated by the board-diff effect above.
@@ -923,9 +926,15 @@ export function GameTable(props: Props) {
     ? 'Waiting for opponent'
     : winner
       ? 'Match over'
-      : isMyTurn
-        ? `Your turn · Turn ${state.turnNumber}`
-        : `${opponentName}'s turn · Turn ${state.turnNumber}`;
+      : pendingChoice && !isMyTurn
+        // A forced discard you must answer, mid-attacker's-turn.
+        ? 'Your call — choose a card'
+        : isMyTurn
+          ? state.choicePending
+            // You forced a discard; the other seat is choosing.
+            ? 'Waiting for their discard…'
+            : `Your turn · Turn ${state.turnNumber}`
+          : `${opponentName}'s turn · Turn ${state.turnNumber}`;
 
   return (
     <div className={`game-table${shake ? ` shake-${shake}` : ''}`}>

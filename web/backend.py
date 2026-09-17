@@ -337,16 +337,30 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "This game is over."})
                 return
             session = game["session"]
-            if session.winner or session.active_player != side:
+            action = body.get("action", "")
+            # A forced discard lands on the victim mid-attacker's-turn: the
+            # victim answers it from their own seat, out of turn. Only the
+            # choice owner may do this, and it never touches undo state.
+            out_of_turn_choice = (
+                action == "resolve-choice"
+                and session.active_player != side
+                and (session.player if side == "player" else session.bot).pending_choices
+            )
+            if session.winner or (session.active_player != side and not out_of_turn_choice):
                 self._send(400, {"error": "It is not your turn."})
                 return
-            action = body.get("action", "")
             if action == "undo":
                 snap = UNDO_SNAPSHOTS.pop(game_id, None)
                 if snap is None:
                     self._send(409, {"error": "Nothing to undo."})
                     return
                 game_store.restore(session, snap)
+            elif out_of_turn_choice:
+                try:
+                    self._apply_game_action(session, action, body)
+                except Exception as exc:  # noqa: BLE001
+                    self._send(400, {"error": str(exc)})
+                    return
             else:
                 snap = game_store.snapshot(session)
                 try:

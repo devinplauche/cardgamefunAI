@@ -91,9 +91,11 @@ export function HumanGame({ gameId, user, onExit, onSignOut }: Props) {
     };
   }, [gameId]);
 
-  // Poll while waiting for the opponent (or for them to join at all).
+  // Poll while waiting for the opponent (or for them to join at all) - and
+  // while waiting for them to answer a forced discard on your turn, so the
+  // board refreshes the moment they choose.
   useEffect(() => {
-    if (!game || winner || (!waiting && isMyTurn)) return;
+    if (!game || winner || (!waiting && isMyTurn && !game.choicePending)) return;
     const timer = setInterval(async () => {
       try {
         const res = await loadGame(gameId, game.turnCount);
@@ -107,7 +109,10 @@ export function HumanGame({ gameId, user, onExit, onSignOut }: Props) {
   }, [gameId, game, winner, waiting, isMyTurn]);
 
   async function act(action: string, params: Record<string, unknown> = {}, okMessage?: string) {
-    if (!canMutate || !game || game.activePlayer !== yourSide) return;
+    if (!canMutate || !game) return;
+    // A forced discard is answered out of turn, from the victim's seat; the
+    // server only accepts resolve-choice for the choice's owner.
+    if (action !== 'resolve-choice' && game.activePlayer !== yourSide) return;
     await refreshFrom(gameAction(gameId, action, params), okMessage);
   }
 

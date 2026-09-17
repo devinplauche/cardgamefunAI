@@ -230,6 +230,13 @@ class HRPlayer:
         # existing caller (heuristics, MCTS, the v1 RL env) is unchanged.
         self.pending_choices: list[dict] = []
         self.defer_choices: bool = False
+        # True when this seat is driven by a person through the web UI.
+        # Forced opponent discards are the one effect that targets the OTHER
+        # seat: when the victim is human, the discard becomes a pending
+        # choice they answer instead of _find_worst_idx answering for them.
+        # Defaults False so simulations, training, and bots keep the inline
+        # heuristic; web/session.py flips it on for live human seats.
+        self.is_human: bool = False
         # Human-readable record of effects the engine resolved *itself* during
         # the current action - sacrifices, forced discards, ally payouts.
         # Playing the UI found Lys silently removing a card from hand and Fire
@@ -766,10 +773,21 @@ def auto_resolve_choices(player: HRPlayer, opponent: Optional[HRPlayer] = None):
             player.pending_choices.remove(choice)
 
 
-def _force_opponent_discard(opponent: HRPlayer, n: int = 1, forcing_player: Optional[HRPlayer] = None):
+def _force_opponent_discard(opponent: HRPlayer, n: int = 1, forcing_player: Optional[HRPlayer] = None,
+                         source: Optional[str] = None):
     """Opponent discards n of their worst cards (opponent chooses to minimize
     harm to themselves - from their own perspective, `forcing_player` is
-    their opponent)."""
+    their opponent).
+
+    A human victim in a live web session answers through a pending choice
+    instead, so the player picks which card to discard. Everyone else -
+    bots, MCTS rollouts (log_effects off), training - keeps the inline
+    worst-card heuristic exactly as before.
+    """
+    if defer_targeted_discard(opponent):
+        if opponent.hand:
+            _enqueue_choice(opponent, "discard", n, "hand", source=source)
+        return
     n = min(n, len(opponent.hand))
     for _ in range(n):
         idx = _find_worst_idx(opponent.hand, opponent, forcing_player)
@@ -778,6 +796,17 @@ def _force_opponent_discard(opponent: HRPlayer, n: int = 1, forcing_player: Opti
         # Logged against the victim: it is *their* card and, under the printed
         # rules, their choice. Neither player was told this happened.
         opponent.note(f"Discarded {dumped.name} (forced)")
+
+
+def defer_targeted_discard(victim: HRPlayer) -> bool:
+    """Whether a forced discard on `victim` should become a pending choice.
+
+    All three must hold: the seat defers choices (live web sessions), the
+    engine is narrating rather than simulating (rollout clones have
+    log_effects off), and the seat is driven by a human.
+    """
+    return bool(victim.defer_choices and victim.log_effects
+                and getattr(victim, "is_human", False))
 
 
 class HRMarket:
@@ -1163,13 +1192,13 @@ def play_card(player: HRPlayer, card: HRCard, market: HRMarket,
             f"Sacrificed {card.name} for {sac_combat} combat")
     sac_od = card.get("sacrifice_opponent_discard", 0)
     if sac_od > 0 and opponent and _should_self_sacrifice(player, opponent):
-        _force_opponent_discard(opponent, sac_od, player)
+        _force_opponent_discard(opponent, sac_od, player, source=card.name)
         sacrificed = True
 
     # ---- Opponent discard (always, if card has it) ----
     od = card.get("opponent_discard", 0)
     if od > 0 and opponent:
-        _force_opponent_discard(opponent, od, player)
+        _force_opponent_discard(opponent, od, player, source=card.name)
 
     # ---- Generic sacrifice from hand/discard (Dark Reward, Death Touch, etc.) ----
     # Optional ("you may sacrifice a card in your hand or discard pile") -
@@ -1445,7 +1474,7 @@ def expend_champion(player: HRPlayer, bc: BoardChampion, opponent: HRPlayer = No
     # ---- Opponent discard on expend (Torgen Rocksplitter) ----
     od = card.get("opponent_discard", 0)
     if od > 0 and opponent:
-        _force_opponent_discard(opponent, od, player)
+        _force_opponent_discard(opponent, od, player, source=card.name)
 
     # ---- Reanimate on expend (Varrick): take a champion from discard to the
     # top of the deck. The player chooses which champion; the engine's
@@ -1639,7 +1668,7 @@ def _apply_ally_effects(player: HRPlayer, card: HRCard, opponent: Optional[HRPla
             player.next_buy_to_top = True
     ally_od = card.get("ally_opponent_discard", 0)
     if ally_od > 0 and opponent:
-        _force_opponent_discard(opponent, ally_od, player)
+        _force_opponent_discard(opponent, ally_od, player, source=card.name)
     if card.get("stun", False) and opponent:
         _stun_champion(opponent, stun_target)
     # Once per turn: a later expend (or prepare + re-expend) of this card must

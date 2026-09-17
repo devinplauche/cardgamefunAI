@@ -145,6 +145,12 @@ export interface GameStateCore {
   legalActions: LegalAction[];
   log: LogEntry[];
   botInsight: BotInsight | null;
+  /** True when the seat NOT holding the turn owes a choice (a forced
+   * discard the victim must answer mid-attacker's-turn). */
+  choicePending?: boolean;
+  /** Incremented each time a bot turn pauses for a human choice, so the
+   * client can tell a resumed turn apart from a finished one. */
+  botPauseCount?: number;
 }
 
 export interface HistoryFrame {

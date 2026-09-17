@@ -880,7 +880,11 @@ function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => v
     try {
       const next = await playback.run(session, algorithm, budgetMs);
       setSession(next);
-      setStatus({ tone: 'good', message: next.winner ? 'Match complete.' : 'Bot turn complete. Your move.' });
+      // A paused turn (choicePending) resumes once the human answers; it
+      // is not over, so don't claim "your move".
+      setStatus(next.choicePending
+        ? { tone: 'busy', message: 'The challenger waits for your choice…' }
+        : { tone: 'good', message: next.winner ? 'Match complete.' : 'Bot turn complete. Your move.' });
     } catch (error) {
       // Preserve the latest authoritative board on interruption; never rerun a
       // partially completed turn automatically. Refresh can recover a dropped stream.
@@ -909,8 +913,14 @@ function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => v
   }, []);
 
   useEffect(() => {
-    if (!session || busy || playback.running || session.activePlayer !== 'bot' || session.winner || isReplayMode) return;
-    const turnKey = `${session.sessionId}:${session.turnNumber}`;
+    // choicePending: the turn paused for a human discard choice. It resumes
+    // only after the choice is answered (which flips choicePending and
+    // re-runs this effect) - firing here would spin pause after pause.
+    if (!session || busy || playback.running || session.activePlayer !== 'bot' || session.winner || isReplayMode || session.choicePending) return;
+    // botPauseCount distinguishes a resumed turn (paused for a human
+    // discard choice) from the turn already attempted: answering the
+    // choice must re-fire the challenger's turn, not sit idle.
+    const turnKey = `${session.sessionId}:${session.turnNumber}:${session.botPauseCount ?? 0}`;
     if (attemptedBotTurn.current === turnKey) return;
     const timer = window.setTimeout(() => {
       attemptedBotTurn.current = turnKey;
@@ -918,7 +928,7 @@ function BotGame({ onExit, onSignOut }: { onExit: () => void; onSignOut: () => v
     }, 350);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.sessionId, session?.activePlayer, session?.turnNumber, busy, isReplayMode, playback.running]);
+  }, [session?.sessionId, session?.activePlayer, session?.turnNumber, session?.botPauseCount, session?.choicePending, busy, isReplayMode, playback.running]);
 
   // Under the main phase, advancing IS ending the turn.
   const actionLabel = (phase === 'combat' || phase === 'main') ? 'End Turn' : 'Next Phase';
