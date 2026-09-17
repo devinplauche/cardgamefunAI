@@ -107,11 +107,6 @@ def init_schema() -> None:
         except Exception as exc:  # noqa: BLE001
             if "duplicate" not in str(exc).lower() and "already exists" not in str(exc).lower():
                 raise
-            # The column is already there - but on PostgreSQL the failed
-            # ALTER aborts the whole transaction, so roll back before the
-            # statements below or they fail with InFailedSqlTransaction
-            # and the container crash-loops at startup. Harmless on SQLite.
-            conn.rollback()
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub ON users (google_sub)"
         )
