@@ -21,6 +21,23 @@ jobs:
       - name: Run test suite
         run: python -m pytest tests/ -q -p no:cacheprovider --ignore=tests/test_selfplay.py --ignore=tests/test_value_net.py
 
+  perf:
+    # Performance SLO tests: assert p95/p99 latencies for user-facing
+    # endpoints. Catches regressions like the 2026-09-17 DB connection
+    # issue (1s+ per tap from fresh Postgres handshakes). Runs against a
+    # local backend with SQLite; production with Neon should meet the
+    # same SLOs once connection pooling is in place.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install pytest
+      - name: Run perf SLO tests
+        run: python -m pytest web/tests/test_perf_slo.py -v -p no:cacheprovider
+
   frontend:
     runs-on: ubuntu-latest
     steps:
