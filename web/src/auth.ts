@@ -63,3 +63,19 @@ export async function login(username: string, password: string): Promise<User> {
 export async function logout(): Promise<void> {
   await requestJson('/api/auth/logout', { method: 'POST', body: '{}' });
 }
+
+export interface AuthConfig {
+  googleClientId: string | null;
+}
+
+export async function authConfig(): Promise<AuthConfig> {
+  return requestJson<AuthConfig>('/api/auth/config');
+}
+
+export async function googleSignIn(idToken: string): Promise<User> {
+  const payload = await requestJson<{ user: User }>('/api/auth/google', {
+    method: 'POST',
+    body: JSON.stringify({ idToken }),
+  });
+  return payload.user;
+}

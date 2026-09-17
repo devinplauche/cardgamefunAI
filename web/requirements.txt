@@ -1,6 +1,9 @@
 # Backend runtime dependencies. The game server itself is stdlib-only;
 # psycopg is needed only when DATABASE_URL points at PostgreSQL (Render).
 psycopg[binary]
+# google-auth verifies Google ID tokens for the "Sign in with Google" button
+# (POST /api/auth/google in web/backend.py).
+google-auth
 # google-cloud-storage is needed only for the nightly GCS archive
 # (web/archive.py); it is imported lazily so local dev never requires it.
 google-cloud-storage

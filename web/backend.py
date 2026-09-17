@@ -323,6 +323,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"user": user})
             return
 
+        if parsed.path == "/api/auth/config":
+            # Public config for the sign-in screen. The Google client ID is
+            # not a secret; the backend still verifies every ID token.
+            self._send(200, {
+                "googleClientId": os.environ.get("GOOGLE_OAUTH_CLIENT_ID") or None,
+            })
+            return
+
         if parsed.path == "/api/games":
             user = self._require_user()
             if user is None:
@@ -455,6 +463,42 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/auth/logout":
             auth_store.delete_token(self._cookies().get(COOKIE_NAME, ""))
             self._send_with_cookies(200, {"ok": True}, self._set_session_cookie(None))
+            return
+
+        if parsed.path == "/api/auth/google":
+            # Sign in with Google: the frontend sends the ID token (JWT) that
+            # Google Identity Services returned; we verify its signature,
+            # expiry, and audience server-side, then find or create the user.
+            id_token = (body.get("idToken") or "").strip()
+            client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
+            if not client_id:
+                self._send(501, {"error": "Google sign-in is not configured on this server."})
+                return
+            if not id_token:
+                self._send(400, {"error": "Missing Google ID token."})
+                return
+            try:
+                from google.auth.transport import requests as google_requests
+                from google.oauth2 import id_token as google_id_token
+
+                claims = google_id_token.verify_oauth2_token(
+                    id_token, google_requests.Request(), client_id
+                )
+            except Exception:
+                self._send(401, {"error": "Google sign-in failed. Please try again."})
+                return
+            if not claims.get("email_verified"):
+                self._send(401, {"error": "Google did not verify an email for this account."})
+                return
+            try:
+                user = auth_store.create_google_user(
+                    claims["sub"], claims.get("email") or "", claims.get("name") or ""
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._send(400, {"error": str(exc)})
+                return
+            token = auth_store.create_token(user["id"])
+            self._send_with_cookies(200, {"user": user}, self._set_session_cookie(token))
             return
 
         if parsed.path == "/api/games" and self.command == "POST":

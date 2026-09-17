@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     username TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
+    google_sub TEXT,
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS auth_tokens (
@@ -82,6 +83,17 @@ def init_schema() -> None:
         # sqlite3 has executescript; psycopg does not, so split manually.
         for stmt in [s for s in SCHEMA.split(";") if s.strip()]:
             conn.execute(stmt)
+        # Migration for databases created before the Google sign-in column.
+        # (SQLite cannot ADD a UNIQUE column, so the uniqueness comes from
+        # the index below on both engines.)
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN google_sub TEXT")
+        except Exception as exc:  # noqa: BLE001
+            if "duplicate" not in str(exc).lower() and "already exists" not in str(exc).lower():
+                raise
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub ON users (google_sub)"
+        )
         conn.commit()
     finally:
         conn.close()

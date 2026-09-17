@@ -62,6 +62,48 @@ def find_by_username(username: str) -> dict | None:
     )
 
 
+def find_by_google_sub(google_sub: str) -> dict | None:
+    return db.query_one(
+        f"SELECT id, username FROM users WHERE google_sub = {db.PH}", (google_sub,)
+    )
+
+
+def link_google_sub(user_id: str, google_sub: str) -> None:
+    db.execute(
+        f"UPDATE users SET google_sub = {db.PH} WHERE id = {db.PH}",
+        (google_sub, user_id),
+    )
+
+
+def create_google_user(google_sub: str, email: str, name: str) -> dict:
+    """Create an account for a Google sign-in. The email is verified by Google
+    (the caller must check the email_verified claim), so it is safe to link a
+    pre-existing password account whose username is that email."""
+    existing = find_by_google_sub(google_sub)
+    if existing:
+        return {"id": existing["id"], "username": existing["username"]}
+    if email:
+        by_email = find_by_username(email)
+        if by_email:
+            link_google_sub(by_email["id"], google_sub)
+            return {"id": by_email["id"], "username": by_email["username"]}
+    base = (email or "").split("@")[0].strip() or (name or "player").strip()
+    base = re.sub(r"[^A-Za-z0-9_.@-]", "", base)[:32] or "player"
+    username = base
+    suffix = 0
+    while find_by_username(username):
+        suffix += 1
+        username = f"{base[:28]}-{suffix}"
+    user_id = uuid.uuid4().hex
+    # Unusable password hash: Google-only accounts can never password-login.
+    db.execute(
+        f"INSERT INTO users (id, username, password_hash, google_sub, created_at) "
+        f"VALUES ({db.PH}, {db.PH}, {db.PH}, {db.PH}, {db.PH})",
+        (user_id, username, "google-oauth$" + secrets.token_hex(16), google_sub, db.now()),
+    )
+    return {"id": user_id, "username": username}
+
+
 def public_user(user_id: str) -> dict | None:
     row = db.query_one(
         f"SELECT id, username FROM users WHERE id = {db.PH}", (user_id,)
