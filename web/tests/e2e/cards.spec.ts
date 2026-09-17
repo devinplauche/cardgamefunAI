@@ -208,8 +208,15 @@ async function triggerAllyIfOffered(page: Page) {
   for (let i = 0; i < 6; i++) {
     const btn = page.locator('button.played-chip-ally').first();
     if ((await btn.count()) === 0 || !(await btn.isEnabled())) break;
+    const before = await page.locator('button.played-chip-ally').count();
     await btn.click();
-    await page.waitForTimeout(600);
+    // Wait for the trigger to fire (a button goes away) or a picker to open,
+    // instead of a fixed sleep that races the backend under load.
+    await expect(async () => {
+      const fired = (await page.locator('button.played-chip-ally').count()) < before;
+      const picker = (await page.getByRole('dialog').count()) > 0;
+      expect(fired || picker).toBe(true);
+    }).toPass({ timeout: 15_000 });
     await settleOverlays(page);
   }
 }
@@ -235,8 +242,15 @@ async function triggerChampionAllyIfOffered(page: Page, cardName: string) {
 // After playing a card, resolve whatever the engine throws at us: choice
 // sheets (discard/sacrifice/recycle/reanimate) and the stun picker. Loops
 // because resolving one sheet can reveal another.
-async function settleOverlays(page: Page) {
-  for (let i = 0; i < 6; i++) {
+async function settleOverlays(page: Page, expectLateSheet = false) {
+  // A choice sheet can open a beat AFTER the played card leaves the hand
+  // (the payload can land in a separate render), so after a play we keep
+  // polling for late-opening sheets instead of exiting on the first quiet
+  // check. Without this, the sheet opens after we've looked, blocks the
+  // next tap, and the test times out on a 60s click.
+  const deadline = Date.now() + 12_000;
+  let lastChange = Date.now();
+  for (;;) {
     let acted = false;
     if (await resolveSheet(page, 'Discard a card')) acted = true;
     else if (await resolveSheet(page, 'Sacrifice a card', true)) acted = true;
@@ -248,8 +262,18 @@ async function settleOverlays(page: Page) {
       await expect(stun).toHaveCount(0, { timeout: 10_000 });
       acted = true;
     }
-    if (!acted) break;
-    await page.waitForTimeout(400);
+    if (acted) {
+      lastChange = Date.now();
+      await page.waitForTimeout(400);
+      continue;
+    }
+    // Nothing open. If a late sheet is expected and we haven't been quiet
+    // long, keep watching; otherwise we're settled.
+    if (expectLateSheet && Date.now() - lastChange < 2000 && Date.now() < deadline) {
+      await page.waitForTimeout(250);
+      continue;
+    }
+    break;
   }
 }
 
@@ -314,22 +338,19 @@ for (const card of CARDS) {
       const partnerCard = page.locator('.hand-zone').getByRole('button', { name: partner, exact: true });
       await expect(partnerCard, `partner "${partner}" dealt to hand`).toBeVisible({ timeout: 10_000 });
       await partnerCard.click();
-      await page.waitForTimeout(800);
-      await settleOverlays(page);
+      // Wait for the play to land (the card leaves the hand) instead of a
+      // fixed sleep: under load the backend can take longer than any sleep.
+      // A choice sheet can still open a beat after the card is gone, so
+      // settleOverlays keeps watching for late sheets (expectLateSheet).
+      await expect(partnerCard, `partner "${partner}" played`).toHaveCount(0, { timeout: 15_000 });
+      await settleOverlays(page, true);
       await triggerAllyIfOffered(page);
     }
     await handCard.click();
-    await page.waitForTimeout(800);
-    await settleOverlays(page);
+    await expect(handCard, `"${card.name}" played`).toHaveCount(0, { timeout: 15_000 });
+    await settleOverlays(page, true);
     // Ally payloads never auto-fire: trigger when the UI offers it.
     await triggerAllyIfOffered(page);
-
-    // 3. The card left the hand (played, or on the board for champions).
-    const stillInHand = await page
-      .locator('.hand-zone')
-      .getByRole('button', { name: card.name, exact: true })
-      .count();
-    expect(stillInHand, `"${card.name}" should leave the hand after being played`).toBe(0);
 
     if (card.type === 'champion') {
       // 4. Champions: tap the board champion and expend it. Champions whose
@@ -344,14 +365,16 @@ for (const card of CARDS) {
       await expect(expend, 'expend action').toBeVisible({ timeout: 10_000 });
       if (await expend.isEnabled()) {
         await expend.click();
-        await page.waitForTimeout(800);
+        // Wait for the expend to land (the sheet closes; a choice sheet may
+        // open in its place) instead of a fixed sleep that races the backend.
+        await expect(sheet, 'expend resolved').toHaveCount(0, { timeout: 15_000 });
         await settleOverlays(page);
       } else {
         // Disabled means already spent via auto-expend: nothing left to do,
         // but the sheet is still open - dismiss it before moving on.
         await page.keyboard.press('Escape');
+        await expect(sheet, 'champion action sheet closed').toHaveCount(0, { timeout: 10_000 });
       }
-      await expect(sheet, 'champion action sheet closed').toHaveCount(0, { timeout: 10_000 });
       await triggerAllyIfOffered(page);
       // Champions can also carry an ally trigger on their own sheet.
       await triggerChampionAllyIfOffered(page, card.name);
