@@ -62,12 +62,17 @@ jobs:
           --memory 512Mi --cpu 1 --max-instances 3 --quiet
 
   e2e:
-    # Live-site GUI suite (all 55 cards). Runs ONLY after a real deployment:
-    # each run is genuine user traffic against Cloud Run, so it never runs on
-    # PRs or per-push. The card rig deals hands through the backend's
-    # debug-setup endpoint, so the job enables HR_DEBUG_SETUP=1 and pins
-    # max-instances=1 for the test window (in-memory sessions need a single
-    # instance), then reverts both even if the tests fail.
+    # Live-site GUI suite (all 55 cards). Runs ONLY after a real deployment.
+    # The card rig deals hands through the backend's debug-setup endpoint, so
+    # the job enables HR_DEBUG_SETUP=1 for the test window, then reverts it
+    # even if the tests fail.
+    #
+    # The rig runs on a TAGGED revision (e2e---<service-url>), never on live
+    # traffic: `services update` creates a new revision but live traffic keeps
+    # flowing to the old one (traffic pins survive deploys, and rollouts are
+    # gradual), so pointing the tests at the live URL is racy by design. The
+    # tag routes deterministically to the rig revision no matter what live
+    # traffic is doing, and real users never touch the debug endpoint.
     needs: [deploy]
     runs-on: ubuntu-latest
     permissions:
@@ -81,10 +86,16 @@ jobs:
           service_account: github-deployer@hero-realms-game.iam.gserviceaccount.com
       - uses: google-github-actions/setup-gcloud@v2
       - name: Enable e2e rig on Cloud Run
-        run: >
-          gcloud run services update hero-realms --region=us-central1
-          --project=hero-realms-game --update-env-vars HR_DEBUG_SETUP=1
-          --max-instances 1 --quiet
+        run: |
+          gcloud run services update hero-realms --region=us-central1 \
+            --project=hero-realms-game --update-env-vars HR_DEBUG_SETUP=1 \
+            --max-instances 1 --quiet
+          REV=$(gcloud run services describe hero-realms --region=us-central1 \
+            --project=hero-realms-game \
+            --format="value(status.latestCreatedRevisionName)")
+          gcloud run services update-traffic hero-realms --region=us-central1 \
+            --project=hero-realms-game --set-tags "e2e=$REV" --to-tags e2e=0 --quiet
+          echo "e2e rig revision $REV tagged at https://e2e---hero-realms-yokyhjajxq-uc.a.run.app"
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -96,14 +107,28 @@ jobs:
       - name: Install Playwright Chromium
         working-directory: web
         run: npx playwright install --with-deps chromium
+      - name: Wait for e2e rig revision
+        # The tagged revision needs a minute to roll out; fail fast here with
+        # a clear line instead of letting every spec time out one by one.
+        run: |
+          for i in $(seq 1 36); do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+              https://e2e---hero-realms-yokyhjajxq-uc.a.run.app/api/health || true)
+            if [ "$CODE" = "200" ]; then echo "rig revision serving"; exit 0; fi
+            sleep 10
+          done
+          echo "e2e rig revision never became ready" >&2
+          exit 1
       - name: Run card GUI suite
         working-directory: web
         run: npx playwright test
         env:
-          E2E_BASE_URL: https://hero-realms-yokyhjajxq-uc.a.run.app
+          E2E_BASE_URL: https://e2e---hero-realms-yokyhjajxq-uc.a.run.app
       - name: Disable e2e rig on Cloud Run
         if: always()
-        run: >
-          gcloud run services update hero-realms --region=us-central1
-          --project=hero-realms-game --remove-env-vars HR_DEBUG_SETUP
-          --max-instances 3 --quiet
+        run: |
+          gcloud run services update-traffic hero-realms --region=us-central1 \
+            --project=hero-realms-game --remove-tags e2e --quiet
+          gcloud run services update hero-realms --region=us-central1 \
+            --project=hero-realms-game --remove-env-vars HR_DEBUG_SETUP \
+            --max-instances 3 --quiet
