@@ -73,6 +73,13 @@ class HeroRealmsChoiceEnv(HeroRealmsMaskedEnv):
         me, foe = self._seats()
         me.defer_choices = True
         foe.defer_choices = self.defer_opponent
+        # Neither seat is a person: the web session defaults
+        # player.is_human to True, which would route forced discards into
+        # pending human choices that no policy answers (and would make the
+        # session treat the seats as live humans). Policies get the inline
+        # heuristic, exactly like the pre-discard-fix behaviour.
+        me.is_human = False
+        foe.is_human = False
         return obs, info
 
     def _pending(self, side=None):

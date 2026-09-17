@@ -31,6 +31,7 @@ from hero_engine import (
     buy_card,
     choice_candidates,
     choice_candidates_zoned,
+    defer_targeted_discard,
     expend_champion,
     has_ally,
     load_hero_cards,
@@ -1176,10 +1177,15 @@ class GameSession:
         """
         if player.pending_choices:
             raise ValueError("Resolve the pending choice first")
-        # The other seat's unanswered choice pauses this seat too: the card
-        # effect that created it has not finished resolving (a forced
-        # discard the victim has not answered yet).
-        if self._opponent().pending_choices:
+        # The other seat's unanswered choice pauses this seat too, but only
+        # when that seat is a live human whose choice will actually be
+        # answered (a forced discard the victim has not picked yet). The
+        # RL choice env deliberately leaves the non-acting seat's choices
+        # unanswered (dropped at turn start), so the gate is the same
+        # triple gate as the deferral itself: defer_choices + log_effects
+        # + is_human.
+        opponent = self._opponent()
+        if opponent.pending_choices and defer_targeted_discard(opponent):
             raise ValueError("Waiting for the other player to choose")
 
     def play_all_action(self) -> dict[str, Any]:
