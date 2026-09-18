@@ -142,12 +142,15 @@ class TestRootBuyProgressiveWidening(unittest.TestCase):
         self._previous_width = bot_module.MCTS_BUY_ROOT_WIDTH
         self._previous_policy = bot_module.BUY_POLICY
         self._previous_include = bot_module.MCTS_BUY_INCLUDE_BASELINE
+        self._previous_denial = bot_module.MCTS_BUY_INCLUDE_DENIAL
         bot_module.MCTS_BUY_ROOT_WIDTH = 2
         bot_module.BUY_POLICY = "static"
         bot_module.MCTS_BUY_INCLUDE_BASELINE = True
+        bot_module.MCTS_BUY_INCLUDE_DENIAL = False
         self.addCleanup(setattr, bot_module, "MCTS_BUY_ROOT_WIDTH", self._previous_width)
         self.addCleanup(setattr, bot_module, "BUY_POLICY", self._previous_policy)
         self.addCleanup(setattr, bot_module, "MCTS_BUY_INCLUDE_BASELINE", self._previous_include)
+        self.addCleanup(setattr, bot_module, "MCTS_BUY_INCLUDE_DENIAL", self._previous_denial)
 
     @staticmethod
     def _rich_buy_state():
@@ -200,6 +203,41 @@ class TestRootBuyProgressiveWidening(unittest.TestCase):
 
         self.assertEqual(len(narrowed), 2)
         self.assertIn(_action_key(baseline), {_action_key(action) for action in narrowed})
+
+    def test_high_confidence_public_denial_candidate_replaces_last_slot(self):
+        import web.bot as bot_module
+        from web.bot import _action_key, _root_search_actions
+
+        session = self._rich_buy_state()
+        legal = session.legal_actions()
+        buys = [action for action in legal if action["type"] == "buy_card"]
+        denial = buys[-1]
+        bot_module.MCTS_BUY_INCLUDE_DENIAL = True
+        with patch("web.bot.inferred_profile_posterior",
+                   return_value={"balanced": 0.8, "aggressive": 0.1,
+                                 "economic": 0.05, "champion": 0.05}), \
+             patch("web.bot.profile_buy_action", return_value=denial):
+            narrowed = _root_search_actions(session, legal)
+
+        self.assertEqual(len(narrowed), 2)
+        self.assertIn(_action_key(denial), {_action_key(action) for action in narrowed})
+
+    def test_low_confidence_public_posterior_does_not_inject_denial(self):
+        import web.bot as bot_module
+        from web.bot import _action_key, _root_search_actions
+
+        session = self._rich_buy_state()
+        legal = session.legal_actions()
+        expected = [action for action in legal if action["type"] == "buy_card"][:2]
+        bot_module.MCTS_BUY_INCLUDE_DENIAL = True
+        with patch("web.bot.inferred_profile_posterior",
+                   return_value={"balanced": 0.4, "aggressive": 0.3,
+                                 "economic": 0.2, "champion": 0.1}), \
+             patch("web.bot.profile_buy_action", side_effect=AssertionError("should not route")):
+            narrowed = _root_search_actions(session, legal)
+
+        self.assertEqual([_action_key(action) for action in narrowed],
+                         [_action_key(action) for action in expected])
 
 class TestCombatSearchPruning(unittest.TestCase):
     @staticmethod

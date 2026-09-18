@@ -193,6 +193,8 @@ def main():
                     help="adaptive: historical shared rollout; posterior: public-purchase Bayesian mixture")
     ap.add_argument("--opponent-model-min-observations", type=int, default=2,
                     help="public opponent buys required before profile rollout activates")
+    ap.add_argument("--denial-candidate", action="store_true",
+                    help="experimental: inject a high-confidence public opponent buy into root search")
     args = ap.parse_args()
 
     if args.budget_scope == "turn" and args.iterations is not None:
@@ -204,6 +206,7 @@ def main():
     bot_module.ROLLOUT_BUY_POLICY = args.rollout_buy_policy
     bot_module.OPPONENT_ROLLOUT_POLICY = args.opponent_rollout_policy
     bot_module.OPPONENT_MODEL_MIN_OBSERVATIONS = args.opponent_model_min_observations
+    bot_module.MCTS_BUY_INCLUDE_DENIAL = args.denial_candidate
     bot_module.MCTS_UTILITY_MODE = args.utility
     bot_module.ROOT_SAMPLING_MODE = args.root_sampling
     bot_module.ISMCTS_OPPONENT_NODES = args.ismcts_opponent_nodes

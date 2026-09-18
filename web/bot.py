@@ -799,6 +799,9 @@ ISMCTS_OPPONENT_NODES = False
 # complete choice set. With an affordable buy, pass is omitted because unused
 # gold resets at end of turn. Set to 0 for the legacy all-actions A/B control.
 MCTS_BUY_ROOT_WIDTH = 3
+# Experimental public-information candidate injection.  Disabled by default
+# until it beats the current root narrowing on disjoint seed blocks.
+MCTS_BUY_INCLUDE_DENIAL = False
 
 # Progressive widening must retain the heuristic action that the override gate
 # compares against. With adaptive/situational buying that action may not be one
@@ -1335,6 +1338,23 @@ def _root_search_actions(session, actions: list[dict[str, Any]]) -> list[dict[st
             continue
         narrowed.append(action)
         seen.add(_action_key(action))
+
+    if MCTS_BUY_INCLUDE_DENIAL:
+        posterior = inferred_profile_posterior(
+            session, OPPONENT_MODEL_MIN_OBSERVATIONS,
+        )
+        if posterior:
+            profile, confidence = max(posterior.items(), key=lambda item: item[1])
+            if confidence >= 0.70:
+                denial = profile_buy_action(session, buy_actions, profile)
+                denial_key = _action_key(denial)
+                if denial_key not in seen:
+                    # Preserve the heuristic baseline and keep the width fixed;
+                    # the least-prioritized ordinary candidate is expendable.
+                    if len(narrowed) >= MCTS_BUY_ROOT_WIDTH:
+                        narrowed[-1] = denial
+                    else:
+                        narrowed.append(denial)
     return narrowed
 
 

@@ -56,3 +56,14 @@ def test_invalid_buy_index_does_not_spend_gold():
         raise AssertionError("negative market index should be rejected")
 
     assert session.player.gold == 4
+
+
+def test_history_ids_remain_unique_after_history_trim():
+    session = create_session(seed=7)
+
+    for index in range(120):
+        session.record_event("system", f"Synthetic event {index}")
+
+    ids = [frame["id"] for frame in session.history]
+    assert len(ids) == 80
+    assert len(ids) == len(set(ids))
