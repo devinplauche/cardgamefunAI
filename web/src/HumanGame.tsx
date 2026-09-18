@@ -3,7 +3,7 @@ import type { HistoryFrame, HumanGameState, User } from './types';
 import { gameAction, loadGame } from './api';
 import { GameTable } from './GameTable';
 
-const POLL_MS = 2500;
+const POLL_MS = 10000;
 
 interface Props {
   gameId: string;
@@ -93,10 +93,14 @@ export function HumanGame({ gameId, user, onExit, onSignOut }: Props) {
 
   // Poll while waiting for the opponent (or for them to join at all) - and
   // while waiting for them to answer a forced discard on your turn, so the
-  // board refreshes the moment they choose.
+  // board refreshes the moment they choose. Polls are skipped while the tab
+  // is hidden (no point burning requests/egress nobody will see); a poll
+  // fires immediately when the tab becomes visible again.
   useEffect(() => {
     if (!game || winner || (!waiting && isMyTurn && !game.choicePending)) return;
-    const timer = setInterval(async () => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const poll = async () => {
+      if (document.hidden) return;
       try {
         const res = await loadGame(gameId, game.turnCount);
         if ('changed' in res && res.changed === false) return;
@@ -104,8 +108,16 @@ export function HumanGame({ gameId, user, onExit, onSignOut }: Props) {
       } catch {
         /* transient; next poll retries */
       }
-    }, POLL_MS);
-    return () => clearInterval(timer);
+    };
+    const onVisible = () => {
+      if (!document.hidden) void poll();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    timer = setInterval(() => void poll(), POLL_MS);
+    return () => {
+      if (timer) clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [gameId, game, winner, waiting, isMyTurn]);
 
   async function act(action: string, params: Record<string, unknown> = {}, okMessage?: string) {

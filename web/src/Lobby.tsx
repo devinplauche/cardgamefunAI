@@ -29,10 +29,14 @@ export function Lobby({ user, onOpenGame }: { user: User; onOpenGame: (gameId: s
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => {
-      void refresh();
-    }, 5000);
-    return () => window.clearInterval(timer);
+    // No auto-poll: the lobby refreshes on mount, when the tab becomes
+    // visible again, and via the manual Refresh button. A standing interval
+    // here burns requests and egress for tabs nobody is looking at.
+    const onVisible = () => {
+      if (!document.hidden) void refresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
   }, [refresh]);
 
   async function handleCreate() {
